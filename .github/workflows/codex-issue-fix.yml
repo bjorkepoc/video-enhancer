@@ -19,6 +19,9 @@ permissions:
   issues: write
   pull-requests: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 concurrency:
   group: codex-issue-fix-${{ github.event.issue.number || inputs.issue_number }}
   cancel-in-progress: false
@@ -68,13 +71,13 @@ jobs:
 
       - name: Checkout repository
         if: ${{ steps.gate.outputs.allowed == 'true' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
         if: ${{ steps.gate.outputs.allowed == 'true' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -142,7 +145,7 @@ jobs:
       - name: Create draft pull request
         if: ${{ steps.gate.outputs.allowed == 'true' }}
         id: cpr
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "fix: address issue #${{ github.event.issue.number || inputs.issue_number }} with Codex"

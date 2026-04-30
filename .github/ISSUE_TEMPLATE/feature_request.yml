@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest a new enhancement feature, preset, backend, or workflow.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should video-enhancer help you do?
+      placeholder: I want a preset for cleaner anime upscaling, or a GPU filter path for...
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: Describe the kind of source videos, expected output, and quality/speed tradeoff.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Upscaling
+        - Frame interpolation
+        - Denoising/sharpening
+        - GPU encoding
+        - AI backend
+        - Documentation
+        - Packaging/install
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Extra details
+      description: Add links, commands, FFmpeg filters, hardware details, or examples that help explain the request.

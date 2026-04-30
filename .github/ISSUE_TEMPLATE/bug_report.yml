@@ -1,0 +1,73 @@
+name: Bug report
+description: Report a video enhancement problem or CLI failure.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please do not attach private videos or generated test exports unless you are comfortable making them public.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the visible artifact, failure, crash, or unexpected output.
+      placeholder: The output video has heavy artifacts around fast motion, or the command exits with...
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: Paste the command you ran, without private file names if needed.
+      placeholder: video-enhancer input.mp4 output.mp4 --preset ultra --fps 144
+    validations:
+      required: true
+  - type: dropdown
+    id: preset
+    attributes:
+      label: Preset
+      options:
+        - fast
+        - balanced
+        - quality
+        - ultra
+        - custom/overridden
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Source video details
+      description: Resolution, FPS, codec, duration, and anything unusual about the source.
+      placeholder: 1080x1920, 30 FPS, HEVC, 14 seconds, fast camera motion
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: Windows 11, macOS 15, Ubuntu 24.04
+    validations:
+      required: true
+  - type: input
+    id: ffmpeg
+    attributes:
+      label: FFmpeg version
+      placeholder: ffmpeg -version
+  - type: dropdown
+    id: encoder
+    attributes:
+      label: Encoder path
+      options:
+        - CPU libx264/libx265
+        - NVIDIA NVENC
+        - AMD AMF
+        - Intel Quick Sync
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or dry-run output
+      description: Paste relevant terminal output, especially from --dry-run.
+      render: shell

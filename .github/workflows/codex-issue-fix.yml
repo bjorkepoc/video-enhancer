@@ -1,0 +1,173 @@
+name: Codex Issue Fix
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to implement
+        required: true
+        type: number
+      instructions:
+        description: Optional extra maintainer instructions
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: codex-issue-fix-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.issue.pull_request == null && startsWith(github.event.comment.body, '/codex fix')) }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Decide whether Codex should implement
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+
+          allowed=false
+          permission="none"
+
+          if [ "$ACTOR" = "$REPOSITORY_OWNER" ]; then
+            permission="admin"
+          else
+            permission="$(gh api "repos/$REPOSITORY/collaborators/$ACTOR/permission" --jq .permission 2>/dev/null || echo none)"
+          fi
+
+          case "$permission" in
+            admin|maintain|write) allowed=true ;;
+            *) allowed=false ;;
+          esac
+
+          echo "allowed=$allowed" >> "$GITHUB_OUTPUT"
+
+      - name: Stop when actor is not trusted
+        if: ${{ steps.gate.outputs.allowed != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+        run: |
+          set -euo pipefail
+          if [ -n "${ISSUE_NUMBER:-}" ]; then
+            gh issue comment "$ISSUE_NUMBER" --body "Codex can only draft PRs when triggered by a repository maintainer."
+          fi
+
+      - name: Checkout repository
+        if: ${{ steps.gate.outputs.allowed == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        if: ${{ steps.gate.outputs.allowed == 'true' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install project
+        if: ${{ steps.gate.outputs.allowed == 'true' }}
+        run: python -m pip install -e ".[dev]"
+
+      - name: Require OpenAI API key
+        if: ${{ steps.gate.outputs.allowed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+        run: |
+          set -euo pipefail
+          if [ -z "$OPENAI_API_KEY" ]; then
+            gh issue comment "$ISSUE_NUMBER" --body "Codex issue fixing is configured, but the repository is missing the OPENAI_API_KEY Actions secret."
+            exit 1
+          fi
+
+      - name: Build implementation prompt
+        if: ${{ steps.gate.outputs.allowed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          TRIGGER_TEXT: ${{ github.event.comment.body || inputs.instructions || '' }}
+        run: |
+          set -euo pipefail
+          gh issue view "$ISSUE_NUMBER" \
+            --json number,title,body,author,labels,comments,url,createdAt,updatedAt \
+            --jq '.' > issue-context.json
+
+          cat > codex-issue-fix-prompt.md <<'PROMPT'
+          You are implementing a maintainer-approved GitHub issue for the video-enhancer repository.
+
+          Follow the repository's existing patterns. Keep the change focused on the issue. Do not add sample videos, generated videos, private media names, or large binary assets. Do not modify unrelated files. Add or update tests when behavior changes. Preserve the public CLI unless the issue clearly asks for a compatible extension.
+
+          The project is a Python CLI around FFmpeg. Prefer small, testable changes. Before finishing, run the relevant tests if possible, especially:
+
+          python -m pytest -p no:cacheprovider
+
+          Do not commit, push, or open a pull request yourself. Leave the working tree with the intended changes only.
+
+          Maintainer command or extra instructions:
+          PROMPT
+          printf '%s\n\n' "$TRIGGER_TEXT" >> codex-issue-fix-prompt.md
+          printf '%s\n' "Issue context JSON follows." >> codex-issue-fix-prompt.md
+          cat issue-context.json >> codex-issue-fix-prompt.md
+
+      - name: Run Codex implementation
+        if: ${{ steps.gate.outputs.allowed == 'true' }}
+        id: codex
+        uses: openai/codex-action@main
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: codex-issue-fix-prompt.md
+          sandbox: workspace-write
+          model: ${{ vars.CODEX_MODEL || 'gpt-5.5' }}
+          effort: high
+
+      - name: Verify tests
+        if: ${{ steps.gate.outputs.allowed == 'true' }}
+        run: python -m pytest -p no:cacheprovider
+
+      - name: Create draft pull request
+        if: ${{ steps.gate.outputs.allowed == 'true' }}
+        id: cpr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "fix: address issue #${{ github.event.issue.number || inputs.issue_number }} with Codex"
+          branch: codex/issue-${{ github.event.issue.number || inputs.issue_number }}
+          delete-branch: true
+          draft: true
+          title: "fix: address issue #${{ github.event.issue.number || inputs.issue_number }}"
+          body: |
+            Draft PR generated by Codex for #${{ github.event.issue.number || inputs.issue_number }}.
+
+            Triggered by: @${{ github.actor }}
+
+            Validation:
+            - `python -m pytest -p no:cacheprovider`
+
+      - name: Comment with PR result
+        if: ${{ steps.gate.outputs.allowed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          PR_URL: ${{ steps.cpr.outputs.pull-request-url }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PR_URL" ]; then
+            gh issue comment "$ISSUE_NUMBER" --body "Codex opened a draft PR for this issue: $PR_URL"
+          else
+            gh issue comment "$ISSUE_NUMBER" --body "Codex ran for this issue, but it did not leave any file changes to open as a PR."
+          fi

@@ -184,6 +184,19 @@ python -m pytest
 - [Usage notes](docs/usage-and-requirements.md)
 - [Command examples](examples/commands.md)
 - [Future AI backends](docs/future-ai-backends.md)
+- [GitHub Codex automation](docs/github-codex-automation.md)
+
+## Maintainer Automation
+
+This repo includes optional Codex-powered GitHub Actions for issue triage and
+draft PR creation. Add an `OPENAI_API_KEY` Actions secret to enable them.
+
+- Maintainer-created issues can receive automatic Codex triage.
+- Public issues from unknown users are label-gated before Codex runs.
+- Maintainers can comment `/codex fix` on an issue to ask Codex to draft a PR.
+
+See [GitHub Codex automation](docs/github-codex-automation.md) for setup and
+safety details.
 
 ## License
 

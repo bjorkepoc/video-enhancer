@@ -1,9 +1,17 @@
+.env
+.env.*
+.vscode/
+.idea/
 .pytest_cache/
 .ruff_cache/
 .venv/
+venv/
+env/
 __pycache__/
 *.egg-info/
 *.pyc
+*.pyo
+*.pyd
 dist/
 build/
 outputs/
@@ -11,3 +19,18 @@ tmp/
 graphify-out/
 .coverage
 htmlcov/
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Local media artifacts
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+*.m4v
+*.mp3
+*.wav
+*.flac

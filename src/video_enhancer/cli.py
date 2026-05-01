@@ -7,7 +7,14 @@ from pathlib import Path
 from typing import Sequence
 
 from .encoders import describe_supported_encoders, supported_video_codecs
-from .ffmpeg import EnhancementOptions, VideoEnhancerError, enhance_video, format_command
+from .ffmpeg import (
+    EnhancementOptions,
+    VideoEnhancerError,
+    enhance_video,
+    format_command,
+    resolve_ffmpeg,
+)
+from .filter_backends import describe_supported_filter_backends, supported_filter_backends
 from .presets import available_presets, get_preset
 
 
@@ -88,6 +95,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="ffmpeg executable name or full path (default: ffmpeg)",
     )
     parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="shortcut for --filter-backend auto",
+    )
+    parser.add_argument(
+        "--filter-backend",
+        choices=supported_filter_backends(),
+        default="cpu",
+        help="video filter backend for enhancement filters (default: cpu)",
+    )
+    parser.add_argument(
+        "--filter-device",
+        help="hardware filter device selector, for example 0 or 1",
+    )
+    parser.add_argument(
         "--video-codec",
         choices=supported_video_codecs(),
         default="libx264",
@@ -106,6 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--list-encoders",
         action="store_true",
         help="list supported CPU and hardware encoder codec names",
+    )
+    parser.add_argument(
+        "--list-filter-backends",
+        action="store_true",
+        help="list supported CPU/GPU filter backend names and local FFmpeg filter support",
     )
     parser.add_argument(
         "--overwrite",
@@ -128,10 +155,23 @@ def run(argv: Sequence[str] | None = None) -> int:
     if args.list_encoders:
         print(describe_supported_encoders())
         return 0
+    if args.list_filter_backends:
+        preset = get_preset(args.preset)
+        try:
+            ffmpeg = resolve_ffmpeg(args.ffmpeg)
+        except VideoEnhancerError:
+            print(describe_supported_filter_backends(preset=preset))
+        else:
+            print(describe_supported_filter_backends(ffmpeg_path=ffmpeg, preset=preset))
+        return 0
     if args.input is None or args.output is None:
-        parser.error("input and output are required unless --list-encoders is used")
+        parser.error(
+            "input and output are required unless --list-encoders or "
+            "--list-filter-backends is used"
+        )
 
     preset = get_preset(args.preset)
+    filter_backend = "auto" if args.gpu and args.filter_backend == "cpu" else args.filter_backend
     options = EnhancementOptions(
         preset=preset,
         scale_factor=args.scale_factor,
@@ -141,6 +181,8 @@ def run(argv: Sequence[str] | None = None) -> int:
         video_codec=args.video_codec,
         encoder_preset=args.encoder_preset,
         quality=args.quality,
+        filter_backend=filter_backend,
+        filter_device=args.filter_device,
         overwrite=args.overwrite,
         ffmpeg_path=args.ffmpeg,
     )

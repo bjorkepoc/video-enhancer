@@ -65,6 +65,19 @@ body:
         - Not sure
     validations:
       required: true
+  - type: dropdown
+    id: filter-backend
+    attributes:
+      label: Filter backend
+      options:
+        - CPU
+        - auto
+        - CUDA
+        - OpenCL
+        - Vulkan
+        - Not sure
+    validations:
+      required: true
   - type: textarea
     id: logs
     attributes:

@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "video-enhancer"
 version = "0.1.0"
-description = "Free local FFmpeg video enhancer with upscaling, frame interpolation, and optional hardware encoding."
+description = "Free local FFmpeg video enhancer with upscaling, frame interpolation, optional GPU filters, and hardware encoding."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "bjork" }]
 license = { text = "MIT" }
-keywords = ["video", "ffmpeg", "upscaling", "frame-interpolation"]
+keywords = ["video", "ffmpeg", "upscaling", "frame-interpolation", "gpu"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",

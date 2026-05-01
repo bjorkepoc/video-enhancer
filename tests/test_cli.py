@@ -143,6 +143,69 @@ def test_dry_run_wires_gpu_encoder_options(
     assert "-cq:v 16" in captured.out
 
 
+def test_dry_run_wires_gpu_filter_backend(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    input_path, output_path = _sample_paths(tmp_path)
+
+    exit_code = _invoke_main(
+        [
+            str(input_path),
+            str(output_path),
+            "--preset",
+            "ultra",
+            "--filter-backend",
+            "vulkan",
+            "--filter-device",
+            "1",
+            "--dry-run",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "-init_hw_device vulkan=ve:1" in captured.out
+    assert "-filter_hw_device ve" in captured.out
+    assert "nlmeans_vulkan" in captured.out
+    assert "libplacebo" in captured.out
+
+
+def test_gpu_shortcut_uses_auto_filter_backend(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    input_path, output_path = _sample_paths(tmp_path)
+
+    exit_code = _invoke_main(
+        [
+            str(input_path),
+            str(output_path),
+            "--preset",
+            "ultra",
+            "--video-codec",
+            "h264_nvenc",
+            "--gpu",
+            "--dry-run",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "-init_hw_device cuda=ve:0" in captured.out
+    assert "scale_cuda" in captured.out
+
+
+def test_list_filter_backends_does_not_require_input_or_output(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = _invoke_main(["--list-filter-backends", "--ffmpeg", "definitely_missing_ffmpeg"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Supported filter backends" in captured.out
+    assert "vulkan" in captured.out
+    assert "cuda" in captured.out
+
+
 def test_list_encoders_does_not_require_input_or_output(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

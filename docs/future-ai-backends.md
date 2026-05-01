@@ -1,10 +1,20 @@
 # Future AI Backends
 
-`video-enhancer` starts as a simple FFmpeg-based local tool, but the project can
-support optional AI backends later without changing the main workflow too much.
+`video-enhancer` starts as a simple FFmpeg-based local tool, including optional
+GPU filter backends for selected FFmpeg stages. The project can support optional
+AI backends later without changing the main workflow too much.
 
 The goal is to keep the current FFmpeg path free, offline, and dependable while
 making heavier AI processing opt-in.
+
+Current GPU filter support is still classic FFmpeg processing, not AI:
+
+- `cuda`: GPU denoise/upscale on NVIDIA hardware.
+- `opencl`: GPU denoise/sharpen on OpenCL devices.
+- `vulkan`: GPU denoise/upscale through Vulkan/libplacebo.
+
+FFmpeg `minterpolate` remains CPU-based. AI frame generation and AI
+super-resolution are separate future backends.
 
 ## Real-ESRGAN for Upscaling
 
@@ -48,7 +58,7 @@ Important choices:
 
 | Backend | Responsibility |
 | --- | --- |
-| `ffmpeg` | Scaling, denoise, sharpening, interpolation, and encoding without AI. |
+| `ffmpeg` | CPU/GPU FFmpeg filters plus interpolation and encoding without AI. |
 | `realesrgan` | Super-resolution over decoded frames. |
 | `rife` | AI frame interpolation. |
 | `hybrid` | Real-ESRGAN plus RIFE plus FFmpeg encoding. |

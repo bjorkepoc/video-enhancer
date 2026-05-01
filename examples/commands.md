@@ -8,6 +8,12 @@ These examples use neutral placeholder videos only.
 video-enhancer --list-encoders
 ```
 
+## Inspect Available Filter Backends
+
+```bash
+video-enhancer --list-filter-backends
+```
+
 ## Balanced Default
 
 ```bash
@@ -42,6 +48,24 @@ video-enhancer samples/source.mp4 exports/source-ultra-144.mp4 --preset ultra --
 
 ```bash
 video-enhancer samples/source.mp4 exports/source-nvenc.mp4 --preset ultra --video-codec h264_nvenc --encoder-preset p6 --quality 18
+```
+
+## NVIDIA CUDA Filters and Hardware Encoding
+
+```bash
+video-enhancer samples/source.mp4 exports/source-cuda-nvenc.mp4 --preset ultra --filter-backend cuda --video-codec h264_nvenc --encoder-preset p6 --quality 18
+```
+
+## Vulkan GPU Filters
+
+```bash
+video-enhancer samples/source.mp4 exports/source-vulkan.mp4 --preset ultra --filter-backend vulkan
+```
+
+## Automatic GPU Filters
+
+```bash
+video-enhancer samples/source.mp4 exports/source-gpu.mp4 --preset ultra --gpu
 ```
 
 ## AMD Hardware Encoding

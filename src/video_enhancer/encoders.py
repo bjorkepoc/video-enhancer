@@ -110,8 +110,9 @@ def build_video_encoder_args(
 ) -> list[str]:
     """Build FFmpeg args for CPU and hardware encoder families.
 
-    The filters in this project are still FFmpeg CPU filters. Hardware encoders
-    speed up the final encode step when the user's FFmpeg build and GPU support it.
+    Hardware encoders speed up the final encode step when the user's FFmpeg
+    build and GPU support it. Filter acceleration is controlled separately with
+    --filter-backend.
     """
 
     profile = get_encoder_profile(codec)
@@ -161,7 +162,7 @@ def describe_supported_encoders() -> str:
         "    hevc_qsv    HEVC hardware encoding",
         "    av1_qsv     AV1 hardware encoding",
         "",
-        "Note: video filters such as minterpolate and nlmeans are still CPU-heavy.",
-        "Hardware encoders accelerate the final encoding stage when FFmpeg and drivers support them.",
+        "Note: --video-codec controls encoding only.",
+        "Use --filter-backend or --gpu for optional GPU enhancement filters.",
     ]
     return "\n".join(rows)

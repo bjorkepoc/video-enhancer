@@ -11,9 +11,12 @@ from video_enhancer import (
     ValidationError,
     available_presets,
     build_ffmpeg_command,
+    supported_filter_backends,
     get_preset,
     supported_video_codecs,
 )
+from video_enhancer.ffmpeg import validate_filter_backend_availability
+from video_enhancer.filter_backends import FilterBackendProbe
 
 ALL_PRESETS = ["fast", "balanced", "quality", "ultra"]
 
@@ -107,6 +110,16 @@ def test_supported_video_codecs_are_public_and_ordered() -> None:
     )
 
 
+def test_supported_filter_backends_are_public_and_ordered() -> None:
+    assert supported_filter_backends() == (
+        "cpu",
+        "auto",
+        "cuda",
+        "opencl",
+        "vulkan",
+    )
+
+
 @pytest.mark.parametrize(
     ("codec", "expected_args"),
     [
@@ -185,6 +198,130 @@ def test_ultra_preset_uses_max_quality_ffmpeg_filters(tmp_path: Path) -> None:
     assert "search_param=48" in filters
     assert "scd=fdiff" in filters
     assert "scd_threshold=10" in filters
+
+
+def test_cuda_filter_backend_uses_gpu_denoise_and_upscale(tmp_path: Path) -> None:
+    parts = _command_parts(_build(tmp_path, preset="ultra", filter_backend="cuda"))
+    filters = parts[parts.index("-vf") + 1]
+
+    assert parts[parts.index("-init_hw_device") + 1] == "cuda=ve:0"
+    assert parts[parts.index("-filter_hw_device") + 1] == "ve"
+    assert "format=nv12" in filters
+    assert "bilateral_cuda=" in filters
+    assert "hwupload_cuda" in filters
+    assert "scale_cuda=" in filters
+    assert filters.index("bilateral_cuda=") < filters.index("minterpolate=")
+    assert filters.index("minterpolate=") < filters.index("scale_cuda=")
+    assert "unsharp=5:5:0.65:5:5:0.0" in filters
+
+
+def test_opencl_filter_backend_uses_gpu_denoise_and_sharpen(tmp_path: Path) -> None:
+    parts = _command_parts(_build(tmp_path, preset="ultra", filter_backend="opencl"))
+    filters = parts[parts.index("-vf") + 1]
+
+    assert parts[parts.index("-init_hw_device") + 1] == "opencl=ve:0.0"
+    assert "nlmeans_opencl=s=1.0:p=7:r=15" in filters
+    assert "scale=trunc(iw*2.0/2)*2:trunc(ih*2.0/2)*2:flags=lanczos" in filters
+    assert "unsharp_opencl=lx=5:ly=5:la=0.65:cx=5:cy=5:ca=0.0" in filters
+
+
+def test_vulkan_filter_backend_uses_gpu_denoise_and_libplacebo_upscale(
+    tmp_path: Path,
+) -> None:
+    parts = _command_parts(_build(tmp_path, preset="ultra", filter_backend="vulkan"))
+    filters = parts[parts.index("-vf") + 1]
+
+    assert parts[parts.index("-init_hw_device") + 1] == "vulkan=ve:0"
+    assert "nlmeans_vulkan=s=1.0:p=7:r=15" in filters
+    assert "libplacebo=w=trunc(iw*2.0/2)*2:h=trunc(ih*2.0/2)*2" in filters
+    assert "upscaler=ewa_lanczossharp" in filters
+    assert filters.index("minterpolate=") < filters.index("libplacebo=")
+
+
+def test_auto_filter_backend_prefers_cuda_for_nvenc(tmp_path: Path) -> None:
+    parts = _command_parts(
+        _build(tmp_path, preset="ultra", filter_backend="auto", video_codec="h264_nvenc")
+    )
+    filters = parts[parts.index("-vf") + 1]
+
+    assert parts[parts.index("-init_hw_device") + 1] == "cuda=ve:0"
+    assert "scale_cuda=" in filters
+
+
+def test_auto_filter_backend_runtime_probe_skips_unusable_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    available_filters = frozenset(
+        {
+            "hwupload",
+            "hwupload_cuda",
+            "scale_cuda",
+            "bilateral_cuda",
+            "libplacebo",
+            "nlmeans_vulkan",
+            "nlmeans_opencl",
+            "unsharp_opencl",
+        }
+    )
+    probes: list[str] = []
+
+    def fake_probe(
+        ffmpeg_path: str,
+        filter_backend: str,
+        *,
+        filter_device: str | None = None,
+    ) -> FilterBackendProbe:
+        probes.append(filter_backend)
+        return FilterBackendProbe(
+            filter_backend,
+            filter_backend == "vulkan",
+            "simulated runtime failure",
+        )
+
+    monkeypatch.setattr(
+        "video_enhancer.ffmpeg.available_filter_names",
+        lambda ffmpeg_path: available_filters,
+    )
+    monkeypatch.setattr("video_enhancer.ffmpeg.probe_filter_backend", fake_probe)
+
+    resolved = validate_filter_backend_availability(
+        ffmpeg_path="ffmpeg",
+        requested_backend="auto",
+        preset=get_preset("ultra"),
+        video_codec="h264_nvenc",
+    )
+
+    assert resolved == "vulkan"
+    assert probes == ["cuda", "vulkan"]
+
+
+def test_explicit_gpu_filter_backend_fails_when_runtime_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "video_enhancer.ffmpeg.available_filter_names",
+        lambda ffmpeg_path: frozenset({"hwupload_cuda", "scale_cuda", "bilateral_cuda"}),
+    )
+    monkeypatch.setattr(
+        "video_enhancer.ffmpeg.probe_filter_backend",
+        lambda *args, **kwargs: FilterBackendProbe("cuda", False, "missing CUDA driver"),
+    )
+
+    with pytest.raises(ValidationError, match="failed a runtime probe"):
+        validate_filter_backend_availability(
+            ffmpeg_path="ffmpeg",
+            requested_backend="cuda",
+            preset=get_preset("ultra"),
+            video_codec="h264_nvenc",
+        )
+
+
+def test_filter_device_override_is_applied_to_gpu_filters(tmp_path: Path) -> None:
+    parts = _command_parts(
+        _build(tmp_path, preset="ultra", filter_backend="vulkan", filter_device="1")
+    )
+
+    assert parts[parts.index("-init_hw_device") + 1] == "vulkan=ve:1"
 
 
 def test_scale_factor_and_fps_are_added_to_video_filter_chain(tmp_path: Path) -> None:

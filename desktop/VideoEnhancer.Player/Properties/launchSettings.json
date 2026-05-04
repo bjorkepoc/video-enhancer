@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "VideoEnhancer.Player (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "VideoEnhancer.Player (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

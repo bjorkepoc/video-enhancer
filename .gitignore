@@ -14,9 +14,12 @@ __pycache__/
 *.pyd
 dist/
 build/
+bin/
+obj/
 outputs/
 tmp/
 graphify-out/
+.superpowers/
 .coverage
 htmlcov/
 *.log

@@ -2,6 +2,8 @@
 
 This page documents the FFmpeg-only release of `video-enhancer`.
 
+For the native Windows GUI, see [Desktop player](desktop-player.md).
+
 ## Workflow
 
 1. Pick a source video.

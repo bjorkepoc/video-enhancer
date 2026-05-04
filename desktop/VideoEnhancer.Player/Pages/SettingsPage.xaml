@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="VideoEnhancer_Player.Pages.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:VideoEnhancer_Player.Pages"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid Padding="24,16,24,16" RowSpacing="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Settings" />
+        <StackPanel Grid.Row="1" MaxWidth="720" HorizontalAlignment="Left" Spacing="12">
+            <InfoBar x:Name="SettingsInfo" IsOpen="False" />
+
+            <TextBlock Text="FFmpeg path" />
+            <TextBox x:Name="FfmpegPathBox" PlaceholderText="ffmpeg or full path" />
+
+            <TextBlock Text="FFprobe path" />
+            <TextBox x:Name="FfprobePathBox" PlaceholderText="ffprobe or full path" />
+
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition />
+                    <ColumnDefinition />
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="6">
+                    <TextBlock Text="Default preset" />
+                    <ComboBox x:Name="PresetBox" SelectedIndex="3">
+                        <ComboBoxItem Content="fast" />
+                        <ComboBoxItem Content="balanced" />
+                        <ComboBoxItem Content="quality" />
+                        <ComboBoxItem Content="ultra" />
+                    </ComboBox>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Spacing="6">
+                    <TextBlock Text="Default GPU filter" />
+                    <ComboBox x:Name="FilterBackendBox" SelectedIndex="1">
+                        <ComboBoxItem Content="cpu" />
+                        <ComboBoxItem Content="auto" />
+                        <ComboBoxItem Content="cuda" />
+                        <ComboBoxItem Content="opencl" />
+                        <ComboBoxItem Content="vulkan" />
+                    </ComboBox>
+                </StackPanel>
+            </Grid>
+
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition />
+                    <ColumnDefinition />
+                    <ColumnDefinition />
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="6">
+                    <TextBlock Text="Scale" />
+                    <NumberBox x:Name="ScaleBox" Minimum="0.1" Value="2" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Spacing="6">
+                    <TextBlock Text="FPS" />
+                    <NumberBox x:Name="FpsBox" Minimum="1" Value="60" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="6">
+                    <TextBlock Text="Quality" />
+                    <NumberBox x:Name="QualityBox" Minimum="0" Maximum="51" Value="16" />
+                </StackPanel>
+            </Grid>
+
+            <TextBlock Text="Default codec" />
+            <ComboBox x:Name="CodecBox" SelectedIndex="0">
+                <ComboBoxItem Content="libx264" />
+                <ComboBoxItem Content="libx265" />
+                <ComboBoxItem Content="h264_nvenc" />
+                <ComboBoxItem Content="hevc_nvenc" />
+                <ComboBoxItem Content="av1_nvenc" />
+                <ComboBoxItem Content="h264_amf" />
+                <ComboBoxItem Content="hevc_amf" />
+                <ComboBoxItem Content="av1_amf" />
+                <ComboBoxItem Content="h264_qsv" />
+                <ComboBoxItem Content="hevc_qsv" />
+                <ComboBoxItem Content="av1_qsv" />
+            </ComboBox>
+
+            <Button Click="Save_Click" Content="Save settings" />
+        </StackPanel>
+    </Grid>
+</Page>

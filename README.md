@@ -24,6 +24,9 @@ machine; no cloud upload, no account, no subscription.
   `h264_amf`, `hevc_amf`, `av1_amf`, `h264_qsv`, `hevc_qsv`, `av1_qsv`
 - Dry-run mode that prints the exact FFmpeg command before running it
 - Test-covered command construction
+- Native Windows desktop player in `desktop/VideoEnhancer.Player`
+- UHD playback, frame stepping, 1/2/5/10 FPS step-viewing, local library,
+  thumbnails, settings, and GUI exports
 
 ## Requirements
 
@@ -96,6 +99,37 @@ Preview the command without writing a video:
 ```bash
 video-enhancer input.mp4 output.mp4 --preset ultra --dry-run
 ```
+
+## Desktop Player
+
+The repo also includes **Video Enhancer Player**, a WinUI 3 desktop app for
+Windows. It is a local player and GUI for the same FFmpeg enhancement pipeline.
+
+What it does:
+
+- Plays local UHD videos with native Windows media playback
+- Steps one frame forward or backward
+- Watches video slowly at 1, 2, 5, or 10 frames per second
+- Keeps a local video library in `%LOCALAPPDATA%\VideoEnhancerPlayer`
+- Creates local thumbnails with FFmpeg
+- Exposes presets, scale factor, FPS, interpolation toggle, GPU filter backend,
+  encoder codec, quality, overwrite, dry-run, progress, and cancellation
+
+Build it on Windows:
+
+```powershell
+dotnet build desktop\VideoEnhancer.Player\VideoEnhancer.Player.csproj -p:Platform=ARM64
+```
+
+Run tests:
+
+```powershell
+dotnet test desktop\VideoEnhancer.Core.Tests\VideoEnhancer.Core.Tests.csproj
+```
+
+The app is unpackaged for local use, so the built `.exe` can be pinned or linked
+from the desktop. It stores settings with normal local app data, not packaged
+app storage.
 
 Use GPU enhancement filters when your FFmpeg build and drivers support them:
 
@@ -235,6 +269,7 @@ Run tests:
 
 ```bash
 python -m pytest
+dotnet test desktop/VideoEnhancer.Core.Tests
 ```
 
 ## Documentation
@@ -243,6 +278,7 @@ python -m pytest
 - [Command examples](examples/commands.md)
 - [Future AI backends](docs/future-ai-backends.md)
 - [GitHub Codex automation](docs/github-codex-automation.md)
+- [Desktop player](docs/desktop-player.md)
 
 ## Maintainer Automation
 

@@ -20,6 +20,19 @@ public sealed partial class MainWindow : Window
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
         AppWindow.SetIcon("Assets/AppIcon.ico");
         AppServices.MainWindow = this;
+        NavFrame.CacheSize = 4;
+        NavFrame.Navigate(typeof(PlayerPage));
+    }
+
+    public void NavigateToPlayer()
+    {
+        if (NavView.MenuItems
+            .OfType<NavigationViewItem>()
+            .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), "player", StringComparison.OrdinalIgnoreCase)) is { } playerItem)
+        {
+            NavView.SelectedItem = playerItem;
+        }
+
         NavFrame.Navigate(typeof(PlayerPage));
     }
 

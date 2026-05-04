@@ -3,13 +3,14 @@ using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace VideoEnhancer_Player;
 
-internal sealed record LibraryVideoItem(MediaInfo Media, string Subtitle, string? ThumbnailPath)
+internal sealed record LibraryVideoItem(string Title, string Path, string Subtitle, string? ThumbnailPath)
 {
-    public string Title => System.IO.Path.GetFileNameWithoutExtension(Media.Path);
-
-    public string Path => Media.Path;
-
     public BitmapImage? ThumbnailSource => ThumbnailPath is null ? null : new BitmapImage(new Uri(ThumbnailPath));
+}
+
+internal sealed record ExportHistoryState
+{
+    public IReadOnlyList<ExportHistoryItem> Items { get; init; } = [];
 }
 
 internal sealed record ExportHistoryItem(

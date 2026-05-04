@@ -11,7 +11,10 @@ public sealed class FfmpegJobRunner
         IProgress<FfmpegProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        IReadOnlyList<string> command = FfmpegCommandBuilder.BuildCommand(request);
+        IReadOnlyList<string> command = await Task.Run(
+            () => FfmpegCommandBuilder.BuildCommand(request),
+            cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         List<string> arguments = command.Skip(1).ToList();
         arguments.InsertRange(2, ["-nostats", "-progress", "pipe:1"]);
 

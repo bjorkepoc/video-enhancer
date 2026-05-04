@@ -44,16 +44,7 @@ public sealed partial class LibraryPage : Page
             return;
         }
 
-        var settings = await AppServices.SettingsStore.LoadAsync();
-        var media = await AppServices.Metadata.GetMediaInfoAsync(file.Path, settings.FfprobePath);
-        var thumbnail = await CreateThumbnailAsync(file.Path);
-        await AppServices.Library.AddOrUpdateAsync(new MediaLibraryItem
-        {
-            InputPath = file.Path,
-            OutputPath = BuildDefaultOutputPath(file.Path),
-            ThumbnailPath = thumbnail,
-            MediaInfo = media,
-        });
+        await AddPathAsync(file.Path);
         await RefreshAsync();
     }
 
@@ -74,15 +65,7 @@ public sealed partial class LibraryPage : Page
         {
             try
             {
-                var media = await AppServices.Metadata.GetMediaInfoAsync(path, settings.FfprobePath);
-                var thumbnail = await CreateThumbnailAsync(path);
-                await AppServices.Library.AddOrUpdateAsync(new MediaLibraryItem
-                {
-                    InputPath = path,
-                    OutputPath = BuildDefaultOutputPath(path),
-                    ThumbnailPath = thumbnail,
-                    MediaInfo = media,
-                });
+                await AddPathAsync(path, settings);
             }
             catch
             {
@@ -97,6 +80,15 @@ public sealed partial class LibraryPage : Page
     {
         await AppServices.LibraryStore.SaveAsync(new MediaLibraryState());
         await RefreshAsync();
+    }
+
+    private void Open_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: string path })
+        {
+            AppServices.QueueVideoForPlayer(path);
+            AppServices.MainWindow?.NavigateToPlayer();
+        }
     }
 
     private void Reveal_Click(object sender, RoutedEventArgs e)
@@ -116,26 +108,50 @@ public sealed partial class LibraryPage : Page
     {
         var items = await AppServices.Library.GetItemsAsync();
         VideosList.ItemsSource = items
-            .Where(item => item.MediaInfo is not null)
             .Select(item => ToItem(item))
             .ToList();
     }
 
     private static LibraryVideoItem ToItem(MediaLibraryItem item)
     {
-        var media = item.MediaInfo!;
-        var subtitle = $"{media.Width}x{media.Height}  {media.FramesPerSecond:0.##} FPS  {FormatDuration(media.Duration ?? TimeSpan.Zero)}";
-        return new LibraryVideoItem(media, subtitle, item.ThumbnailPath);
+        var title = Path.GetFileNameWithoutExtension(item.InputPath);
+        var subtitle = item.MediaInfo is { } media
+            ? $"{media.Width}x{media.Height}  {media.FramesPerSecond:0.##} FPS  {FormatDuration(media.Duration ?? TimeSpan.Zero)}"
+            : "Metadata unavailable";
+        return new LibraryVideoItem(title, item.InputPath, subtitle, item.ThumbnailPath);
     }
 
-    private static async Task<string?> CreateThumbnailAsync(string path)
+    private static async Task AddPathAsync(string path, AppSettings? settings = null)
+    {
+        settings ??= await AppServices.SettingsStore.LoadAsync();
+        var thumbnail = await CreateThumbnailAsync(path, settings);
+        MediaInfo? media = null;
+        try
+        {
+            media = await AppServices.Metadata.GetMediaInfoAsync(path, settings.FfprobePath);
+        }
+        catch
+        {
+            // Keep the file in the library even when metadata probing fails.
+        }
+
+        await AppServices.Library.AddOrUpdateAsync(new MediaLibraryItem
+        {
+            InputPath = path,
+            OutputPath = BuildDefaultOutputPath(path),
+            ThumbnailPath = thumbnail,
+            MediaInfo = media,
+        });
+    }
+
+    private static async Task<string?> CreateThumbnailAsync(string path, AppSettings? settings = null)
     {
         try
         {
             var thumbnailPath = Path.Combine(
                 AppServices.Paths.ThumbnailDirectory,
                 Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(path))) + ".jpg");
-            var settings = await AppServices.SettingsStore.LoadAsync();
+            settings ??= await AppServices.SettingsStore.LoadAsync();
             await AppServices.Thumbnails.CreateThumbnailAsync(path, thumbnailPath, ffmpegPath: settings.FfmpegPath);
             return thumbnailPath;
         }

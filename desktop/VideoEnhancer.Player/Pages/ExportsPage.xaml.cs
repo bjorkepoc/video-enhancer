@@ -11,8 +11,9 @@ public sealed partial class ExportsPage : Page
         Loaded += ExportsPage_Loaded;
     }
 
-    private void ExportsPage_Loaded(object sender, RoutedEventArgs e)
+    private async void ExportsPage_Loaded(object sender, RoutedEventArgs e)
     {
+        await AppServices.LoadExportHistoryAsync();
         ExportsList.ItemsSource = AppServices.ExportHistory;
     }
 

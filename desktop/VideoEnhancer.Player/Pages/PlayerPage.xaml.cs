@@ -21,6 +21,7 @@ public sealed partial class PlayerPage : Page
     public PlayerPage()
     {
         InitializeComponent();
+        NavigationCacheMode = Microsoft.UI.Xaml.Navigation.NavigationCacheMode.Enabled;
         PlayerElement.SetMediaPlayer(_mediaPlayer);
         _mediaPlayer.PlaybackSession.PlaybackStateChanged += PlaybackSession_PlaybackStateChanged;
 
@@ -37,6 +38,10 @@ public sealed partial class PlayerPage : Page
     {
         var settings = await AppServices.SettingsStore.LoadAsync();
         ApplySettings(settings);
+        if (AppServices.ConsumePendingVideoForPlayer() is { } pendingPath)
+        {
+            await LoadVideoAsync(pendingPath);
+        }
     }
 
     private void PlayerPage_Unloaded(object sender, RoutedEventArgs e)
@@ -47,30 +52,54 @@ public sealed partial class PlayerPage : Page
 
     private async void OpenVideo_Click(object sender, RoutedEventArgs e)
     {
-        var picker = new FileOpenPicker();
-        var hwnd = WindowNative.GetWindowHandle(AppServices.MainWindow);
-        InitializeWithWindow.Initialize(picker, hwnd);
-        picker.FileTypeFilter.Add(".mp4");
-        picker.FileTypeFilter.Add(".mov");
-        picker.FileTypeFilter.Add(".mkv");
-        picker.FileTypeFilter.Add(".avi");
-        picker.FileTypeFilter.Add(".webm");
-        picker.FileTypeFilter.Add(".m4v");
-
-        var file = await picker.PickSingleFileAsync();
-        if (file is null)
+        try
         {
-            return;
-        }
+            var picker = new FileOpenPicker();
+            var hwnd = WindowNative.GetWindowHandle(AppServices.MainWindow);
+            InitializeWithWindow.Initialize(picker, hwnd);
+            picker.FileTypeFilter.Add(".mp4");
+            picker.FileTypeFilter.Add(".mov");
+            picker.FileTypeFilter.Add(".mkv");
+            picker.FileTypeFilter.Add(".avi");
+            picker.FileTypeFilter.Add(".webm");
+            picker.FileTypeFilter.Add(".m4v");
 
-        await LoadVideoAsync(file.Path);
+            var file = await picker.PickSingleFileAsync();
+            if (file is null)
+            {
+                return;
+            }
+
+            await LoadVideoAsync(file.Path);
+        }
+        catch (Exception ex)
+        {
+            ShowError("Open failed", ex.Message);
+        }
     }
 
     private async Task LoadVideoAsync(string path)
     {
         var settings = await AppServices.SettingsStore.LoadAsync();
-        _currentMedia = await AppServices.Metadata.GetMediaInfoAsync(path, settings.FfprobePath);
+        _currentMedia = null;
+        _mediaPlayer.Source = MediaSource.CreateFromUri(new Uri(path));
+        InputPathBox.Text = path;
+        OutputPathBox.Text = BuildDefaultOutputPath(path);
+        TimelineSlider.Maximum = 1;
+        TimeText.Text = "00:00 / 00:00";
+
         var thumbnail = await CreateThumbnailAsync(path, settings.FfmpegPath);
+        try
+        {
+            _currentMedia = await AppServices.Metadata.GetMediaInfoAsync(path, settings.FfprobePath);
+        }
+        catch (Exception ex)
+        {
+            await AddToLibraryAsync(path, thumbnail, null);
+            ShowWarning("Video loaded", $"Playback is ready, but metadata could not be read: {ex.Message}");
+            return;
+        }
+
         await AppServices.Library.AddOrUpdateAsync(new MediaLibraryItem
         {
             InputPath = path,
@@ -78,10 +107,6 @@ public sealed partial class PlayerPage : Page
             ThumbnailPath = thumbnail,
             MediaInfo = _currentMedia,
         });
-
-        _mediaPlayer.Source = MediaSource.CreateFromUri(new Uri(path));
-        InputPathBox.Text = path;
-        OutputPathBox.Text = BuildDefaultOutputPath(path);
         TimelineSlider.Maximum = Math.Max(1, (_currentMedia.Duration ?? TimeSpan.Zero).TotalSeconds);
         ShowInfo("Video loaded", $"{_currentMedia.Width}x{_currentMedia.Height}, {_currentMedia.FramesPerSecond:0.##} FPS");
     }
@@ -187,14 +212,15 @@ public sealed partial class PlayerPage : Page
 
     private async void Enhance_Click(object sender, RoutedEventArgs e)
     {
+        EnhancementRequest? request = null;
         try
         {
-            var request = BuildRequest();
+            request = BuildRequest();
             await SaveCurrentSettingsAsync(request);
             _enhanceCancellation = new CancellationTokenSource();
             EnhanceProgress.Value = 0;
             EnhanceProgress.IsIndeterminate = false;
-            ProgressText.Text = "Starting FFmpeg...";
+            ProgressText.Text = "Preparing FFmpeg...";
             ShowInfo("Enhancing", "FFmpeg job is running locally.");
 
             var progress = new Progress<FfmpegProgress>(item =>
@@ -216,7 +242,7 @@ public sealed partial class PlayerPage : Page
             EnhanceProgress.Value = 100;
             ProgressText.Text = request.OutputPath;
             ShowInfo("Export finished", request.OutputPath);
-            AppServices.ExportHistory.Insert(0, new ExportHistoryItem(
+            await AppServices.AddExportHistoryAsync(new ExportHistoryItem(
                 Path.GetFileName(request.OutputPath),
                 request.InputPath,
                 request.OutputPath,
@@ -226,10 +252,28 @@ public sealed partial class PlayerPage : Page
         catch (OperationCanceledException)
         {
             ShowInfo("Cancelled", "The FFmpeg job was stopped.");
+            if (request is not null)
+            {
+                await AppServices.AddExportHistoryAsync(new ExportHistoryItem(
+                    Path.GetFileName(request.OutputPath),
+                    request.InputPath,
+                    request.OutputPath,
+                    "Cancelled",
+                    DateTimeOffset.Now));
+            }
         }
         catch (Exception ex)
         {
             ShowError("Enhance failed", ex.Message);
+            if (request is not null)
+            {
+                await AppServices.AddExportHistoryAsync(new ExportHistoryItem(
+                    Path.GetFileName(request.OutputPath),
+                    request.InputPath,
+                    request.OutputPath,
+                    $"Failed: {ex.Message}",
+                    DateTimeOffset.Now));
+            }
         }
         finally
         {
@@ -275,7 +319,8 @@ public sealed partial class PlayerPage : Page
 
     private async Task SaveCurrentSettingsAsync(EnhancementRequest request)
     {
-        await AppServices.SettingsStore.SaveAsync(new AppSettings
+        var existing = await AppServices.SettingsStore.LoadAsync();
+        await AppServices.SettingsStore.SaveAsync(existing with
         {
             FfmpegPath = request.FfmpegPath,
             DefaultPreset = request.Preset,
@@ -285,6 +330,7 @@ public sealed partial class PlayerPage : Page
             DefaultVideoCodec = request.VideoCodec,
             DefaultQuality = request.Quality ?? 16,
             ExportDirectory = Path.GetDirectoryName(request.OutputPath) ?? string.Empty,
+            RecentInputs = PrependRecentInput(existing.RecentInputs, request.InputPath),
         });
     }
 
@@ -332,6 +378,25 @@ public sealed partial class PlayerPage : Page
         var settings = AppServices.SettingsStore.LoadAsync().GetAwaiter().GetResult();
         var preferred = string.IsNullOrWhiteSpace(settings.FfmpegPath) ? "ffmpeg" : settings.FfmpegPath;
         return FfmpegLocator.FindFfmpeg(preferred) ?? preferred ?? "ffmpeg";
+    }
+
+    private static async Task AddToLibraryAsync(string path, string? thumbnail, MediaInfo? mediaInfo)
+    {
+        await AppServices.Library.AddOrUpdateAsync(new MediaLibraryItem
+        {
+            InputPath = path,
+            OutputPath = BuildDefaultOutputPath(path),
+            ThumbnailPath = thumbnail,
+            MediaInfo = mediaInfo,
+        });
+    }
+
+    private static IReadOnlyList<string> PrependRecentInput(IReadOnlyList<string> existing, string inputPath)
+    {
+        return new[] { inputPath }
+            .Concat(existing.Where(path => !path.Equals(inputPath, StringComparison.OrdinalIgnoreCase)))
+            .Take(20)
+            .ToArray();
     }
 
     private static async Task<string?> CreateThumbnailAsync(string path, string? ffmpegPath)
@@ -382,6 +447,14 @@ public sealed partial class PlayerPage : Page
     private void ShowError(string title, string message)
     {
         StatusInfo.Severity = InfoBarSeverity.Error;
+        StatusInfo.Title = title;
+        StatusInfo.Message = message.Length > 600 ? message[..600] : message;
+        StatusInfo.IsOpen = true;
+    }
+
+    private void ShowWarning(string title, string message)
+    {
+        StatusInfo.Severity = InfoBarSeverity.Warning;
         StatusInfo.Title = title;
         StatusInfo.Message = message.Length > 600 ? message[..600] : message;
         StatusInfo.IsOpen = true;

@@ -46,6 +46,7 @@
                             <ColumnDefinition Width="96" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <Border
                             Width="88"
@@ -61,6 +62,11 @@
                         </StackPanel>
                         <Button
                             Grid.Column="2"
+                            Click="Open_Click"
+                            Content="Open"
+                            Tag="{x:Bind Path}" />
+                        <Button
+                            Grid.Column="3"
                             Click="Reveal_Click"
                             Content="Reveal"
                             Tag="{x:Bind Path}" />

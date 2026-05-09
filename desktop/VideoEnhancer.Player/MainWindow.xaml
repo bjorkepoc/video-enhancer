@@ -12,11 +12,7 @@
         <MicaBackdrop />
     </Window.SystemBackdrop>
 
-    <Grid x:Name="RootGrid">
-        <Grid.KeyboardAccelerators>
-            <KeyboardAccelerator Key="F11" Invoked="ToggleFullScreenAccelerator_Invoked" />
-            <KeyboardAccelerator Key="Escape" Invoked="ExitFullScreenAccelerator_Invoked" />
-        </Grid.KeyboardAccelerators>
+    <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="48" />
             <RowDefinition Height="*" />

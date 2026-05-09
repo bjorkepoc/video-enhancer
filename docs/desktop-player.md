@@ -8,8 +8,8 @@
 
 - Local UHD video playback through WinUI `MediaPlayerElement`
 - Play, pause, seek, frame forward, and frame-back seek fallback
-- Fullscreen playback from the player toolbar, `F11`, or `Esc` to exit
-- Step-viewing at 1, 2, 5, or 10 frames per second
+- Video fullscreen from the player toolbar, `F11` to toggle, and `Esc` to exit
+- Step-viewing at any custom rate from 1 to 60 frames per second
 - Local library with FFmpeg metadata and thumbnails
 - GUI access to the same enhancement choices as the CLI
 - FFmpeg dry-run preview, progress, cancel, and export history

@@ -8,6 +8,10 @@
     mc:Ignorable="d">
 
     <Grid Padding="16" ColumnSpacing="16">
+        <Grid.KeyboardAccelerators>
+            <KeyboardAccelerator Key="F11" Invoked="ToggleVideoFullScreenAccelerator_Invoked" />
+            <KeyboardAccelerator Key="Escape" Invoked="ExitVideoFullScreenAccelerator_Invoked" />
+        </Grid.KeyboardAccelerators>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*" MinWidth="480" />
             <ColumnDefinition Width="360" />
@@ -23,6 +27,10 @@
             <MediaPlayerElement
                 x:Name="PlayerElement"
                 AreTransportControlsEnabled="False"
+                PointerMoved="PlayerElement_InputWhenFullWindow"
+                PointerPressed="PlayerElement_InputWhenFullWindow"
+                PointerReleased="PlayerElement_InputWhenFullWindow"
+                PointerWheelChanged="PlayerElement_InputWhenFullWindow"
                 Stretch="Uniform" />
 
             <CommandBar Grid.Row="1" DefaultLabelPosition="Right" IsOpen="False">
@@ -58,12 +66,17 @@
                     </AppBarToggleButton.Icon>
                 </AppBarToggleButton>
                 <AppBarElementContainer>
-                    <ComboBox x:Name="StepFpsBox" Width="96" SelectedIndex="0">
-                        <ComboBoxItem Content="1 FPS" Tag="1" />
-                        <ComboBoxItem Content="2 FPS" Tag="2" />
-                        <ComboBoxItem Content="5 FPS" Tag="5" />
-                        <ComboBoxItem Content="10 FPS" Tag="10" />
-                    </ComboBox>
+                    <NumberBox
+                        x:Name="StepFpsBox"
+                        Width="112"
+                        AutomationProperties.Name="Step playback FPS"
+                        LargeChange="10"
+                        Maximum="60"
+                        Minimum="1"
+                        SmallChange="1"
+                        SpinButtonPlacementMode="Compact"
+                        Value="1"
+                        ValueChanged="StepFpsBox_ValueChanged" />
                 </AppBarElementContainer>
             </CommandBar>
 

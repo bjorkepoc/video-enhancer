@@ -1,7 +1,6 @@
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Input;
 using VideoEnhancer_Player.Pages;
 
 // To learn more about WinUI, the WinUI project structure,
@@ -11,8 +10,6 @@ namespace VideoEnhancer_Player;
 
 public sealed partial class MainWindow : Window
 {
-    public event EventHandler<bool>? FullScreenChanged;
-
     public MainWindow()
     {
         InitializeComponent();
@@ -39,44 +36,6 @@ public sealed partial class MainWindow : Window
         NavFrame.Navigate(typeof(PlayerPage));
     }
 
-    public bool IsFullScreen => AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen;
-
-    public bool ToggleFullScreen()
-    {
-        if (IsFullScreen)
-        {
-            ExitFullScreen();
-        }
-        else
-        {
-            EnterFullScreen();
-        }
-
-        return IsFullScreen;
-    }
-
-    public void ExitFullScreen()
-    {
-        if (!IsFullScreen)
-        {
-            return;
-        }
-
-        AppWindow.SetPresenter(AppWindowPresenterKind.Default);
-        FullScreenChanged?.Invoke(this, false);
-    }
-
-    private void EnterFullScreen()
-    {
-        if (IsFullScreen)
-        {
-            return;
-        }
-
-        AppWindow.SetPresenter(AppWindowPresenterKind.FullScreen);
-        FullScreenChanged?.Invoke(this, true);
-    }
-
     private void TitleBar_PaneToggleRequested(TitleBar sender, object args)
     {
         NavView.IsPaneOpen = !NavView.IsPaneOpen;
@@ -85,21 +44,6 @@ public sealed partial class MainWindow : Window
     private void TitleBar_BackRequested(TitleBar sender, object args)
     {
         NavFrame.GoBack();
-    }
-
-    private void ToggleFullScreenAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
-    {
-        ToggleFullScreen();
-        args.Handled = true;
-    }
-
-    private void ExitFullScreenAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
-    {
-        if (IsFullScreen)
-        {
-            ExitFullScreen();
-            args.Handled = true;
-        }
     }
 
     private void NavView_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)

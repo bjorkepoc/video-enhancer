@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Input;
 using Windows.Media.Core;
 using Windows.Media.Playback;
 using Windows.Storage.Pickers;
@@ -39,12 +40,7 @@ public sealed partial class PlayerPage : Page
         _timelineTimer.Start();
         var settings = await AppServices.SettingsStore.LoadAsync();
         ApplySettings(settings);
-        if (AppServices.MainWindow is { } mainWindow)
-        {
-            mainWindow.FullScreenChanged -= MainWindow_FullScreenChanged;
-            mainWindow.FullScreenChanged += MainWindow_FullScreenChanged;
-            UpdateFullScreenButton(mainWindow.IsFullScreen);
-        }
+        UpdateFullScreenButton(PlayerElement.IsFullWindow);
 
         if (AppServices.ConsumePendingVideoForPlayer() is { } pendingPath)
         {
@@ -54,11 +50,6 @@ public sealed partial class PlayerPage : Page
 
     private void PlayerPage_Unloaded(object sender, RoutedEventArgs e)
     {
-        if (AppServices.MainWindow is { } mainWindow)
-        {
-            mainWindow.FullScreenChanged -= MainWindow_FullScreenChanged;
-        }
-
         _stepTimer.Stop();
         _timelineTimer.Stop();
     }
@@ -144,10 +135,7 @@ public sealed partial class PlayerPage : Page
 
     private void FullScreen_Click(object sender, RoutedEventArgs e)
     {
-        if (AppServices.MainWindow is { } mainWindow)
-        {
-            UpdateFullScreenButton(mainWindow.ToggleFullScreen());
-        }
+        ToggleVideoFullScreen();
     }
 
     private void FrameBack_Click(object sender, RoutedEventArgs e)
@@ -164,8 +152,7 @@ public sealed partial class PlayerPage : Page
         if (SlowModeButton.IsChecked == true)
         {
             _mediaPlayer.Pause();
-            var fps = SelectedStepFps();
-            _stepTimer.Interval = TimeSpan.FromSeconds(1.0 / fps);
+            UpdateStepTimerInterval();
             _stepTimer.Start();
         }
         else
@@ -177,6 +164,22 @@ public sealed partial class PlayerPage : Page
     private void StepTimer_Tick(object? sender, object e)
     {
         _mediaPlayer.StepForwardOneFrame();
+    }
+
+    private void PlayerElement_InputWhenFullWindow(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        if (PlayerElement.IsFullWindow)
+        {
+            e.Handled = true;
+        }
+    }
+
+    private void StepFpsBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (SlowModeButton.IsChecked == true)
+        {
+            UpdateStepTimerInterval();
+        }
     }
 
     private void TimelineTimer_Tick(object? sender, object e)
@@ -382,11 +385,14 @@ public sealed partial class PlayerPage : Page
         }
     }
 
-    private int SelectedStepFps()
+    private double SelectedStepFps()
     {
-        return int.TryParse(((ComboBoxItem)StepFpsBox.SelectedItem).Tag?.ToString(), out var fps)
-            ? fps
-            : 1;
+        return Math.Clamp(NumberOrDefault(StepFpsBox, 1), 1, 60);
+    }
+
+    private void UpdateStepTimerInterval()
+    {
+        _stepTimer.Interval = TimeSpan.FromSeconds(1.0 / SelectedStepFps());
     }
 
     private static double NumberOrDefault(NumberBox numberBox, double fallback)
@@ -457,8 +463,29 @@ public sealed partial class PlayerPage : Page
         });
     }
 
-    private void MainWindow_FullScreenChanged(object? sender, bool isFullScreen)
+    private void ToggleVideoFullScreenAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
+        ToggleVideoFullScreen();
+        args.Handled = true;
+    }
+
+    private void ExitVideoFullScreenAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (PlayerElement.IsFullWindow)
+        {
+            SetVideoFullScreen(false);
+            args.Handled = true;
+        }
+    }
+
+    private void ToggleVideoFullScreen()
+    {
+        SetVideoFullScreen(!PlayerElement.IsFullWindow);
+    }
+
+    private void SetVideoFullScreen(bool isFullScreen)
+    {
+        PlayerElement.IsFullWindow = isFullScreen;
         UpdateFullScreenButton(isFullScreen);
     }
 

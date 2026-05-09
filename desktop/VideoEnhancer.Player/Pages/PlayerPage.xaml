@@ -46,6 +46,11 @@
                         <FontIcon Glyph="&#xE76C;" />
                     </AppBarButton.Icon>
                 </AppBarButton>
+                <AppBarButton x:Name="FullScreenButton" Click="FullScreen_Click" Label="Full screen">
+                    <AppBarButton.Icon>
+                        <FontIcon Glyph="&#xE740;" />
+                    </AppBarButton.Icon>
+                </AppBarButton>
                 <AppBarSeparator />
                 <AppBarToggleButton x:Name="SlowModeButton" Click="SlowMode_Click" Label="Step FPS">
                     <AppBarToggleButton.Icon>

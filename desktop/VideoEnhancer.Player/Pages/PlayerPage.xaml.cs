@@ -36,8 +36,16 @@ public sealed partial class PlayerPage : Page
 
     private async void PlayerPage_Loaded(object sender, RoutedEventArgs e)
     {
+        _timelineTimer.Start();
         var settings = await AppServices.SettingsStore.LoadAsync();
         ApplySettings(settings);
+        if (AppServices.MainWindow is { } mainWindow)
+        {
+            mainWindow.FullScreenChanged -= MainWindow_FullScreenChanged;
+            mainWindow.FullScreenChanged += MainWindow_FullScreenChanged;
+            UpdateFullScreenButton(mainWindow.IsFullScreen);
+        }
+
         if (AppServices.ConsumePendingVideoForPlayer() is { } pendingPath)
         {
             await LoadVideoAsync(pendingPath);
@@ -46,6 +54,11 @@ public sealed partial class PlayerPage : Page
 
     private void PlayerPage_Unloaded(object sender, RoutedEventArgs e)
     {
+        if (AppServices.MainWindow is { } mainWindow)
+        {
+            mainWindow.FullScreenChanged -= MainWindow_FullScreenChanged;
+        }
+
         _stepTimer.Stop();
         _timelineTimer.Stop();
     }
@@ -127,6 +140,14 @@ public sealed partial class PlayerPage : Page
     {
         _mediaPlayer.Pause();
         _mediaPlayer.StepForwardOneFrame();
+    }
+
+    private void FullScreen_Click(object sender, RoutedEventArgs e)
+    {
+        if (AppServices.MainWindow is { } mainWindow)
+        {
+            UpdateFullScreenButton(mainWindow.ToggleFullScreen());
+        }
     }
 
     private void FrameBack_Click(object sender, RoutedEventArgs e)
@@ -434,6 +455,17 @@ public sealed partial class PlayerPage : Page
             PlayPauseButton.Label = sender.PlaybackState == MediaPlaybackState.Playing ? "Pause" : "Play";
             PlayPauseButton.Icon = new SymbolIcon(sender.PlaybackState == MediaPlaybackState.Playing ? Symbol.Pause : Symbol.Play);
         });
+    }
+
+    private void MainWindow_FullScreenChanged(object? sender, bool isFullScreen)
+    {
+        UpdateFullScreenButton(isFullScreen);
+    }
+
+    private void UpdateFullScreenButton(bool isFullScreen)
+    {
+        FullScreenButton.Label = isFullScreen ? "Exit full screen" : "Full screen";
+        FullScreenButton.Icon = new FontIcon { Glyph = isFullScreen ? "\uE73F" : "\uE740" };
     }
 
     private void ShowInfo(string title, string message)

@@ -7,33 +7,76 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
-    <Grid Padding="16" ColumnSpacing="16">
-        <Grid.KeyboardAccelerators>
-            <KeyboardAccelerator Key="F11" Invoked="ToggleVideoFullScreenAccelerator_Invoked" />
-            <KeyboardAccelerator Key="Escape" Invoked="ExitVideoFullScreenAccelerator_Invoked" />
-        </Grid.KeyboardAccelerators>
+    <Grid
+        x:Name="PlayerLayout"
+        Padding="16"
+        ColumnSpacing="16">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*" MinWidth="480" />
-            <ColumnDefinition Width="360" />
+            <ColumnDefinition x:Name="EnhancerColumn" Width="360" />
         </Grid.ColumnDefinitions>
 
-        <Grid RowSpacing="12">
+        <Grid x:Name="PlaybackSurface" RowSpacing="12">
             <Grid.RowDefinitions>
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <MediaPlayerElement
-                x:Name="PlayerElement"
-                AreTransportControlsEnabled="False"
-                PointerMoved="PlayerElement_InputWhenFullWindow"
-                PointerPressed="PlayerElement_InputWhenFullWindow"
-                PointerReleased="PlayerElement_InputWhenFullWindow"
-                PointerWheelChanged="PlayerElement_InputWhenFullWindow"
-                Stretch="Uniform" />
+            <Grid
+                x:Name="VideoShell"
+                Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+                SizeChanged="VideoShell_SizeChanged">
+                <MediaPlayerElement
+                    x:Name="PlayerElement"
+                    AreTransportControlsEnabled="False"
+                    PointerMoved="PlayerElement_InputWhenFullWindow"
+                    PointerPressed="PlayerElement_InputWhenFullWindow"
+                    PointerReleased="PlayerElement_InputWhenFullWindow"
+                    PointerWheelChanged="PlayerElement_InputWhenFullWindow"
+                    RenderTransformOrigin="0.5,0.5"
+                    Stretch="Uniform">
+                    <MediaPlayerElement.RenderTransform>
+                        <ScaleTransform x:Name="VideoZoomTransform" />
+                    </MediaPlayerElement.RenderTransform>
+                </MediaPlayerElement>
+                <StackPanel
+                    Margin="12"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Top"
+                    Orientation="Horizontal"
+                    Spacing="4">
+                    <Button
+                        x:Name="ZoomOutButton"
+                        Width="36"
+                        Height="36"
+                        AutomationProperties.Name="Zoom out"
+                        Click="ZoomOut_Click"
+                        ToolTipService.ToolTip="Zoom out">
+                        <FontIcon FontSize="14" Glyph="&#xE71F;" />
+                    </Button>
+                    <Button
+                        x:Name="ResetZoomButton"
+                        Width="36"
+                        Height="36"
+                        AutomationProperties.Name="Reset zoom"
+                        Click="ResetZoom_Click"
+                        ToolTipService.ToolTip="Reset zoom">
+                        <FontIcon FontSize="14" Glyph="&#xE777;" />
+                    </Button>
+                    <Button
+                        x:Name="ZoomInButton"
+                        Width="36"
+                        Height="36"
+                        AutomationProperties.Name="Zoom in"
+                        Click="ZoomIn_Click"
+                        ToolTipService.ToolTip="Zoom in">
+                        <FontIcon FontSize="14" Glyph="&#xE8A3;" />
+                    </Button>
+                </StackPanel>
+            </Grid>
 
-            <CommandBar Grid.Row="1" DefaultLabelPosition="Right" IsOpen="False">
+            <CommandBar Grid.Row="1" DefaultLabelPosition="Collapsed" IsOpen="False">
                 <AppBarButton Click="OpenVideo_Click" Label="Open">
                     <AppBarButton.Icon>
                         <SymbolIcon Symbol="OpenFile" />
@@ -97,7 +140,7 @@
             </Grid>
         </Grid>
 
-        <ScrollViewer Grid.Column="1">
+        <ScrollViewer x:Name="EnhancerPanel" Grid.Column="1">
             <StackPanel Spacing="14">
                 <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Enhance" />
 

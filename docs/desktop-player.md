@@ -8,7 +8,9 @@
 
 - Local UHD video playback through WinUI `MediaPlayerElement`
 - Play, pause, seek, frame forward, and frame-back seek fallback
-- Video fullscreen from the player toolbar, `F11` to toggle, and `Esc` to exit
+- Video-focus fullscreen inside the current app window from the player toolbar,
+  `F11` to toggle, and `Esc` to exit
+- Video zoom in, zoom out, and reset without changing enhancement scale settings
 - Step-viewing at any custom rate from 1 to 60 frames per second
 - Local library with FFmpeg metadata and thumbnails
 - GUI access to the same enhancement choices as the CLI

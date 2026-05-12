@@ -25,8 +25,9 @@ machine; no cloud upload, no account, no subscription.
 - Dry-run mode that prints the exact FFmpeg command before running it
 - Test-covered command construction
 - Native Windows desktop player in `desktop/VideoEnhancer.Player`
-- UHD playback, video fullscreen, frame stepping, custom 1-60 FPS step-viewing, local
-  library, thumbnails, settings, and GUI exports
+- UHD playback, video-focus fullscreen inside the app window, video zoom,
+  frame stepping, custom 1-60 FPS step-viewing, local library, thumbnails,
+  settings, and GUI exports
 
 ## Requirements
 
@@ -108,7 +109,9 @@ Windows. It is a local player and GUI for the same FFmpeg enhancement pipeline.
 What it does:
 
 - Plays local UHD videos with native Windows media playback
-- Enters video fullscreen from the player toolbar, toggles it with `F11`, and exits with `Esc`
+- Expands the video area inside the current app window from the player toolbar,
+  toggles it with `F11`, and exits with `Esc`
+- Zooms the video in, out, and back to 100% without changing export settings
 - Steps one frame forward or backward
 - Watches video slowly at any custom step rate from 1 to 60 frames per second
 - Keeps a local video library in `%LOCALAPPDATA%\VideoEnhancerPlayer`

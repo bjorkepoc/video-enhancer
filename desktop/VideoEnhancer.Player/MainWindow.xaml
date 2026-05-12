@@ -13,8 +13,12 @@
     </Window.SystemBackdrop>
 
     <Grid>
+        <Grid.KeyboardAccelerators>
+            <KeyboardAccelerator Key="F11" Invoked="ToggleVideoFullScreenAccelerator_Invoked" />
+            <KeyboardAccelerator Key="Escape" Invoked="ExitVideoFullScreenAccelerator_Invoked" />
+        </Grid.KeyboardAccelerators>
         <Grid.RowDefinitions>
-            <RowDefinition Height="48" />
+            <RowDefinition x:Name="TitleRow" Height="48" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 

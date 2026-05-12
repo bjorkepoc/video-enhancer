@@ -1,6 +1,7 @@
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using VideoEnhancer_Player.Pages;
 
 // To learn more about WinUI, the WinUI project structure,
@@ -10,6 +11,9 @@ namespace VideoEnhancer_Player;
 
 public sealed partial class MainWindow : Window
 {
+    public event EventHandler? ToggleVideoFullScreenRequested;
+    public event EventHandler? ExitVideoFullScreenRequested;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -44,6 +48,18 @@ public sealed partial class MainWindow : Window
     private void TitleBar_BackRequested(TitleBar sender, object args)
     {
         NavFrame.GoBack();
+    }
+
+    private void ToggleVideoFullScreenAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        ToggleVideoFullScreenRequested?.Invoke(this, EventArgs.Empty);
+        args.Handled = true;
+    }
+
+    private void ExitVideoFullScreenAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        ExitVideoFullScreenRequested?.Invoke(this, EventArgs.Empty);
+        args.Handled = true;
     }
 
     private void NavView_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)

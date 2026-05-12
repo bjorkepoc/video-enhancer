@@ -2,6 +2,8 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
+using Windows.Foundation;
 using Windows.Media.Core;
 using Windows.Media.Playback;
 using Windows.Storage.Pickers;
@@ -18,6 +20,14 @@ public sealed partial class PlayerPage : Page
     private CancellationTokenSource? _enhanceCancellation;
     private MediaInfo? _currentMedia;
     private bool _isTimelineDragging;
+    private bool _isVideoFullScreen;
+    private double _videoZoom = 1.0;
+    private readonly GridLength _normalEnhancerColumnWidth = new(360);
+    private readonly Thickness _normalPlayerLayoutPadding = new(16);
+    private const double NormalPlayerLayoutColumnSpacing = 16;
+    private const double MinVideoZoom = 0.5;
+    private const double MaxVideoZoom = 4.0;
+    private const double VideoZoomStep = 0.25;
 
     public PlayerPage()
     {
@@ -40,7 +50,16 @@ public sealed partial class PlayerPage : Page
         _timelineTimer.Start();
         var settings = await AppServices.SettingsStore.LoadAsync();
         ApplySettings(settings);
-        UpdateFullScreenButton(PlayerElement.IsFullWindow);
+        ApplyVideoZoom();
+        if (AppServices.MainWindow is { } mainWindow)
+        {
+            mainWindow.ToggleVideoFullScreenRequested -= MainWindow_ToggleVideoFullScreenRequested;
+            mainWindow.ExitVideoFullScreenRequested -= MainWindow_ExitVideoFullScreenRequested;
+            mainWindow.ToggleVideoFullScreenRequested += MainWindow_ToggleVideoFullScreenRequested;
+            mainWindow.ExitVideoFullScreenRequested += MainWindow_ExitVideoFullScreenRequested;
+        }
+
+        UpdateFullScreenButton(IsVideoFullScreen);
 
         if (AppServices.ConsumePendingVideoForPlayer() is { } pendingPath)
         {
@@ -50,6 +69,13 @@ public sealed partial class PlayerPage : Page
 
     private void PlayerPage_Unloaded(object sender, RoutedEventArgs e)
     {
+        if (AppServices.MainWindow is { } mainWindow)
+        {
+            mainWindow.ToggleVideoFullScreenRequested -= MainWindow_ToggleVideoFullScreenRequested;
+            mainWindow.ExitVideoFullScreenRequested -= MainWindow_ExitVideoFullScreenRequested;
+        }
+
+        SetVideoFullScreen(false);
         _stepTimer.Stop();
         _timelineTimer.Stop();
     }
@@ -117,6 +143,13 @@ public sealed partial class PlayerPage : Page
 
     private void PlayPause_Click(object sender, RoutedEventArgs e)
     {
+        if (IsStepPlaybackActive)
+        {
+            StopStepPlayback();
+            _mediaPlayer.Play();
+            return;
+        }
+
         if (_mediaPlayer.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
         {
             _mediaPlayer.Pause();
@@ -129,6 +162,7 @@ public sealed partial class PlayerPage : Page
 
     private void FrameForward_Click(object sender, RoutedEventArgs e)
     {
+        StopStepPlayback();
         _mediaPlayer.Pause();
         _mediaPlayer.StepForwardOneFrame();
     }
@@ -138,8 +172,24 @@ public sealed partial class PlayerPage : Page
         ToggleVideoFullScreen();
     }
 
+    private void ZoomOut_Click(object sender, RoutedEventArgs e)
+    {
+        SetVideoZoom(_videoZoom - VideoZoomStep);
+    }
+
+    private void ResetZoom_Click(object sender, RoutedEventArgs e)
+    {
+        SetVideoZoom(1.0);
+    }
+
+    private void ZoomIn_Click(object sender, RoutedEventArgs e)
+    {
+        SetVideoZoom(_videoZoom + VideoZoomStep);
+    }
+
     private void FrameBack_Click(object sender, RoutedEventArgs e)
     {
+        StopStepPlayback();
         _mediaPlayer.Pause();
         var fps = _currentMedia?.FramesPerSecond > 0 ? _currentMedia.FramesPerSecond.Value : 30;
         var back = TimeSpan.FromSeconds(1.0 / fps);
@@ -168,10 +218,18 @@ public sealed partial class PlayerPage : Page
 
     private void PlayerElement_InputWhenFullWindow(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
     {
-        if (PlayerElement.IsFullWindow)
+        if (IsVideoFullScreen)
         {
             e.Handled = true;
         }
+    }
+
+    private void VideoShell_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        VideoShell.Clip = new RectangleGeometry
+        {
+            Rect = new Rect(0, 0, e.NewSize.Width, e.NewSize.Height),
+        };
     }
 
     private void StepFpsBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
@@ -395,6 +453,14 @@ public sealed partial class PlayerPage : Page
         _stepTimer.Interval = TimeSpan.FromSeconds(1.0 / SelectedStepFps());
     }
 
+    private bool IsStepPlaybackActive => _stepTimer.IsEnabled || SlowModeButton.IsChecked == true;
+
+    private void StopStepPlayback()
+    {
+        _stepTimer.Stop();
+        SlowModeButton.IsChecked = false;
+    }
+
     private static double NumberOrDefault(NumberBox numberBox, double fallback)
     {
         return double.IsFinite(numberBox.Value) && numberBox.Value > 0 ? numberBox.Value : fallback;
@@ -463,36 +529,66 @@ public sealed partial class PlayerPage : Page
         });
     }
 
-    private void ToggleVideoFullScreenAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    private void MainWindow_ToggleVideoFullScreenRequested(object? sender, EventArgs args)
     {
         ToggleVideoFullScreen();
-        args.Handled = true;
     }
 
-    private void ExitVideoFullScreenAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    private void MainWindow_ExitVideoFullScreenRequested(object? sender, EventArgs args)
     {
-        if (PlayerElement.IsFullWindow)
+        if (IsVideoFullScreen)
         {
             SetVideoFullScreen(false);
-            args.Handled = true;
         }
     }
 
     private void ToggleVideoFullScreen()
     {
-        SetVideoFullScreen(!PlayerElement.IsFullWindow);
+        SetVideoFullScreen(!IsVideoFullScreen);
     }
 
     private void SetVideoFullScreen(bool isFullScreen)
     {
-        PlayerElement.IsFullWindow = isFullScreen;
+        _isVideoFullScreen = isFullScreen;
+        PlayerElement.IsFullWindow = false;
+        if (isFullScreen)
+        {
+            EnhancerPanel.Visibility = Visibility.Collapsed;
+            EnhancerColumn.Width = new GridLength(0);
+            PlayerLayout.Padding = new Thickness(0);
+            PlayerLayout.ColumnSpacing = 0;
+        }
+        else
+        {
+            EnhancerPanel.Visibility = Visibility.Visible;
+            EnhancerColumn.Width = _normalEnhancerColumnWidth;
+            PlayerLayout.Padding = _normalPlayerLayoutPadding;
+            PlayerLayout.ColumnSpacing = NormalPlayerLayoutColumnSpacing;
+        }
+
         UpdateFullScreenButton(isFullScreen);
     }
+
+    private bool IsVideoFullScreen => _isVideoFullScreen;
 
     private void UpdateFullScreenButton(bool isFullScreen)
     {
         FullScreenButton.Label = isFullScreen ? "Exit full screen" : "Full screen";
         FullScreenButton.Icon = new FontIcon { Glyph = isFullScreen ? "\uE73F" : "\uE740" };
+    }
+
+    private void SetVideoZoom(double zoom)
+    {
+        _videoZoom = Math.Clamp(zoom, MinVideoZoom, MaxVideoZoom);
+        ApplyVideoZoom();
+    }
+
+    private void ApplyVideoZoom()
+    {
+        VideoZoomTransform.ScaleX = _videoZoom;
+        VideoZoomTransform.ScaleY = _videoZoom;
+        ZoomOutButton.IsEnabled = _videoZoom > MinVideoZoom;
+        ZoomInButton.IsEnabled = _videoZoom < MaxVideoZoom;
     }
 
     private void ShowInfo(string title, string message)

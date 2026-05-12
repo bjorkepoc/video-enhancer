@@ -130,6 +130,7 @@
                 </Grid.ColumnDefinitions>
                 <Slider
                     x:Name="TimelineSlider"
+                    AutomationProperties.Name="Timeline"
                     Minimum="0"
                     ValueChanged="TimelineSlider_ValueChanged" />
                 <TextBlock

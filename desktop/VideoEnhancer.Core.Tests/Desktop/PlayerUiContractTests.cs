@@ -15,6 +15,9 @@ public sealed class PlayerUiContractTests
     public void PlayerExposesVideoOnlyFullScreenAndZoomControls()
     {
         string playerXaml = File.ReadAllText(ProjectFile("desktop", "VideoEnhancer.Player", "Pages", "PlayerPage.xaml"));
+        string playerCode = File.ReadAllText(ProjectFile("desktop", "VideoEnhancer.Player", "Pages", "PlayerPage.xaml.cs"));
+        string mainWindowCode = File.ReadAllText(ProjectFile("desktop", "VideoEnhancer.Player", "MainWindow.xaml.cs"));
+        string mainWindowXaml = File.ReadAllText(ProjectFile("desktop", "VideoEnhancer.Player", "MainWindow.xaml"));
 
         Assert.Contains("x:Name=\"PlayerLayout\"", playerXaml);
         Assert.Contains("x:Name=\"EnhancerPanel\"", playerXaml);
@@ -25,6 +28,11 @@ public sealed class PlayerUiContractTests
         Assert.Contains("AutomationProperties.Name=\"Zoom in\"", playerXaml);
         Assert.Contains("AutomationProperties.Name=\"Zoom out\"", playerXaml);
         Assert.Contains("AutomationProperties.Name=\"Reset zoom\"", playerXaml);
+        Assert.Contains("x:Name=\"AppTitleBar\"", mainWindowXaml);
+        Assert.Contains("x:Name=\"NavView\"", mainWindowXaml);
+        Assert.Contains("SetVideoFocusShell", mainWindowCode);
+        Assert.Contains("SetBorderAndTitleBar(!isVideoFocus, !isVideoFocus)", mainWindowCode);
+        Assert.Contains("SetVideoFocusShell(isFullScreen)", playerCode);
     }
 
     private static string ProjectFile(params string[] parts)

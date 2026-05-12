@@ -13,6 +13,8 @@ public sealed partial class MainWindow : Window
 {
     public event EventHandler? ToggleVideoFullScreenRequested;
     public event EventHandler? ExitVideoFullScreenRequested;
+    private readonly GridLength _normalTitleRowHeight = new(48);
+    private bool _isVideoFocusShell;
 
     public MainWindow()
     {
@@ -38,6 +40,37 @@ public sealed partial class MainWindow : Window
         }
 
         NavFrame.Navigate(typeof(PlayerPage));
+    }
+
+    public void SetVideoFocusShell(bool isVideoFocus)
+    {
+        if (_isVideoFocusShell == isVideoFocus)
+        {
+            return;
+        }
+
+        _isVideoFocusShell = isVideoFocus;
+        if (AppWindow.Presenter is OverlappedPresenter presenter)
+        {
+            presenter.SetBorderAndTitleBar(!isVideoFocus, !isVideoFocus);
+        }
+
+        if (isVideoFocus)
+        {
+            TitleRow.Height = new GridLength(0);
+            AppTitleBar.Visibility = Visibility.Collapsed;
+            NavView.IsPaneOpen = false;
+            NavView.IsPaneVisible = false;
+            NavView.IsSettingsVisible = false;
+        }
+        else
+        {
+            TitleRow.Height = _normalTitleRowHeight;
+            AppTitleBar.Visibility = Visibility.Visible;
+            NavView.IsPaneVisible = true;
+            NavView.IsSettingsVisible = true;
+            SetTitleBar(AppTitleBar);
+        }
     }
 
     private void TitleBar_PaneToggleRequested(TitleBar sender, object args)

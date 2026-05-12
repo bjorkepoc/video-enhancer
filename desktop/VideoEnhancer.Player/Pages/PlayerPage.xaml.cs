@@ -551,6 +551,7 @@ public sealed partial class PlayerPage : Page
     {
         _isVideoFullScreen = isFullScreen;
         PlayerElement.IsFullWindow = false;
+        AppServices.MainWindow?.SetVideoFocusShell(isFullScreen);
         if (isFullScreen)
         {
             EnhancerPanel.Visibility = Visibility.Collapsed;

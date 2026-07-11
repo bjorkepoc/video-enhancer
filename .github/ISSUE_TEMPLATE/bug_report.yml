@@ -45,7 +45,7 @@ body:
     id: platform
     attributes:
       label: Platform
-      placeholder: Windows 11, macOS 15, Ubuntu 24.04
+      placeholder: macOS 15, Ubuntu 24.04
     validations:
       required: true
   - type: input
@@ -59,22 +59,6 @@ body:
       label: Encoder path
       options:
         - CPU libx264/libx265
-        - NVIDIA NVENC
-        - AMD AMF
-        - Intel Quick Sync
-        - Not sure
-    validations:
-      required: true
-  - type: dropdown
-    id: filter-backend
-    attributes:
-      label: Filter backend
-      options:
-        - CPU
-        - auto
-        - CUDA
-        - OpenCL
-        - Vulkan
         - Not sure
     validations:
       required: true

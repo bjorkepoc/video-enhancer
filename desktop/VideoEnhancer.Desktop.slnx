@@ -1,5 +1,0 @@
-<Solution>
-  <Project Path="VideoEnhancer.Core.Tests/VideoEnhancer.Core.Tests.csproj" />
-  <Project Path="VideoEnhancer.Core/VideoEnhancer.Core.csproj" />
-  <Project Path="VideoEnhancer.Player/VideoEnhancer.Player.csproj" />
-</Solution>

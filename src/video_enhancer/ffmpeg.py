@@ -10,16 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from .encoders import build_video_encoder_args, get_encoder_profile
-from .filter_backends import (
-    available_filter_names,
-    build_filter_device_args,
-    build_video_filter_chain,
-    preferred_filter_backends,
-    probe_filter_backend,
-    required_filter_names,
-    resolve_filter_backend,
-)
+from .encoders import build_video_encoder_args, validate_video_codec
 from .presets import EnhancementPreset
 
 
@@ -51,8 +42,6 @@ class EnhancementOptions:
     video_codec: str = "libx264"
     encoder_preset: str | None = None
     quality: int | None = None
-    filter_backend: str = "cpu"
-    filter_device: str | None = None
     overwrite: bool = False
     ffmpeg_path: str = "ffmpeg"
 
@@ -88,71 +77,9 @@ def validate_options(options: EnhancementOptions) -> None:
     if options.quality is not None and not 0 <= options.quality <= 51:
         raise ValidationError("--quality must be between 0 and 51.")
     try:
-        get_encoder_profile(options.video_codec)
+        validate_video_codec(options.video_codec)
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
-    try:
-        resolve_filter_backend(
-            options.filter_backend,
-            preset=options.preset,
-            video_codec=options.video_codec,
-        )
-    except ValueError as exc:
-        raise ValidationError(str(exc)) from exc
-
-
-def validate_filter_backend_availability(
-    *,
-    ffmpeg_path: str,
-    requested_backend: str,
-    preset: EnhancementPreset,
-    video_codec: str,
-    filter_device: str | None = None,
-) -> str:
-    """Resolve and validate a filter backend against local FFmpeg runtime support."""
-
-    filters = available_filter_names(ffmpeg_path)
-
-    def missing_filters(backend: str) -> list[str]:
-        return [name for name in required_filter_names(backend, preset) if name not in filters]
-
-    if requested_backend == "auto":
-        for candidate in preferred_filter_backends(video_codec):
-            if missing_filters(candidate):
-                continue
-            probe = probe_filter_backend(
-                ffmpeg_path,
-                candidate,
-                filter_device=filter_device,
-            )
-            if probe.success:
-                return candidate
-        return "cpu"
-
-    resolved_backend = resolve_filter_backend(
-        requested_backend,
-        preset=preset,
-        video_codec=video_codec,
-        available_filters=filters,
-    )
-    missing = missing_filters(resolved_backend)
-    if missing:
-        raise ValidationError(
-            f"Filter backend '{resolved_backend}' requires missing FFmpeg filters: "
-            f"{', '.join(missing)}."
-        )
-    if resolved_backend != "cpu":
-        probe = probe_filter_backend(
-            ffmpeg_path,
-            resolved_backend,
-            filter_device=filter_device,
-        )
-        if not probe.success:
-            raise ValidationError(
-                f"Filter backend '{resolved_backend}' is present but failed a runtime "
-                f"probe: {probe.detail}"
-            )
-    return resolved_backend
 
 
 def resolve_ffmpeg(ffmpeg_path: str = "ffmpeg") -> str:
@@ -186,36 +113,15 @@ def build_ffmpeg_command(
     validate_options(options)
     validate_paths(input_path, output_path, overwrite=options.overwrite)
     ffmpeg = resolve_ffmpeg(options.ffmpeg_path) if check_executable else options.ffmpeg_path
-    filter_backend = (
-        validate_filter_backend_availability(
-            ffmpeg_path=ffmpeg,
-            requested_backend=options.filter_backend,
-            preset=options.preset,
-            video_codec=options.video_codec,
-            filter_device=options.filter_device,
-        )
-        if check_executable
-        else resolve_filter_backend(
-            options.filter_backend,
-            preset=options.preset,
-            video_codec=options.video_codec,
-        )
-    )
-    filters = build_video_filter_chain(
-        options.preset,
+    filters = options.preset.video_filters(
         scale_factor=options.scale_factor,
         fps=options.fps,
         no_upscale=options.no_upscale,
         no_interpolate=options.no_interpolate,
-        filter_backend=filter_backend,
-    )
-    filter_device_args = build_filter_device_args(
-        filter_backend,
-        filter_device=options.filter_device,
     )
     video_encoder_args = build_video_encoder_args(
         codec=options.video_codec,
-        default_software_preset=options.preset.encoder_preset,
+        default_preset=options.preset.encoder_preset,
         quality=options.quality if options.quality is not None else options.preset.crf,
         encoder_preset=options.encoder_preset,
     )
@@ -224,7 +130,6 @@ def build_ffmpeg_command(
         ffmpeg,
         "-hide_banner",
         "-y" if options.overwrite else "-n",
-        *filter_device_args,
         "-i",
         str(input_path),
         "-vf",

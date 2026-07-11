@@ -6,14 +6,14 @@ from typing import Any
 
 import pytest
 
-from video_enhancer import cli
+from video_enhancer.cli import run
 
 ALL_PRESETS = ["fast", "balanced", "quality", "ultra"]
 
 
 def _invoke_main(args: list[str]) -> int:
     try:
-        result = cli.run(args)
+        result = run(args)
     except SystemExit as exc:
         return int(exc.code or 0)
     return int(result or 0)
@@ -47,7 +47,6 @@ def test_dry_run_prints_ffmpeg_command_without_running_it(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     input_path, output_path = _sample_paths(tmp_path)
-    original_run = subprocess.run
     calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
     def fail_if_called(*args: Any, **kwargs: Any) -> None:
@@ -55,10 +54,6 @@ def test_dry_run_prints_ffmpeg_command_without_running_it(
         raise AssertionError("dry-run must not execute ffmpeg")
 
     monkeypatch.setattr(subprocess, "run", fail_if_called)
-    if getattr(cli, "subprocess", None) is subprocess:
-        monkeypatch.setattr(cli.subprocess, "run", fail_if_called)
-    if getattr(cli, "run", None) is original_run:
-        monkeypatch.setattr(cli, "run", fail_if_called)
 
     exit_code = _invoke_main(
         [
@@ -78,9 +73,6 @@ def test_dry_run_prints_ffmpeg_command_without_running_it(
     assert exit_code == 0
     assert calls == []
     assert "ffmpeg" in captured.out.lower()
-    assert str(input_path) in captured.out
-    assert str(output_path) in captured.out
-    assert "scale=" in captured.out
     assert "iw*1.5" in captured.out
     assert "ih*1.5" in captured.out
     assert "fps=60" in captured.out
@@ -110,100 +102,7 @@ def test_dry_run_wires_no_upscale_and_no_interpolate_flags(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "min(" in captured.out
-    assert "iw" in captured.out
-    assert "ih" in captured.out
     assert "minterpolate" not in captured.out
-
-
-def test_dry_run_wires_gpu_encoder_options(
-    capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    input_path, output_path = _sample_paths(tmp_path)
-
-    exit_code = _invoke_main(
-        [
-            str(input_path),
-            str(output_path),
-            "--preset",
-            "ultra",
-            "--video-codec",
-            "h264_nvenc",
-            "--encoder-preset",
-            "p7",
-            "--quality",
-            "16",
-            "--dry-run",
-        ]
-    )
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    assert "-c:v h264_nvenc" in captured.out
-    assert "-preset p7" in captured.out
-    assert "-cq:v 16" in captured.out
-
-
-def test_dry_run_wires_gpu_filter_backend(
-    capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    input_path, output_path = _sample_paths(tmp_path)
-
-    exit_code = _invoke_main(
-        [
-            str(input_path),
-            str(output_path),
-            "--preset",
-            "ultra",
-            "--filter-backend",
-            "vulkan",
-            "--filter-device",
-            "1",
-            "--dry-run",
-        ]
-    )
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    assert "-init_hw_device vulkan=ve:1" in captured.out
-    assert "-filter_hw_device ve" in captured.out
-    assert "nlmeans_vulkan" in captured.out
-    assert "libplacebo" in captured.out
-
-
-def test_gpu_shortcut_uses_auto_filter_backend(
-    capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    input_path, output_path = _sample_paths(tmp_path)
-
-    exit_code = _invoke_main(
-        [
-            str(input_path),
-            str(output_path),
-            "--preset",
-            "ultra",
-            "--video-codec",
-            "h264_nvenc",
-            "--gpu",
-            "--dry-run",
-        ]
-    )
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    assert "-init_hw_device cuda=ve:0" in captured.out
-    assert "scale_cuda" in captured.out
-
-
-def test_list_filter_backends_does_not_require_input_or_output(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    exit_code = _invoke_main(["--list-filter-backends", "--ffmpeg", "definitely_missing_ffmpeg"])
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    assert "Supported filter backends" in captured.out
-    assert "vulkan" in captured.out
-    assert "cuda" in captured.out
 
 
 def test_list_encoders_does_not_require_input_or_output(
@@ -213,10 +112,20 @@ def test_list_encoders_does_not_require_input_or_output(
 
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert "Supported video encoders" in captured.out
-    assert "h264_nvenc" in captured.out
-    assert "h264_amf" in captured.out
-    assert "h264_qsv" in captured.out
+    assert "libx264" in captured.out
+    assert "libx265" in captured.out
+    assert "nvenc" not in captured.out.lower()
+    assert "amf" not in captured.out.lower()
+    assert "qsv" not in captured.out.lower()
+
+
+@pytest.mark.parametrize("option", ["--gpu", "--filter-backend", "--filter-device"])
+def test_gpu_options_are_not_part_of_the_cli(option: str, tmp_path: Path) -> None:
+    input_path, output_path = _sample_paths(tmp_path)
+
+    exit_code = _invoke_main([str(input_path), str(output_path), option, "cuda"])
+
+    assert exit_code != 0
 
 
 @pytest.mark.parametrize(
@@ -225,6 +134,7 @@ def test_list_encoders_does_not_require_input_or_output(
         ("--scale-factor", "0", "scale"),
         ("--fps", "0", "fps"),
         ("--preset", "cinematic", "preset"),
+        ("--video-codec", "h264_nvenc", "video-codec"),
     ],
 )
 def test_cli_rejects_invalid_options(

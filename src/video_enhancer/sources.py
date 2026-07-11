@@ -19,7 +19,10 @@ class SourceError(ValueError):
 
 
 def validate_social_url(raw: str) -> str:
-    parsed = urlsplit(raw.strip())
+    try:
+        parsed = urlsplit(raw.strip())
+    except ValueError as exc:
+        raise SourceError("Use an HTTPS TikTok or Instagram video URL.") from exc
     if parsed.scheme != "https" or not parsed.hostname:
         raise SourceError("Use an HTTPS TikTok or Instagram video URL.")
     host = parsed.hostname.lower().rstrip(".")

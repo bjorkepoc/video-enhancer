@@ -31,6 +31,11 @@ def test_validate_social_url_allows_only_supported_https_hosts() -> None:
             validate_social_url(url)
 
 
+def test_validate_social_url_rejects_malformed_ipv6() -> None:
+    with pytest.raises(SourceError, match="Use an HTTPS TikTok or Instagram video URL"):
+        validate_social_url("https://[::1")
+
+
 def test_browser_args_supports_named_browser_sessions() -> None:
     assert browser_args("") == []
     assert browser_args("chrome") == ["--cookies-from-browser", "chrome"]
@@ -47,6 +52,26 @@ def test_group_formats_collapses_cdn_mirrors() -> None:
     ])
     assert grouped[0]["format_ids"] == ["1080-0", "1080-1"]
     assert grouped[0]["mirrors"] == 2
+
+
+def test_group_formats_sorts_by_resolution_then_fps_then_bitrate() -> None:
+    grouped = group_formats([
+        {"format_id": "low-resolution", "width": 720, "height": 1280,
+         "fps": 120, "tbr": 999, "vcodec": "h264", "acodec": "aac", "ext": "mp4"},
+        {"format_id": "high-resolution-low-fps", "width": 1080, "height": 1920,
+         "fps": 30, "tbr": 100, "vcodec": "h264", "acodec": "aac", "ext": "mp4"},
+        {"format_id": "high-resolution-high-fps-low-bitrate", "width": 1080,
+         "height": 1920, "fps": 60, "tbr": 100, "vcodec": "h264", "acodec": "aac", "ext": "mp4"},
+        {"format_id": "high-resolution-high-fps-high-bitrate", "width": 1080,
+         "height": 1920, "fps": 60, "tbr": 200, "vcodec": "h264", "acodec": "aac", "ext": "mp4"},
+    ])
+
+    assert [group["format_ids"][0] for group in grouped] == [
+        "high-resolution-high-fps-high-bitrate",
+        "high-resolution-high-fps-low-bitrate",
+        "high-resolution-low-fps",
+        "low-resolution",
+    ]
 
 
 def test_inspect_source_uses_dump_single_json(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -81,7 +81,10 @@ def inspect_source(
         *browser_args(browser),
         normalized_url,
     ]
-    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        raise SourceError(f"Could not start yt-dlp: {exc}") from exc
     if completed.returncode:
         detail = completed.stderr.strip() or "yt-dlp could not inspect the source."
         raise SourceError(detail)
@@ -101,7 +104,6 @@ def inspect_source(
         "title": payload.get("title"),
         "uploader": payload.get("uploader"),
         "duration": payload.get("duration"),
-        "thumbnail": payload.get("thumbnail"),
         "webpage_url": payload.get("webpage_url", normalized_url),
         "formats": group_formats(raw_formats),
     }

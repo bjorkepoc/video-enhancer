@@ -85,3 +85,28 @@ def test_inspect_source_never_returns_signed_urls(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
     result = inspect_source("https://www.tiktok.com/@a/video/123")
     assert "signed.example" not in json.dumps(result)
+
+
+def test_inspect_source_omits_signed_thumbnail(monkeypatch: pytest.MonkeyPatch) -> None:
+    completed = completed_json({
+        "id": "123",
+        "thumbnail": "https://signed-thumbnail.example/thumb?token=secret",
+        "formats": [],
+    })
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+    result = inspect_source("https://www.tiktok.com/@a/video/123")
+
+    assert "signed-thumbnail.example" not in json.dumps(result)
+    assert "thumbnail" not in result
+
+
+def test_inspect_source_reports_yt_dlp_startup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_to_start(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("yt-dlp")
+
+    monkeypatch.setattr(subprocess, "run", fail_to_start)
+
+    with pytest.raises(SourceError, match="Could not start yt-dlp"):
+        inspect_source("https://www.tiktok.com/@a/video/123")

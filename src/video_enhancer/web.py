@@ -27,11 +27,22 @@ from .ffmpeg import (
     resolve_ffmpeg,
 )
 from .presets import available_presets, get_preset
+from .sources import SourceError, download_source, inspect_source
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_WORK_DIR = Path("outputs/web")
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".m4v", ".webm", ".avi"}
+MAX_JSON_BODY = 20_000
+MODES = {
+    "60": {"fps": ["60"], "scale": ["1"], "preset": ["quality"]},
+    "90": {"fps": ["90"], "scale": ["1"], "preset": ["ultra"]},
+    "upscale": {
+        "no_interpolate": ["1"],
+        "scale": ["2"],
+        "preset": ["quality"],
+    },
+}
 
 
 HTML = """<!doctype html>
@@ -438,7 +449,23 @@ class Job:
     error: str = ""
 
 
+@dataclass
+class SourceJob:
+    id: str
+    url: str
+    info: dict[str, Any]
+    directory: Path
+    status: str = "inspected"
+    original_path: Path | None = None
+    media: dict[str, Any] = field(default_factory=dict)
+    format_id: str = ""
+    operation: str = ""
+    error: str = ""
+    logs: list[str] = field(default_factory=list)
+
+
 JOBS: dict[str, Job] = {}
+SOURCES: dict[str, SourceJob] = {}
 LOCK = threading.Lock()
 
 
@@ -538,6 +565,99 @@ def job_payload(job: Job) -> dict[str, Any]:
     }
 
 
+def _safe_source_info(info: dict[str, Any]) -> dict[str, Any]:
+    formats = []
+    for source_format in info.get("formats", []):
+        formats.append(
+            {
+                key: source_format.get(key)
+                for key in (
+                    "width",
+                    "height",
+                    "fps",
+                    "tbr",
+                    "vcodec",
+                    "acodec",
+                    "ext",
+                    "format_ids",
+                    "mirrors",
+                )
+            }
+        )
+    return {
+        key: info.get(key)
+        for key in ("id", "platform", "title", "uploader", "duration", "webpage_url")
+    } | {"formats": formats}
+
+
+def source_payload(job: SourceJob) -> dict[str, Any]:
+    payload = {
+        "id": job.id,
+        "status": job.status,
+        "error": job.error,
+        "logs": job.logs,
+        "info": _safe_source_info(job.info),
+        "media": job.media,
+        "format_id": job.format_id,
+        "operation": job.operation,
+    }
+    if job.original_path:
+        payload.update(
+            {
+                "original_name": job.original_path.name,
+                "original_url": f"/files/sources/{job.id}/original",
+            }
+        )
+    return payload
+
+
+def create_enhancement_job(
+    input_path: Path,
+    original_name: str,
+    params: dict[str, list[str]],
+    work_dir: Path,
+) -> Job:
+    original = safe_filename(original_name)
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = work_dir / job_id
+    job_dir.mkdir(parents=True, exist_ok=False)
+    output_name = safe_filename(
+        params.get("output", [f"{Path(original).stem}-enhanced.mp4"])[0],
+        default="enhanced.mp4",
+    )
+    if Path(output_name).suffix.lower() not in {".mp4", ".mkv", ".mov", ".m4v"}:
+        output_name = f"{Path(output_name).stem}.mp4"
+    output_path = job_dir / output_name
+    command = build_ffmpeg_command(input_path, output_path, build_options(params))
+    job = Job(job_id, input_path, output_path, command)
+    job.logs.append(f"Loaded {original}.")
+    with LOCK:
+        JOBS[job_id] = job
+    threading.Thread(target=run_job, args=(job,), daemon=True).start()
+    return job
+
+
+def run_source_download(job: SourceJob, browser: str, format_id: str) -> None:
+    with LOCK:
+        job.status = "downloading"
+        job.logs.append("Original source download started.")
+    try:
+        result = download_source(job.url, job.directory, browser, format_id)
+    except (OSError, SourceError) as exc:
+        with LOCK:
+            job.status = "error"
+            job.error = str(exc)
+            job.logs.append(str(exc))
+        return
+    with LOCK:
+        job.original_path = result["path"]
+        job.media = result["media"]
+        job.format_id = result["format_id"]
+        job.operation = result["operation"]
+        job.status = "done"
+        job.logs.append("Original source download finished.")
+
+
 class Handler(BaseHTTPRequestHandler):
     work_dir = DEFAULT_WORK_DIR
 
@@ -551,6 +671,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("content-length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def read_json(self) -> dict[str, Any]:
+        try:
+            length = int(self.headers.get("content-length", "0"))
+        except ValueError as exc:
+            raise ValueError("Invalid content length.") from exc
+        if length > MAX_JSON_BODY:
+            raise ValueError("JSON request body is too large.")
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError as exc:
+            raise ValueError("Invalid JSON request body.") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("JSON request body must be an object.")
+        return payload
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -573,6 +708,16 @@ class Handler(BaseHTTPRequestHandler):
                 {"presets": available_presets(), "codecs": supported_video_codecs(), "ffmpeg": ffmpeg},
             )
             return
+        if parsed.path.startswith("/api/sources/"):
+            source_id = parsed.path.rsplit("/", 1)[-1]
+            with LOCK:
+                source = SOURCES.get(source_id)
+                payload = source_payload(source) if source else None
+            if not payload:
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": "Source job not found"})
+                return
+            self.send_json(HTTPStatus.OK, payload)
+            return
         if parsed.path.startswith("/api/jobs/"):
             job_id = parsed.path.rsplit("/", 1)[-1]
             with LOCK:
@@ -583,6 +728,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(HTTPStatus.OK, payload)
             return
+        if parsed.path.startswith("/files/sources/"):
+            self.serve_source_file(parsed.path)
+            return
         if parsed.path.startswith("/files/"):
             self.serve_job_file(parsed.path)
             return
@@ -590,16 +738,77 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        try:
+            if parsed.path == "/api/sources/inspect":
+                self.send_json(HTTPStatus.OK, self.inspect_source_job(self.read_json()))
+                return
+            if parsed.path.startswith("/api/sources/"):
+                self.handle_source_action(parsed.path, self.read_json())
+                return
+            if parsed.path == "/api/jobs":
+                payload = self.create_job(parse_qs(parsed.query))
+                self.send_json(HTTPStatus.OK, payload)
+                return
+        except (OSError, SourceError, ValueError, VideoEnhancerError) as exc:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
         if parsed.path != "/api/jobs":
             self.send_error(HTTPStatus.NOT_FOUND.value)
             return
 
-        try:
-            payload = self.create_job(parse_qs(parsed.query))
-        except (OSError, ValueError, VideoEnhancerError) as exc:
-            self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+    def inspect_source_job(self, body: dict[str, Any]) -> dict[str, Any]:
+        url = str(body.get("url", "")).strip()
+        browser = str(body.get("browser", "")).strip()
+        info = inspect_source(url, browser)
+        source_id = uuid.uuid4().hex[:12]
+        directory = self.work_dir / f"source-{source_id}"
+        source = SourceJob(source_id, url, info, directory)
+        with LOCK:
+            SOURCES[source_id] = source
+        return source_payload(source)
+
+    def handle_source_action(self, request_path: str, body: dict[str, Any]) -> None:
+        parts = request_path.strip("/").split("/")
+        if len(parts) != 4 or parts[:2] != ["api", "sources"]:
+            self.send_error(HTTPStatus.NOT_FOUND.value)
             return
-        self.send_json(HTTPStatus.OK, payload)
+        source_id, action = parts[2], parts[3]
+        with LOCK:
+            source = SOURCES.get(source_id)
+        if not source:
+            self.send_json(HTTPStatus.NOT_FOUND, {"error": "Source job not found"})
+            return
+        if action == "download":
+            if source.status == "downloading":
+                raise ValueError("Source download is already running.")
+            browser = str(body.get("browser", "")).strip()
+            format_id = str(body.get("format_id", "")).strip()
+            source.status = "queued"
+            threading.Thread(
+                target=run_source_download,
+                args=(source, browser, format_id),
+                daemon=True,
+            ).start()
+            self.send_json(HTTPStatus.ACCEPTED, source_payload(source))
+            return
+        if action == "enhance":
+            if source.status != "done" or not source.original_path:
+                raise ValueError("Download the original source before enhancing it.")
+            mode = str(body.get("mode", "")).strip()
+            if mode not in MODES:
+                raise ValueError("Enhancement mode must be 60, 90, or upscale.")
+            params = {key: list(value) for key, value in MODES[mode].items()}
+            suffix = {"60": "60fps", "90": "90fps", "upscale": "2x"}[mode]
+            params["output"] = [f"{source.original_path.stem}-{suffix}.mp4"]
+            job = create_enhancement_job(
+                source.original_path,
+                source.original_path.name,
+                params,
+                self.work_dir,
+            )
+            self.send_json(HTTPStatus.ACCEPTED, job_payload(job))
+            return
+        self.send_error(HTTPStatus.NOT_FOUND.value)
 
     def create_job(self, params: dict[str, list[str]]) -> dict[str, Any]:
         length = int(self.headers.get("content-length", "0"))
@@ -624,21 +833,25 @@ class Handler(BaseHTTPRequestHandler):
                 file.write(chunk)
                 remaining -= len(chunk)
 
-        output_name = safe_filename(
-            params.get("output", [f"{Path(original).stem}-enhanced.mp4"])[0],
-            default="enhanced.mp4",
-        )
-        if Path(output_name).suffix.lower() not in {".mp4", ".mkv", ".mov", ".m4v"}:
-            output_name = f"{Path(output_name).stem}.mp4"
-        output_path = job_dir / output_name
-        command = build_ffmpeg_command(input_path, output_path, build_options(params))
-        job = Job(job_id, input_path, output_path, command)
-        job.logs.append(f"Loaded {original}.")
+        return job_payload(create_enhancement_job(input_path, original, params, self.work_dir))
+
+    def serve_source_file(self, request_path: str) -> None:
+        parts = request_path.strip("/").split("/")
+        if len(parts) != 4 or parts[:2] != ["files", "sources"] or parts[3] != "original":
+            self.send_error(HTTPStatus.NOT_FOUND.value)
+            return
         with LOCK:
-            JOBS[job_id] = job
-        thread = threading.Thread(target=run_job, args=(job,), daemon=True)
-        thread.start()
-        return job_payload(job)
+            source = SOURCES.get(parts[2])
+            file = source.original_path if source else None
+        root = self.work_dir.resolve()
+        if (
+            not file
+            or not file.is_file()
+            or not file.resolve().is_relative_to(root)
+        ):
+            self.send_error(HTTPStatus.NOT_FOUND.value)
+            return
+        self.serve_video(file)
 
     def serve_job_file(self, request_path: str) -> None:
         _, _, job_id, kind = request_path.split("/", 3)
@@ -648,8 +861,14 @@ class Handler(BaseHTTPRequestHandler):
         if not file or not file.exists():
             self.send_error(HTTPStatus.NOT_FOUND.value)
             return
+        self.serve_video(file)
+
+    def serve_video(self, file: Path) -> None:
         self.send_response(HTTPStatus.OK.value)
-        self.send_header("content-type", "video/mp4")
+        self.send_header(
+            "content-type",
+            "video/mp4" if file.suffix.lower() in {".mp4", ".m4v"} else "application/octet-stream",
+        )
         self.send_header("content-length", str(file.stat().st_size))
         self.send_header("content-disposition", f'inline; filename="{file.name}"')
         self.end_headers()

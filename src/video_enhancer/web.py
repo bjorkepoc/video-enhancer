@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -27,7 +28,16 @@ from .ffmpeg import (
     resolve_ffmpeg,
 )
 from .presets import available_presets, get_preset
-from .sources import SourceError, download_source, inspect_source
+from .sources import (
+    SourceError,
+    compare_hashes,
+    download_source,
+    extract_keyframes,
+    inspect_source,
+    sample_frame_hashes,
+    search_links,
+    validate_social_url,
+)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -251,6 +261,34 @@ HTML = """<!doctype html>
     .media-meta div { min-width: 0; padding: 10px; background: #fff; }
     .media-meta dt { color: var(--muted); font-size: 11px; font-weight: 700; }
     .media-meta dd { margin-top: 3px; overflow-wrap: anywhere; font-size: 13px; font-weight: 800; }
+    .discovery {
+      margin-top: 18px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+    }
+    .search-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .keyframe-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .keyframe-grid a { min-width: 0; }
+    .keyframe-grid img {
+      display: block;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      object-fit: cover;
+      background: var(--log);
+    }
+    .comparison-copy { margin-top: 6px; }
     video {
       width: 100%;
       aspect-ratio: 16 / 9;
@@ -367,6 +405,27 @@ HTML = """<!doctype html>
               <button class="secondary-button" id="download-upscale" type="button" disabled>Lag 2x oppskalering</button>
             </div>
             <dl class="media-meta" id="source-media" hidden></dl>
+            <div class="discovery">
+              <h3>Finn alternative kilder</h3>
+              <div class="search-grid">
+                <a class="secondary" id="search-web" href="#" target="_blank" rel="noreferrer">Websøk</a>
+                <a class="secondary" id="search-tiktok" href="#" target="_blank" rel="noreferrer">TikTok-søk</a>
+                <a class="secondary" id="search-instagram" href="#" target="_blank" rel="noreferrer">Instagram-søk</a>
+                <a class="secondary" id="search-google-lens" href="#" target="_blank" rel="noreferrer">Google Lens</a>
+                <a class="secondary" id="search-tineye" href="#" target="_blank" rel="noreferrer">TinEye</a>
+              </div>
+              <div class="keyframe-grid" id="keyframes" hidden></div>
+              <label style="margin-top:14px">Kandidat-link
+                <input id="candidate-url" type="url" inputmode="url" autocomplete="url" placeholder="https://..." disabled>
+              </label>
+              <button class="secondary-button" id="compare-candidate" type="button" style="margin-top:10px" disabled>Sammenlign kandidat</button>
+              <div class="result" id="comparison-result" style="margin-top:10px" hidden>
+                <div>
+                  <strong id="comparison-title"></strong>
+                  <p class="hint comparison-copy" id="comparison-detail"></p>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -530,6 +589,13 @@ HTML = """<!doctype html>
       setDerivedDisabled(true);
       $("source-media").hidden = true;
       $("source-download-result").hidden = true;
+      $("keyframes").hidden = true;
+      $("candidate-url").disabled = true;
+      $("compare-candidate").disabled = true;
+      $("comparison-result").hidden = true;
+      Object.entries(source.searches).forEach(([name, url]) => {
+        $(`search-${name.replace("google_lens", "google-lens")}`).href = url;
+      });
       setLog([`${source.info.formats.length} kildevarianter funnet.`]);
     }
 
@@ -598,6 +664,20 @@ HTML = """<!doctype html>
       $("source-media").hidden = false;
     }
 
+    function renderKeyframes(urls) {
+      $("keyframes").replaceChildren(...urls.map((url, index) => {
+        const link = document.createElement("a");
+        const image = document.createElement("img");
+        link.href = url;
+        link.download = `keyframe-${index + 1}.jpg`;
+        image.src = url;
+        image.alt = `Nøkkelbilde ${index + 1}`;
+        link.append(image);
+        return link;
+      }));
+      $("keyframes").hidden = urls.length === 0;
+    }
+
     async function watchSource(id) {
       clearInterval(state.poll);
       const tick = async () => {
@@ -617,8 +697,11 @@ HTML = """<!doctype html>
           $("source-video").load();
           $("input-meta").textContent = `${mediaValue(source.media.width)}x${mediaValue(source.media.height)} · ${mediaValue(source.media.fps, " FPS")}`;
           renderMedia(source.media);
+          renderKeyframes(source.keyframes);
           $("download-original").disabled = false;
           setDerivedDisabled(false);
+          $("candidate-url").disabled = false;
+          $("compare-candidate").disabled = false;
         } else if (source.status === "error") {
           clearInterval(state.poll);
           $("source-error").textContent = source.error;
@@ -634,6 +717,7 @@ HTML = """<!doctype html>
       setLog([error.message]);
       $("start").disabled = false;
       $("download-original").disabled = false;
+      if (!$("candidate-url").disabled) $("compare-candidate").disabled = false;
     }
 
     async function startSourceEnhancement(mode) {
@@ -654,6 +738,65 @@ HTML = """<!doctype html>
     $("download-60").addEventListener("click", () => startSourceEnhancement("60"));
     $("download-90").addEventListener("click", () => startSourceEnhancement("90"));
     $("download-upscale").addEventListener("click", () => startSourceEnhancement("upscale"));
+
+    $("compare-candidate").addEventListener("click", async () => {
+      const url = $("candidate-url").value.trim();
+      $("source-error").textContent = "";
+      if (!isSupportedSourceUrl(url)) {
+        $("source-error").textContent = "Bruk en gyldig HTTPS-link fra TikTok eller Instagram.";
+        return;
+      }
+      $("compare-candidate").disabled = true;
+      $("comparison-result").hidden = true;
+      setLog(["Starter lokal kandidat-sammenligning..."]);
+      try {
+        const source = await postJSON(`/api/sources/${state.sourceId}/compare`, {
+          url,
+          browser: $("browser-session").value,
+        });
+        watchComparison(source.id).catch(showPollingError);
+      } catch (error) {
+        $("compare-candidate").disabled = false;
+        setLog([error.message]);
+      }
+    });
+
+    function resolutionLabel(value) {
+      return value && value[0] && value[1] ? `${value[0]}x${value[1]}` : "ukjent";
+    }
+
+    function renderComparison(comparison) {
+      const labels = {
+        likely_match: "Sannsynlig samme video",
+        uncertain: "Usikkert treff",
+        different: "Trolig forskjellig video",
+      };
+      $("comparison-title").textContent = `${labels[comparison.result] || "Ukjent"} · ${Math.round(comparison.score * 100)}%`;
+      const duration = comparison.duration_difference === null ? "ukjent" : `${comparison.duration_difference}s`;
+      $("comparison-detail").textContent = `Rådgivende resultat · varighetsforskjell ${duration} · original ${resolutionLabel(comparison.source_resolution)} · kandidat ${resolutionLabel(comparison.candidate_resolution)}`;
+      $("comparison-result").hidden = false;
+    }
+
+    async function watchComparison(id) {
+      clearInterval(state.poll);
+      const tick = async () => {
+        const response = await fetch(`/api/sources/${id}`);
+        const source = await response.json();
+        if (!response.ok) throw new Error(source.error || "Kildejobben ble ikke funnet");
+        setLog(source.logs);
+        if (source.comparison_status === "done") {
+          clearInterval(state.poll);
+          renderComparison(source.comparison);
+          $("compare-candidate").disabled = false;
+        } else if (source.comparison_status === "error") {
+          clearInterval(state.poll);
+          $("source-error").textContent = source.comparison_error;
+          $("compare-candidate").disabled = false;
+        }
+      };
+      state.poll = setInterval(() => tick().catch(showPollingError), 1000);
+      await tick();
+    }
 
     $("file").addEventListener("change", () => {
       const file = $("file").files[0];
@@ -769,6 +912,10 @@ class SourceJob:
     operation: str = ""
     error: str = ""
     logs: list[str] = field(default_factory=list)
+    keyframes: list[Path] = field(default_factory=list)
+    comparison_status: str = "idle"
+    comparison: dict[str, Any] = field(default_factory=dict)
+    comparison_error: str = ""
 
 
 JOBS: dict[str, Job] = {}
@@ -907,6 +1054,14 @@ def source_payload(job: SourceJob) -> dict[str, Any]:
         "media": job.media,
         "format_id": job.format_id,
         "operation": job.operation,
+        "searches": search_links(job.info),
+        "keyframes": [
+            f"/files/sources/{job.id}/frames/{index}"
+            for index, _ in enumerate(job.keyframes, start=1)
+        ],
+        "comparison_status": job.comparison_status,
+        "comparison": job.comparison,
+        "comparison_error": job.comparison_error,
     }
     if job.original_path:
         payload.update(
@@ -956,13 +1111,99 @@ def run_source_download(job: SourceJob, browser: str, format_id: str) -> None:
             job.error = str(exc)
             job.logs.append(str(exc))
         return
+    keyframes: list[Path] = []
+    if result["media"].get("duration"):
+        try:
+            keyframes = extract_keyframes(result["path"], job.directory / "frames")
+        except SourceError as exc:
+            with LOCK:
+                job.logs.append(f"Keyframes unavailable: {exc}")
     with LOCK:
         job.original_path = result["path"]
         job.media = result["media"]
         job.format_id = result["format_id"]
         job.operation = result["operation"]
+        job.keyframes = keyframes
         job.status = "done"
         job.logs.append("Original source download finished.")
+
+
+def _lowest_candidate_format(info: dict[str, Any]) -> str:
+    eligible = [
+        source_format
+        for source_format in info.get("formats", [])
+        if isinstance(source_format.get("height"), (int, float))
+        and source_format["height"] >= 360
+        and source_format.get("format_ids")
+    ]
+    if not eligible:
+        raise SourceError("The candidate has no comparable video variant at 360p or higher.")
+    selected = min(
+        eligible,
+        key=lambda source_format: (
+            (source_format.get("width") or 0) * (source_format.get("height") or 0),
+            source_format.get("tbr") or 0,
+        ),
+    )
+    return str(selected["format_ids"][0])
+
+
+def _difference(left: Any, right: Any) -> float | None:
+    if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+        return None
+    return round(abs(float(left) - float(right)), 3)
+
+
+def compare_candidate(job: SourceJob, url: str, browser: str = "") -> dict[str, Any]:
+    if not job.original_path:
+        raise SourceError("Download the original source before comparing it.")
+    info = inspect_source(url, browser)
+    format_id = _lowest_candidate_format(info)
+    job.directory.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="candidate-", dir=job.directory) as temporary:
+        candidate = download_source(url, Path(temporary), browser, format_id)
+        comparison = compare_hashes(
+            sample_frame_hashes(job.original_path),
+            sample_frame_hashes(candidate["path"]),
+        )
+    candidate_media = candidate["media"]
+    comparison.update(
+        {
+            "duration_difference": _difference(
+                job.media.get("duration"), candidate_media.get("duration")
+            ),
+            "source_resolution": [job.media.get("width"), job.media.get("height")],
+            "candidate_resolution": [
+                candidate_media.get("width"),
+                candidate_media.get("height"),
+            ],
+            "candidate": {
+                key: info.get(key)
+                for key in ("id", "platform", "title", "uploader", "webpage_url")
+            },
+            "candidate_format_id": format_id,
+        }
+    )
+    return comparison
+
+
+def run_source_comparison(job: SourceJob, url: str, browser: str) -> None:
+    with LOCK:
+        job.comparison_status = "running"
+        job.comparison_error = ""
+        job.logs.append("Candidate comparison started.")
+    try:
+        comparison = compare_candidate(job, url, browser)
+    except (OSError, SourceError) as exc:
+        with LOCK:
+            job.comparison_status = "error"
+            job.comparison_error = str(exc)
+            job.logs.append(str(exc))
+        return
+    with LOCK:
+        job.comparison = comparison
+        job.comparison_status = "done"
+        job.logs.append("Candidate comparison finished.")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1117,6 +1358,25 @@ class Handler(BaseHTTPRequestHandler):
             )
             self.send_json(HTTPStatus.ACCEPTED, job_payload(job))
             return
+        if action == "compare":
+            if source.status != "done" or not source.original_path:
+                raise ValueError("Download the original source before comparing it.")
+            if source.comparison_status in {"queued", "running"}:
+                raise ValueError("A candidate comparison is already running.")
+            url = str(body.get("url", "")).strip()
+            browser = str(body.get("browser", "")).strip()
+            validate_social_url(url)
+            with LOCK:
+                source.comparison_status = "queued"
+                source.comparison = {}
+                source.comparison_error = ""
+            threading.Thread(
+                target=run_source_comparison,
+                args=(source, url, browser),
+                daemon=True,
+            ).start()
+            self.send_json(HTTPStatus.ACCEPTED, source_payload(source))
+            return
         self.send_error(HTTPStatus.NOT_FOUND.value)
 
     def create_job(self, params: dict[str, list[str]]) -> dict[str, Any]:
@@ -1146,12 +1406,29 @@ class Handler(BaseHTTPRequestHandler):
 
     def serve_source_file(self, request_path: str) -> None:
         parts = request_path.strip("/").split("/")
-        if len(parts) != 4 or parts[:2] != ["files", "sources"] or parts[3] != "original":
+        if len(parts) < 3 or parts[:2] != ["files", "sources"]:
             self.send_error(HTTPStatus.NOT_FOUND.value)
             return
         with LOCK:
             source = SOURCES.get(parts[2])
-            file = source.original_path if source else None
+            if len(parts) == 4 and parts[3] == "original":
+                file = source.original_path if source else None
+                content_type = (
+                    "video/mp4"
+                    if file and file.suffix.lower() in {".mp4", ".m4v"}
+                    else "application/octet-stream"
+                )
+            elif len(parts) == 5 and parts[3] == "frames" and parts[4].isdigit():
+                index = int(parts[4]) - 1
+                file = (
+                    source.keyframes[index]
+                    if source and 0 <= index < len(source.keyframes)
+                    else None
+                )
+                content_type = "image/jpeg"
+            else:
+                file = None
+                content_type = "application/octet-stream"
         root = self.work_dir.resolve()
         if (
             not file
@@ -1160,7 +1437,7 @@ class Handler(BaseHTTPRequestHandler):
         ):
             self.send_error(HTTPStatus.NOT_FOUND.value)
             return
-        self.serve_video(file)
+        self.serve_file(file, content_type)
 
     def serve_job_file(self, request_path: str) -> None:
         _, _, job_id, kind = request_path.split("/", 3)
@@ -1170,14 +1447,16 @@ class Handler(BaseHTTPRequestHandler):
         if not file or not file.exists():
             self.send_error(HTTPStatus.NOT_FOUND.value)
             return
-        self.serve_video(file)
-
-    def serve_video(self, file: Path) -> None:
-        self.send_response(HTTPStatus.OK.value)
-        self.send_header(
-            "content-type",
-            "video/mp4" if file.suffix.lower() in {".mp4", ".m4v"} else "application/octet-stream",
+        content_type = (
+            "video/mp4"
+            if file.suffix.lower() in {".mp4", ".m4v"}
+            else "application/octet-stream"
         )
+        self.serve_file(file, content_type)
+
+    def serve_file(self, file: Path, content_type: str) -> None:
+        self.send_response(HTTPStatus.OK.value)
+        self.send_header("content-type", content_type)
         self.send_header("content-length", str(file.stat().st_size))
         self.send_header("content-disposition", f'inline; filename="{file.name}"')
         self.end_headers()

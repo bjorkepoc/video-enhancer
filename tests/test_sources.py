@@ -13,11 +13,16 @@ from video_enhancer.sources import (
     SourceError,
     build_download_command,
     browser_args,
+    compare_hashes,
     download_source,
+    extract_keyframes,
+    frame_hash,
     group_formats,
     inspect_source,
     parse_ffprobe,
     probe_media,
+    search_links,
+    sample_frame_hashes,
     validate_social_url,
 )
 
@@ -271,3 +276,88 @@ def test_download_source_returns_contained_file_and_probe(
         "operation": "direct",
         "media": {"width": 1080, "height": 1920},
     }
+
+
+def test_search_links_cover_metadata_and_both_platforms() -> None:
+    links = search_links(
+        {"id": "123", "title": "Closet Cleanout", "uploader": "aurora"}
+    )
+
+    assert set(links) == {"web", "tiktok", "instagram", "google_lens", "tineye"}
+    assert "Closet+Cleanout" in links["web"]
+    assert "site%3Atiktok.com" in links["tiktok"]
+    assert "site%3Ainstagram.com" in links["instagram"]
+
+
+def test_frame_hash_compares_horizontal_grayscale_differences() -> None:
+    rising = bytes(range(17)) * 16
+    falling = bytes(reversed(range(17))) * 16
+
+    assert frame_hash(rising).bit_count() == 256
+    assert frame_hash(falling) == 0
+    with pytest.raises(SourceError, match="frame size"):
+        frame_hash(b"short")
+
+
+def test_compare_hashes_classifies_match_uncertain_and_different() -> None:
+    assert compare_hashes([0], [0])["result"] == "likely_match"
+    assert compare_hashes([0], [(1 << 80) - 1])["result"] == "uncertain"
+    assert compare_hashes([0], [(1 << 256) - 1])["result"] == "different"
+    assert compare_hashes([0], [0])["advisory"] is True
+
+    with pytest.raises(SourceError, match="same number"):
+        compare_hashes([0], [0, 1])
+
+
+def test_extract_keyframes_uses_three_bounded_ffmpeg_seeks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(sources, "_duration", lambda path, ffmpeg: 100.0)
+    monkeypatch.setattr(sources, "_ffmpeg_executable", lambda ffmpeg: ffmpeg)
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        Path(command[-1]).write_bytes(b"jpeg")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    frames = extract_keyframes(video, tmp_path / "frames")
+
+    assert [frame.name for frame in frames] == [
+        "frame-1.jpg",
+        "frame-2.jpg",
+        "frame-3.jpg",
+    ]
+    assert [command[command.index("-ss") + 1] for command in calls] == [
+        "25.000",
+        "50.000",
+        "75.000",
+    ]
+    assert all(command[command.index("-frames:v") + 1] == "1" for command in calls)
+
+
+def test_sample_frame_hashes_reads_five_fixed_size_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    raw = bytes(range(17)) * 16
+    calls: list[list[str]] = []
+    monkeypatch.setattr(sources, "_duration", lambda path, ffmpeg: 60.0)
+    monkeypatch.setattr(sources, "_ffmpeg_executable", lambda ffmpeg: ffmpeg)
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, raw, b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    hashes = sample_frame_hashes(video)
+
+    assert len(hashes) == 5
+    assert all(value.bit_count() == 256 for value in hashes)
+    assert all("scale=17:16,format=gray" in command for command in calls)

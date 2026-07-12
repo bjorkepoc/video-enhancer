@@ -9,8 +9,9 @@ import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from statistics import median
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote_plus, urlsplit
 
 
 SUPPORTED_HOSTS = {"tiktok.com": "tiktok", "instagram.com": "instagram"}
@@ -98,7 +99,7 @@ def inspect_source(
     except OSError as exc:
         raise SourceError(f"Could not start yt-dlp: {exc}") from exc
     if completed.returncode:
-        detail = completed.stderr.strip() or "yt-dlp could not inspect the source."
+        detail = completed.stderr.strip()[-4000:] or "yt-dlp could not inspect the source."
         raise SourceError(detail)
     try:
         payload = json.loads(completed.stdout)
@@ -325,7 +326,7 @@ def download_source(
         raise SourceError(f"Could not start yt-dlp: {exc}") from exc
     if completed.returncode:
         _remove_parts(destination)
-        detail = completed.stderr.strip() or "yt-dlp could not download the source."
+        detail = completed.stderr.strip()[-4000:] or "yt-dlp could not download the source."
         raise SourceError(detail)
 
     values: dict[str, str] = {}
@@ -345,3 +346,142 @@ def download_source(
         "operation": "remuxed" if "+" in selected else "direct",
         "media": probe_media(file_path),
     }
+
+
+def search_links(info: dict[str, Any]) -> dict[str, str]:
+    title = str(info.get("title", "")).strip()
+    suffix = " ".join(
+        str(info.get(key, "")).strip() for key in ("uploader", "id")
+    ).strip()
+    terms = " ".join(part for part in (f'"{title}"' if title else "", suffix) if part)
+    encoded = quote_plus(terms)
+    return {
+        "web": f"https://www.google.com/search?q={encoded}",
+        "tiktok": f"https://www.google.com/search?q={quote_plus(f'site:tiktok.com {terms}')}",
+        "instagram": f"https://www.google.com/search?q={quote_plus(f'site:instagram.com {terms}')}",
+        "google_lens": "https://lens.google.com/",
+        "tineye": "https://tineye.com/",
+    }
+
+
+def _ffmpeg_executable(ffmpeg: str) -> str:
+    executable = shutil.which(ffmpeg)
+    if not executable:
+        raise SourceError("FFmpeg is required for frame extraction.")
+    return executable
+
+
+def _duration(path: Path, ffmpeg: str) -> float:
+    duration = probe_media(path, ffmpeg=ffmpeg).get("duration")
+    if not isinstance(duration, (int, float)) or duration <= 0:
+        raise SourceError("The video duration is unavailable for frame extraction.")
+    return float(duration)
+
+
+def extract_keyframes(
+    path: Path, destination: Path, *, ffmpeg: str = "ffmpeg"
+) -> list[Path]:
+    executable = _ffmpeg_executable(ffmpeg)
+    duration = _duration(path, ffmpeg)
+    destination.mkdir(parents=True, exist_ok=True)
+    frames = [destination / f"frame-{index}.jpg" for index in range(1, 4)]
+    for frame, fraction in zip(frames, (0.25, 0.5, 0.75), strict=True):
+        try:
+            completed = subprocess.run(
+                [
+                    executable,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-ss",
+                    f"{duration * fraction:.3f}",
+                    "-i",
+                    str(path),
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale='min(960,iw)':-2",
+                    "-q:v",
+                    "2",
+                    "-y",
+                    str(frame),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            for output in frames:
+                output.unlink(missing_ok=True)
+            raise SourceError(f"Could not extract keyframes: {exc}") from exc
+        if completed.returncode or not frame.is_file():
+            for output in frames:
+                output.unlink(missing_ok=True)
+            detail = completed.stderr.strip()[-2000:] or "FFmpeg did not create a keyframe."
+            raise SourceError(detail)
+    return frames
+
+
+def frame_hash(raw: bytes, width: int = 17, height: int = 16) -> int:
+    if len(raw) != width * height:
+        raise SourceError("Unexpected grayscale frame size.")
+    result = 0
+    for row in range(height):
+        offset = row * width
+        for column in range(width - 1):
+            result = (result << 1) | (raw[offset + column] < raw[offset + column + 1])
+    return result
+
+
+def sample_frame_hashes(
+    path: Path, count: int = 5, *, ffmpeg: str = "ffmpeg"
+) -> list[int]:
+    if count < 1 or count > 10:
+        raise SourceError("Frame sample count must be between 1 and 10.")
+    executable = _ffmpeg_executable(ffmpeg)
+    duration = _duration(path, ffmpeg)
+    hashes = []
+    for index in range(1, count + 1):
+        try:
+            completed = subprocess.run(
+                [
+                    executable,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-ss",
+                    f"{duration * index / (count + 1):.3f}",
+                    "-i",
+                    str(path),
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale=17:16,format=gray",
+                    "-f",
+                    "rawvideo",
+                    "pipe:1",
+                ],
+                capture_output=True,
+                check=False,
+                timeout=120,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SourceError(f"Could not sample video frames: {exc}") from exc
+        if completed.returncode:
+            detail = completed.stderr.decode("utf-8", "replace").strip()[-2000:]
+            raise SourceError(detail or "FFmpeg could not sample the video.")
+        hashes.append(frame_hash(completed.stdout))
+    return hashes
+
+
+def compare_hashes(left: list[int], right: list[int]) -> dict[str, Any]:
+    if not left or len(left) != len(right):
+        raise SourceError("Frame hash lists must have the same number of samples.")
+    similarities = [
+        1 - ((left_hash ^ right_hash).bit_count() / 256)
+        for left_hash, right_hash in zip(left, right, strict=True)
+    ]
+    score = median(similarities)
+    result = "likely_match" if score >= 0.85 else "uncertain" if score >= 0.65 else "different"
+    return {"result": result, "score": round(score, 4), "advisory": True}

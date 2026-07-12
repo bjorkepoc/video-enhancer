@@ -89,6 +89,21 @@ def test_web_ui_contains_source_first_controls() -> None:
         assert label in HTML
 
 
+def test_web_ui_contains_repost_discovery_controls() -> None:
+    for control in (
+        'id="search-web"',
+        'id="search-tiktok"',
+        'id="search-instagram"',
+        'id="search-google-lens"',
+        'id="search-tineye"',
+        'id="keyframes"',
+        'id="candidate-url"',
+        'id="compare-candidate"',
+        'id="comparison-result"',
+    ):
+        assert control in HTML
+
+
 def test_build_options_uses_existing_preset_and_toggles() -> None:
     options = build_options(
         {
@@ -147,6 +162,32 @@ def test_source_payload_never_contains_browser_or_signed_url(tmp_path: Path) -> 
 
     assert "browser" not in payload
     assert "signed" not in json.dumps(payload)
+
+
+def test_source_payload_includes_searches_keyframes_and_comparison(tmp_path: Path) -> None:
+    frame = tmp_path / "frames" / "frame-1.jpg"
+    job = SourceJob(
+        id="source1",
+        url="https://tiktok.com/x",
+        info={"id": "123", "title": "Sample", "formats": []},
+        directory=tmp_path,
+    )
+    job.keyframes = [frame]
+    job.comparison_status = "done"
+    job.comparison = {"result": "likely_match", "score": 0.9, "advisory": True}
+
+    payload = source_payload(job)
+
+    assert set(payload["searches"]) == {
+        "web",
+        "tiktok",
+        "instagram",
+        "google_lens",
+        "tineye",
+    }
+    assert payload["keyframes"] == ["/files/sources/source1/frames/1"]
+    assert payload["comparison_status"] == "done"
+    assert payload["comparison"]["advisory"] is True
 
 
 def test_source_modes_are_explicit_synthetic_derivatives() -> None:
@@ -274,6 +315,25 @@ def test_source_file_route_serves_only_files_inside_work_dir(tmp_path: Path) -> 
     assert error.value.code == 404
 
 
+def test_source_frame_route_serves_only_registered_keyframes(tmp_path: Path) -> None:
+    frame = tmp_path / "source-source1" / "frames" / "frame-1.jpg"
+    frame.parent.mkdir(parents=True)
+    frame.write_bytes(b"jpeg")
+    source = SourceJob("source1", "https://tiktok.com/x", {}, frame.parents[1])
+    source.keyframes = [frame]
+
+    with running_server(tmp_path) as base:
+        SOURCES[source.id] = source
+        with urlopen(f"{base}/files/sources/source1/frames/1") as response:
+            assert response.status == 200
+            assert response.headers["content-type"] == "image/jpeg"
+            assert response.read() == b"jpeg"
+        with pytest.raises(HTTPError) as error:
+            urlopen(f"{base}/files/sources/source1/frames/2")
+
+    assert error.value.code == 404
+
+
 def test_source_enhance_route_reuses_original_with_explicit_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -316,3 +376,104 @@ def test_source_enhance_route_reuses_original_with_explicit_mode(
         "preset": ["quality"],
         "output": ["original-60fps.mp4"],
     }
+
+
+def test_source_compare_route_runs_async_and_reports_advisory_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = tmp_path / "source-source1" / "original.mp4"
+    original.parent.mkdir()
+    original.write_bytes(b"video")
+    source = SourceJob("source1", "https://tiktok.com/x", {}, original.parent)
+    source.original_path = original
+    source.status = "done"
+
+    monkeypatch.setattr(
+        web,
+        "compare_candidate",
+        lambda job, url, browser="": {
+            "result": "likely_match",
+            "score": 0.91,
+            "advisory": True,
+        },
+        raising=False,
+    )
+
+    with running_server(tmp_path) as base:
+        SOURCES[source.id] = source
+        status, payload = post_json(
+            base,
+            "/api/sources/source1/compare",
+            {"url": "https://instagram.com/reel/candidate", "browser": ""},
+        )
+        assert status == 202
+        assert payload["comparison_status"] in {"queued", "running", "done"}
+
+        deadline = time.monotonic() + 2
+        while True:
+            _, payload = get_json(base, "/api/sources/source1")
+            if payload["comparison_status"] == "done" or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+
+    assert payload["comparison_status"] == "done"
+    assert payload["comparison"] == {
+        "result": "likely_match",
+        "score": 0.91,
+        "advisory": True,
+    }
+
+
+def test_compare_candidate_uses_lowest_360p_variant_and_cleans_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = tmp_path / "source" / "original.mp4"
+    original.parent.mkdir()
+    original.write_bytes(b"original")
+    source = SourceJob("source1", "https://tiktok.com/x", {}, original.parent)
+    source.original_path = original
+    source.media = {"width": 1080, "height": 1920, "duration": 10.0}
+    downloaded_to: list[Path] = []
+
+    monkeypatch.setattr(
+        web,
+        "inspect_source",
+        lambda url, browser="": {
+            "id": "candidate",
+            "platform": "instagram",
+            "formats": [
+                {"width": 720, "height": 1280, "tbr": 1000, "format_ids": ["high"]},
+                {"width": 360, "height": 640, "tbr": 400, "format_ids": ["low"]},
+                {"width": 180, "height": 320, "tbr": 100, "format_ids": ["too-low"]},
+            ],
+        },
+    )
+
+    def fake_download(
+        url: str, destination: Path, browser: str = "", format_id: str = ""
+    ) -> dict[str, object]:
+        assert format_id == "low"
+        downloaded_to.append(destination)
+        path = destination / "candidate.mp4"
+        path.write_bytes(b"candidate")
+        return {
+            "path": path,
+            "media": {"width": 360, "height": 640, "duration": 9.5},
+        }
+
+    monkeypatch.setattr(web, "download_source", fake_download)
+    monkeypatch.setattr(
+        web,
+        "sample_frame_hashes",
+        lambda path: [0] if path == original else [(1 << 80) - 1],
+    )
+
+    result = web.compare_candidate(
+        source, "https://instagram.com/reel/candidate"
+    )
+
+    assert result["result"] == "uncertain"
+    assert result["duration_difference"] == 0.5
+    assert result["candidate_resolution"] == [360, 640]
+    assert result["candidate_format_id"] == "low"
+    assert downloaded_to and not downloaded_to[0].exists()

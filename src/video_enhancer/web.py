@@ -1455,14 +1455,17 @@ class Handler(BaseHTTPRequestHandler):
         self.serve_file(file, content_type)
 
     def serve_file(self, file: Path, content_type: str) -> None:
-        self.send_response(HTTPStatus.OK.value)
-        self.send_header("content-type", content_type)
-        self.send_header("content-length", str(file.stat().st_size))
-        self.send_header("content-disposition", f'inline; filename="{file.name}"')
-        self.end_headers()
-        with file.open("rb") as source:
-            while chunk := source.read(1024 * 1024):
-                self.wfile.write(chunk)
+        try:
+            self.send_response(HTTPStatus.OK.value)
+            self.send_header("content-type", content_type)
+            self.send_header("content-length", str(file.stat().st_size))
+            self.send_header("content-disposition", f'inline; filename="{file.name}"')
+            self.end_headers()
+            with file.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
 
 def run_server(host: str, port: int, work_dir: Path, *, open_browser: bool = False) -> None:

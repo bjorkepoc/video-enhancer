@@ -104,6 +104,22 @@ def test_web_ui_contains_repost_discovery_controls() -> None:
         assert control in HTML
 
 
+def test_serve_file_ignores_client_disconnect(tmp_path: Path) -> None:
+    class DisconnectedClient:
+        def write(self, data: bytes) -> None:
+            raise BrokenPipeError
+
+    file = tmp_path / "video.mp4"
+    file.write_bytes(b"video")
+    handler = object.__new__(Handler)
+    handler.wfile = DisconnectedClient()
+    handler.send_response = lambda status: None
+    handler.send_header = lambda name, value: None
+    handler.end_headers = lambda: None
+
+    handler.serve_file(file, "video/mp4")
+
+
 def test_build_options_uses_existing_preset_and_toggles() -> None:
     options = build_options(
         {

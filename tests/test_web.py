@@ -15,6 +15,7 @@ import pytest
 import video_enhancer.web as web
 from video_enhancer.presets import get_preset
 from video_enhancer.web import (
+    HTML,
     Handler,
     JOBS,
     MODES,
@@ -62,6 +63,30 @@ def get_json(base: str, path: str) -> tuple[int, dict]:
 
 def test_safe_filename_removes_paths_and_unsafe_chars() -> None:
     assert safe_filename("../../my video!!.mp4") == "my_video_.mp4"
+
+
+def test_web_ui_contains_source_first_controls() -> None:
+    for control in (
+        'id="input-link"',
+        'id="input-local"',
+        'id="source-url"',
+        'id="browser-session"',
+        'id="inspect-source"',
+        'id="source-format"',
+        'id="download-original"',
+        'id="download-60"',
+        'id="download-90"',
+        'id="download-upscale"',
+        'id="source-result"',
+        'id="source-video"',
+    ):
+        assert control in HTML
+    for label in (
+        "Original platform stream",
+        "Remuxed without video re-encoding",
+        "Enhanced synthetic copy",
+    ):
+        assert label in HTML
 
 
 def test_build_options_uses_existing_preset_and_toggles() -> None:

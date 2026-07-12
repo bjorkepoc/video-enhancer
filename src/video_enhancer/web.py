@@ -46,24 +46,28 @@ MODES = {
 
 
 HTML = """<!doctype html>
-<html lang="en">
+<html lang="no">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Video Enhancer Web</title>
+  <title>Video Enhancer</title>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f8fb;
+      --bg: #f3f5f7;
       --panel: #fff;
       --ink: #101820;
       --muted: #617085;
       --line: #d7e0ea;
       --accent: #0d7f86;
       --accent-dark: #095f64;
+      --success: #247149;
+      --warn: #9a5b13;
+      --danger: #b42318;
       --log: #101820;
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body {
       margin: 0;
       background: var(--bg);
@@ -84,9 +88,8 @@ HTML = """<!doctype html>
       top: 0;
       z-index: 2;
     }
-    h1, h2, h3, p { margin: 0; }
+    h1, h2, h3, p, dl, dd { margin: 0; }
     h1 { font-size: 22px; line-height: 1.1; }
-    .sub { margin-top: 5px; color: var(--muted); font-size: 14px; }
     .status-pill {
       border: 1px solid var(--line);
       border-radius: 999px;
@@ -98,10 +101,10 @@ HTML = """<!doctype html>
     }
     main {
       display: grid;
-      grid-template-columns: minmax(330px, 520px) minmax(0, 1fr);
+      grid-template-columns: minmax(360px, 500px) minmax(0, 1fr);
       gap: 18px;
       padding: 18px;
-      max-width: 1500px;
+      max-width: 1440px;
       margin: 0 auto;
     }
     .panel {
@@ -110,13 +113,14 @@ HTML = """<!doctype html>
       background: var(--panel);
       box-shadow: 0 16px 45px rgba(22, 34, 48, .06);
     }
-    .panel-inner { padding: 18px; }
+    .panel-inner { padding: 20px; }
     .section + .section {
       margin-top: 18px;
       padding-top: 18px;
       border-top: 1px solid var(--line);
     }
     h2 { margin-bottom: 14px; font-size: 16px; }
+    h3 { font-size: 14px; }
     label { display: block; color: var(--muted); font-size: 13px; font-weight: 700; }
     input, select, button {
       width: 100%;
@@ -137,10 +141,32 @@ HTML = """<!doctype html>
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(13, 127, 134, .13);
     }
-    .grid {
+    .grid, .source-row, .action-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 14px;
+    }
+    .source-row { grid-template-columns: minmax(0, 1fr) 130px; }
+    .action-grid { margin-top: 14px; }
+    .segmented {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3px;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--bg);
+      margin-bottom: 18px;
+    }
+    .segmented button {
+      min-height: 38px;
+      background: transparent;
+      color: var(--muted);
+    }
+    .segmented button[aria-selected="true"] {
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 0 1px 4px rgba(16, 24, 32, .12);
     }
     .check {
       display: flex;
@@ -164,7 +190,14 @@ HTML = """<!doctype html>
       cursor: pointer;
     }
     button:hover { background: var(--accent-dark); }
+    .segmented button:hover { background: #fff; color: var(--ink); }
     button:disabled { cursor: not-allowed; opacity: .62; }
+    button.secondary-button {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+    }
+    button.secondary-button:hover { border-color: var(--accent); }
     .secondary {
       display: inline-grid;
       place-items: center;
@@ -186,6 +219,38 @@ HTML = """<!doctype html>
       background: #fbfdff;
     }
     .hint { color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .source-summary {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+    }
+    .source-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .source-heading .meta { margin-top: 4px; }
+    .quality-label {
+      color: var(--success);
+      font-size: 12px;
+      font-weight: 800;
+      text-align: right;
+    }
+    .media-meta {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--line);
+      margin-top: 12px;
+    }
+    .media-meta div { min-width: 0; padding: 10px; background: #fff; }
+    .media-meta dt { color: var(--muted); font-size: 11px; font-weight: 700; }
+    .media-meta dd { margin-top: 3px; overflow-wrap: anywhere; font-size: 13px; font-weight: 800; }
     video {
       width: 100%;
       aspect-ratio: 16 / 9;
@@ -232,67 +297,112 @@ HTML = """<!doctype html>
       padding: 14px;
       background: #fbfdff;
     }
-    .result[hidden] { display: none; }
+    .result + .result { margin-top: 10px; }
+    .button-status { min-height: 18px; margin-top: 10px; color: var(--danger); }
     @media (max-width: 980px) {
       header, main { display: block; }
       main { padding: 12px; }
       .panel { margin-bottom: 12px; }
-      .preview-grid, .grid { grid-template-columns: 1fr; }
+      .preview-grid, .grid, .action-grid { grid-template-columns: 1fr; }
       .status-pill { display: inline-block; margin-top: 12px; }
+    }
+    @media (max-width: 520px) {
+      header { padding: 16px; }
+      .panel-inner { padding: 16px; }
+      .source-row, .media-meta { grid-template-columns: 1fr; }
+      .source-heading { display: block; }
+      .quality-label { margin-top: 5px; text-align: left; }
     }
   </style>
 </head>
 <body>
   <header>
-    <div>
-      <h1>Video Enhancer</h1>
-      <p class="sub">Local FFmpeg export on this Mac. No upload, no cloud.</p>
-    </div>
-    <div class="status-pill" id="ffmpeg-status">Checking FFmpeg...</div>
+    <h1>Video Enhancer</h1>
+    <div class="status-pill" id="ffmpeg-status">Kontrollerer FFmpeg...</div>
   </header>
 
   <main>
     <section class="panel">
       <div class="panel-inner">
-        <div class="section">
-          <h2>1. Input Video</h2>
-          <div class="filebox">
-            <input id="file" type="file" accept="video/*">
-            <p class="hint" id="file-hint">Choose a local video. Export files are written under outputs/web/.</p>
+        <div class="segmented" role="tablist" aria-label="Videokilde">
+          <button id="input-link" type="button" role="tab" aria-selected="true">Link</button>
+          <button id="input-local" type="button" role="tab" aria-selected="false">Lokal fil</button>
+        </div>
+
+        <div id="link-controls" role="tabpanel">
+          <h2>Kildevideo</h2>
+          <div class="source-row">
+            <label> TikTok- eller Instagram-link
+              <input id="source-url" type="url" inputmode="url" autocomplete="url" placeholder="https://...">
+            </label>
+            <label>Nettleserøkt
+              <select id="browser-session">
+                <option value="">Ingen</option>
+                <option value="safari">Safari</option>
+                <option value="chrome">Chrome</option>
+                <option value="firefox">Firefox</option>
+              </select>
+            </label>
+          </div>
+          <button id="inspect-source" type="button" style="margin-top:14px">Inspiser kilde</button>
+          <p class="hint button-status" id="source-error" role="alert"></p>
+
+          <div class="source-summary" id="source-result" hidden>
+            <div class="source-heading">
+              <div>
+                <h3 id="source-title">Kilde</h3>
+                <p class="meta" id="source-byline"></p>
+              </div>
+              <span class="quality-label" id="source-quality">Original platform stream</span>
+            </div>
+            <label>Kildevariant
+              <select id="source-format">
+                <option value="">Best tilgjengelig</option>
+              </select>
+            </label>
+            <button id="download-original" type="button" style="margin-top:14px">Last ned original</button>
+            <div class="action-grid">
+              <button class="secondary-button" id="download-60" type="button" disabled>Lag 60 FPS-kopi</button>
+              <button class="secondary-button" id="download-90" type="button" disabled>Lag 90 FPS-kopi</button>
+              <button class="secondary-button" id="download-upscale" type="button" disabled>Lag 2x oppskalering</button>
+            </div>
+            <dl class="media-meta" id="source-media" hidden></dl>
           </div>
         </div>
 
-        <div class="section">
-          <h2>2. Enhancement Settings</h2>
+        <div id="local-controls" role="tabpanel" hidden>
+          <h2>Lokal video</h2>
+          <div class="filebox">
+            <input id="file" type="file" accept="video/*">
+            <p class="hint" id="file-hint">Ingen fil valgt</p>
+          </div>
+
+          <div class="section">
+          <h2>Forbedring</h2>
           <div class="grid">
-            <label>Preset
+            <label>Profil
               <select id="preset"></select>
             </label>
-            <label>Video Codec
+            <label>Videokodek
               <select id="codec"></select>
             </label>
             <label>FPS
               <input id="fps" type="number" min="1" step="1" placeholder="Preset default">
             </label>
-            <label>Scale Factor
+            <label>Skalering
               <input id="scale" type="number" min="0.1" step="0.1" placeholder="Preset default">
             </label>
-            <label class="check"><input id="no-upscale" type="checkbox"> No upscale</label>
-            <label class="check"><input id="no-interpolate" type="checkbox"> No interpolate</label>
+            <label class="check"><input id="no-upscale" type="checkbox"> Ingen oppskalering</label>
+            <label class="check"><input id="no-interpolate" type="checkbox"> Ingen interpolering</label>
           </div>
-        </div>
 
-        <div class="section">
-          <h2>3. Output</h2>
-          <label>Output Filename
+          <label style="margin-top:14px">Filnavn
             <input id="output-name" type="text" placeholder="example-enhanced.mp4">
           </label>
-          <p class="hint" style="margin-top:8px">MP4 is the safest target for browser playback.</p>
-        </div>
 
-        <div class="section">
-          <button id="start" type="button">Start Export</button>
-          <pre id="command">Command preview will appear after export starts.</pre>
+          <button id="start" type="button" style="margin-top:14px">Start eksport</button>
+          <pre id="command">Kommandoen vises når eksporten starter.</pre>
+          </div>
         </div>
       </div>
     </section>
@@ -301,25 +411,32 @@ HTML = """<!doctype html>
       <div class="panel-inner">
         <div class="preview-grid">
           <div>
-            <div class="video-title">Input Preview <span class="meta" id="input-meta"></span></div>
-            <video id="input-video" controls></video>
+            <div class="video-title">Original <span class="meta" id="input-meta">Ikke lastet</span></div>
+            <video id="source-video" controls></video>
           </div>
           <div>
-            <div class="video-title">Output Preview <span class="meta" id="output-meta">Not started</span></div>
+            <div class="video-title">Avledet kopi <span class="meta" id="output-meta">Ikke startet</span></div>
             <video id="output-video" controls></video>
           </div>
         </div>
 
         <div class="section">
-          <h2>Status & Progress</h2>
+          <h2>Resultater</h2>
+          <div class="result" id="source-download-result" hidden>
+            <div>
+              <strong id="source-result-name"></strong>
+              <p class="hint" id="source-result-label">Original platform stream</p>
+            </div>
+            <a class="secondary" id="source-download" href="#" download>Last ned</a>
+          </div>
           <div class="result" id="result" hidden>
             <div>
               <strong id="result-name"></strong>
-              <p class="hint" id="result-path"></p>
+              <p class="hint" id="result-path">Enhanced synthetic copy</p>
             </div>
-            <a class="secondary" id="download" href="#" download>Download</a>
+            <a class="secondary" id="download" href="#" download>Last ned</a>
           </div>
-          <pre id="log">Ready.</pre>
+          <pre id="log">Klar.</pre>
         </div>
       </div>
     </section>
@@ -327,10 +444,10 @@ HTML = """<!doctype html>
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { file: null, poll: null };
+    const state = { file: null, poll: null, sourceId: null };
 
     function setLog(lines) {
-      $("log").textContent = lines && lines.length ? lines.join("\\n") : "Ready.";
+      $("log").textContent = lines && lines.length ? lines.join("\\n") : "Klar.";
       $("log").scrollTop = $("log").scrollHeight;
     }
 
@@ -342,12 +459,201 @@ HTML = """<!doctype html>
     async function loadConfig() {
       const response = await fetch("/api/config");
       const config = await response.json();
-      $("ffmpeg-status").textContent = config.ffmpeg ? `FFmpeg: ${config.ffmpeg}` : "FFmpeg: not found";
+      $("ffmpeg-status").textContent = config.ffmpeg ? `FFmpeg: ${config.ffmpeg}` : "FFmpeg: ikke funnet";
       $("preset").innerHTML = config.presets.map((name) => `<option value="${name}">${name}</option>`).join("");
       $("preset").value = "balanced";
       $("codec").innerHTML = config.codecs.map((name) => `<option value="${name}">${name}</option>`).join("");
       $("codec").value = "libx264";
     }
+
+    function setMode(mode) {
+      const link = mode === "link";
+      $("input-link").setAttribute("aria-selected", String(link));
+      $("input-local").setAttribute("aria-selected", String(!link));
+      $("link-controls").hidden = !link;
+      $("local-controls").hidden = link;
+    }
+
+    $("input-link").addEventListener("click", () => setMode("link"));
+    $("input-local").addEventListener("click", () => setMode("local"));
+
+    function isSupportedSourceUrl(raw) {
+      try {
+        const url = new URL(raw);
+        const host = url.hostname.toLowerCase();
+        return url.protocol === "https:" && ["tiktok.com", "instagram.com"].some(
+          (domain) => host === domain || host.endsWith(`.${domain}`)
+        );
+      } catch (_) {
+        return false;
+      }
+    }
+
+    async function postJSON(path, body) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Forespørselen mislyktes");
+      return payload;
+    }
+
+    function formatVariant(format) {
+      const size = format.width && format.height ? `${format.width}x${format.height}` : "Ukjent størrelse";
+      const fps = format.fps ? `${format.fps} FPS` : "ukjent FPS";
+      const codec = format.vcodec || "ukjent kodek";
+      const bitrate = format.tbr ? `${Math.round(format.tbr)} kbps` : "ukjent bitrate";
+      const mirrors = format.mirrors > 1 ? `, ${format.mirrors} speil` : "";
+      return `${size}, ${fps}, ${codec}, ${bitrate}${mirrors}`;
+    }
+
+    function setDerivedDisabled(disabled) {
+      ["download-60", "download-90", "download-upscale"].forEach((id) => {
+        $(id).disabled = disabled;
+      });
+    }
+
+    function showSourceInfo(source) {
+      state.sourceId = source.id;
+      $("source-result").hidden = false;
+      $("source-title").textContent = source.info.title || `${source.info.platform || "Video"} ${source.info.id || ""}`;
+      $("source-byline").textContent = [source.info.uploader, source.info.duration ? `${source.info.duration}s` : ""].filter(Boolean).join(" · ");
+      const select = $("source-format");
+      select.replaceChildren(new Option("Best tilgjengelig", ""));
+      source.info.formats.forEach((format) => {
+        const id = (format.format_ids || [])[0];
+        if (id) select.add(new Option(formatVariant(format), id));
+      });
+      $("download-original").disabled = false;
+      setDerivedDisabled(true);
+      $("source-media").hidden = true;
+      $("source-download-result").hidden = true;
+      setLog([`${source.info.formats.length} kildevarianter funnet.`]);
+    }
+
+    $("inspect-source").addEventListener("click", async () => {
+      const url = $("source-url").value.trim();
+      $("source-error").textContent = "";
+      if (!isSupportedSourceUrl(url)) {
+        $("source-error").textContent = "Bruk en gyldig HTTPS-link fra TikTok eller Instagram.";
+        return;
+      }
+      $("inspect-source").disabled = true;
+      setLog(["Inspiserer tilgjengelige kildevarianter..."]);
+      try {
+        showSourceInfo(await postJSON("/api/sources/inspect", {
+          url,
+          browser: $("browser-session").value,
+        }));
+      } catch (error) {
+        $("source-error").textContent = error.message;
+        setLog([error.message]);
+      } finally {
+        $("inspect-source").disabled = false;
+      }
+    });
+
+    $("download-original").addEventListener("click", async () => {
+      if (!state.sourceId) return;
+      $("download-original").disabled = true;
+      setDerivedDisabled(true);
+      setLog(["Starter originalnedlasting..."]);
+      try {
+        const source = await postJSON(`/api/sources/${state.sourceId}/download`, {
+          browser: $("browser-session").value,
+          format_id: $("source-format").value,
+        });
+        watchSource(source.id).catch(showPollingError);
+      } catch (error) {
+        $("source-error").textContent = error.message;
+        $("download-original").disabled = false;
+        setLog([error.message]);
+      }
+    });
+
+    function mediaValue(value, suffix = "") {
+      return value === null || value === undefined ? "Ukjent" : `${value}${suffix}`;
+    }
+
+    function renderMedia(media) {
+      const values = [
+        ["Oppløsning", media.width && media.height ? `${media.width}x${media.height}` : "Ukjent"],
+        ["Bildefrekvens", mediaValue(media.fps, " FPS")],
+        ["Video", mediaValue(media.video_codec)],
+        ["Lyd", mediaValue(media.audio_codec)],
+        ["Bitrate", media.bitrate ? `${Math.round(media.bitrate / 1000)} kbps` : "Ukjent"],
+        ["Størrelse", media.size ? `${(media.size / 1024 / 1024).toFixed(1)} MB` : "Ukjent"],
+      ];
+      $("source-media").replaceChildren(...values.map(([name, value]) => {
+        const box = document.createElement("div");
+        const term = document.createElement("dt");
+        const detail = document.createElement("dd");
+        term.textContent = name;
+        detail.textContent = value;
+        box.append(term, detail);
+        return box;
+      }));
+      $("source-media").hidden = false;
+    }
+
+    async function watchSource(id) {
+      clearInterval(state.poll);
+      const tick = async () => {
+        const response = await fetch(`/api/sources/${id}`);
+        const source = await response.json();
+        if (!response.ok) throw new Error(source.error || "Kildejobben ble ikke funnet");
+        setLog(source.logs);
+        if (source.status === "done") {
+          clearInterval(state.poll);
+          const label = source.operation === "remuxed" ? "Remuxed without video re-encoding" : "Original platform stream";
+          $("source-quality").textContent = label;
+          $("source-result-label").textContent = label;
+          $("source-result-name").textContent = source.original_name;
+          $("source-download").href = source.original_url;
+          $("source-download-result").hidden = false;
+          $("source-video").src = source.original_url;
+          $("source-video").load();
+          $("input-meta").textContent = `${mediaValue(source.media.width)}x${mediaValue(source.media.height)} · ${mediaValue(source.media.fps, " FPS")}`;
+          renderMedia(source.media);
+          $("download-original").disabled = false;
+          setDerivedDisabled(false);
+        } else if (source.status === "error") {
+          clearInterval(state.poll);
+          $("source-error").textContent = source.error;
+          $("download-original").disabled = false;
+        }
+      };
+      state.poll = setInterval(() => tick().catch(showPollingError), 1000);
+      await tick();
+    }
+
+    function showPollingError(error) {
+      clearInterval(state.poll);
+      setLog([error.message]);
+      $("start").disabled = false;
+      $("download-original").disabled = false;
+    }
+
+    async function startSourceEnhancement(mode) {
+      if (!state.sourceId) return;
+      setDerivedDisabled(true);
+      $("result").hidden = true;
+      $("output-meta").textContent = "Starter";
+      try {
+        const job = await postJSON(`/api/sources/${state.sourceId}/enhance`, { mode });
+        $("command").textContent = job.command;
+        watchJob(job.id, true).catch(showPollingError);
+      } catch (error) {
+        setDerivedDisabled(false);
+        setLog([error.message]);
+      }
+    }
+
+    $("download-60").addEventListener("click", () => startSourceEnhancement("60"));
+    $("download-90").addEventListener("click", () => startSourceEnhancement("90"));
+    $("download-upscale").addEventListener("click", () => startSourceEnhancement("upscale"));
 
     $("file").addEventListener("change", () => {
       const file = $("file").files[0];
@@ -355,7 +661,7 @@ HTML = """<!doctype html>
       if (!file) return;
       $("file-hint").textContent = `${file.name} • ${(file.size / 1024 / 1024).toFixed(1)} MB`;
       $("output-name").value = safeOutputName(file.name);
-      $("input-video").src = URL.createObjectURL(file);
+      $("source-video").src = URL.createObjectURL(file);
       $("input-meta").textContent = file.type || "local file";
     });
 
@@ -393,14 +699,14 @@ HTML = """<!doctype html>
         const job = await response.json();
         if (!response.ok) throw new Error(job.error || "Export failed to start");
         $("command").textContent = job.command;
-        watchJob(job.id);
+        watchJob(job.id, false).catch(showPollingError);
       } catch (error) {
         setLog([error.message]);
         $("start").disabled = false;
       }
     });
 
-    async function watchJob(id) {
+    async function watchJob(id, fromSource) {
       clearInterval(state.poll);
       const tick = async () => {
         const response = await fetch(`/api/jobs/${id}`);
@@ -411,9 +717,10 @@ HTML = """<!doctype html>
         if (job.status === "done") {
           clearInterval(state.poll);
           $("start").disabled = false;
+          if (fromSource) setDerivedDisabled(false);
           $("result").hidden = false;
           $("result-name").textContent = job.output_name;
-          $("result-path").textContent = job.output_path;
+          $("result-path").textContent = "Enhanced synthetic copy";
           $("download").href = job.output_url;
           $("output-video").src = job.output_url;
           $("output-video").load();
@@ -421,12 +728,12 @@ HTML = """<!doctype html>
         if (job.status === "error") {
           clearInterval(state.poll);
           $("start").disabled = false;
+          if (fromSource) setDerivedDisabled(false);
         }
       };
       state.poll = setInterval(() => tick().catch((error) => {
-        clearInterval(state.poll);
-        $("start").disabled = false;
-        setLog([error.message]);
+        showPollingError(error);
+        if (fromSource) setDerivedDisabled(false);
       }), 1000);
       await tick();
     }
@@ -779,11 +1086,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Source job not found"})
             return
         if action == "download":
-            if source.status == "downloading":
+            if source.status in {"queued", "downloading"}:
                 raise ValueError("Source download is already running.")
             browser = str(body.get("browser", "")).strip()
             format_id = str(body.get("format_id", "")).strip()
-            source.status = "queued"
+            with LOCK:
+                source.status = "queued"
+                source.error = ""
             threading.Thread(
                 target=run_source_download,
                 args=(source, browser, format_id),

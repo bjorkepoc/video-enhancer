@@ -296,6 +296,35 @@ HTML = """<!doctype html>
       background: #101820;
       display: block;
     }
+    .frame-controls {
+      display: grid;
+      grid-template-columns: 40px minmax(72px, 1fr) 40px minmax(84px, 104px);
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .frame-controls button {
+      min-height: 38px;
+      padding: 0;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+    }
+    .frame-controls button:hover { border-color: var(--accent); background: #fff; }
+    .frame-controls button[aria-pressed="true"] {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+    .frame-fps {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 6px;
+      align-items: center;
+      min-width: 0;
+      font-size: 11px;
+    }
+    .frame-fps input { min-width: 0; min-height: 38px; margin: 0; padding: 0 7px; }
     .preview-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -335,6 +364,8 @@ HTML = """<!doctype html>
       padding: 14px;
       background: #fbfdff;
     }
+    .result > div { min-width: 0; }
+    .result strong { overflow-wrap: anywhere; }
     .result + .result { margin-top: 10px; }
     .button-status { min-height: 18px; margin-top: 10px; color: var(--danger); }
     @media (max-width: 980px) {
@@ -469,13 +500,25 @@ HTML = """<!doctype html>
     <section class="panel">
       <div class="panel-inner">
         <div class="preview-grid">
-          <div>
+          <div class="video-preview" id="source-player">
             <div class="video-title">Original <span class="meta" id="input-meta">Ikke lastet</span></div>
             <video id="source-video" controls></video>
+            <div class="frame-controls" id="source-frame-controls" role="group" aria-label="Bildekontroller for original">
+              <button id="source-previous-frame" type="button" aria-label="Forrige bilde" title="Forrige bilde" disabled>&#9664;</button>
+              <button id="source-one-fps" type="button" aria-label="Spill av ett bilde per sekund" title="Spill av ett bilde per sekund" aria-pressed="false" disabled>1 FPS</button>
+              <button id="source-next-frame" type="button" aria-label="Neste bilde" title="Neste bilde" disabled>&#9654;</button>
+              <label class="frame-fps"><span>Steg-FPS</span><input id="source-frame-fps" type="number" min="1" max="240" step="0.001" value="30" aria-label="Bilder per sekund for original" disabled></label>
+            </div>
           </div>
-          <div>
+          <div class="video-preview" id="output-player">
             <div class="video-title">Avledet kopi <span class="meta" id="output-meta">Ikke startet</span></div>
             <video id="output-video" controls></video>
+            <div class="frame-controls" id="output-frame-controls" role="group" aria-label="Bildekontroller for avledet kopi">
+              <button id="output-previous-frame" type="button" aria-label="Forrige bilde" title="Forrige bilde" disabled>&#9664;</button>
+              <button id="output-one-fps" type="button" aria-label="Spill av ett bilde per sekund" title="Spill av ett bilde per sekund" aria-pressed="false" disabled>1 FPS</button>
+              <button id="output-next-frame" type="button" aria-label="Neste bilde" title="Neste bilde" disabled>&#9654;</button>
+              <label class="frame-fps"><span>Steg-FPS</span><input id="output-frame-fps" type="number" min="1" max="240" step="0.001" value="30" aria-label="Bilder per sekund for avledet kopi" disabled></label>
+            </div>
           </div>
         </div>
 
@@ -503,7 +546,75 @@ HTML = """<!doctype html>
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { file: null, poll: null, sourceId: null };
+    const state = { file: null, poll: null, sourceId: null, outputFps: 30, presetFps: {} };
+
+    function createFrameController(name) {
+      const player = $(`${name}-player`);
+      const video = $(`${name}-video`);
+      const previous = $(`${name}-previous-frame`);
+      const oneFps = $(`${name}-one-fps`);
+      const next = $(`${name}-next-frame`);
+      const fpsInput = $(`${name}-frame-fps`);
+      const controls = [previous, oneFps, next, fpsInput];
+      let timer = null;
+
+      const fps = () => {
+        const value = Number(fpsInput.value);
+        return Number.isFinite(value) && value > 0 ? value : 30;
+      };
+      const stop = () => {
+        if (timer !== null) clearInterval(timer);
+        timer = null;
+        oneFps.setAttribute("aria-pressed", "false");
+      };
+      const step = (direction, keepOneFps = false) => {
+        if (!keepOneFps) stop();
+        video.pause();
+        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+        const target = video.currentTime + direction / fps();
+        video.currentTime = Math.max(0, Math.min(duration, target));
+        if (direction > 0 && target >= duration) stop();
+      };
+      const setEnabled = (enabled) => controls.forEach((control) => {
+        control.disabled = !enabled;
+      });
+
+      previous.addEventListener("click", () => step(-1));
+      next.addEventListener("click", () => step(1));
+      oneFps.addEventListener("click", () => {
+        if (timer !== null) {
+          stop();
+          return;
+        }
+        video.pause();
+        oneFps.setAttribute("aria-pressed", "true");
+        timer = setInterval(() => step(1, true), 1000);
+      });
+      player.addEventListener("keydown", (event) => {
+        if (event.target === fpsInput || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+        event.preventDefault();
+        step(event.key === "ArrowRight" ? 1 : -1);
+      });
+      video.addEventListener("loadedmetadata", () => setEnabled(true));
+      video.addEventListener("emptied", () => {
+        stop();
+        setEnabled(false);
+      });
+      video.addEventListener("play", stop);
+      video.addEventListener("ended", stop);
+
+      return {
+        fps,
+        setFps(value) {
+          const parsed = Number(value);
+          const nextFps = Number.isFinite(parsed) && parsed > 0 ? parsed : 30;
+          fpsInput.value = String(Math.round(nextFps * 1000) / 1000);
+        },
+      };
+    }
+
+    const sourceFrames = createFrameController("source");
+    const outputFrames = createFrameController("output");
 
     function setLog(lines) {
       $("log").textContent = lines && lines.length ? lines.join("\\n") : "Klar.";
@@ -521,6 +632,7 @@ HTML = """<!doctype html>
       $("ffmpeg-status").textContent = config.ffmpeg ? `FFmpeg: ${config.ffmpeg}` : "FFmpeg: ikke funnet";
       $("preset").innerHTML = config.presets.map((name) => `<option value="${name}">${name}</option>`).join("");
       $("preset").value = "balanced";
+      state.presetFps = config.preset_fps || {};
       $("codec").innerHTML = config.codecs.map((name) => `<option value="${name}">${name}</option>`).join("");
       $("codec").value = "libx264";
     }
@@ -693,6 +805,7 @@ HTML = """<!doctype html>
           $("source-result-name").textContent = source.original_name;
           $("source-download").href = source.original_url;
           $("source-download-result").hidden = false;
+          sourceFrames.setFps(source.media.fps);
           $("source-video").src = source.original_url;
           $("source-video").load();
           $("input-meta").textContent = `${mediaValue(source.media.width)}x${mediaValue(source.media.height)} · ${mediaValue(source.media.fps, " FPS")}`;
@@ -722,6 +835,7 @@ HTML = """<!doctype html>
 
     async function startSourceEnhancement(mode) {
       if (!state.sourceId) return;
+      state.outputFps = mode === "upscale" ? sourceFrames.fps() : Number(mode);
       setDerivedDisabled(true);
       $("result").hidden = true;
       $("output-meta").textContent = "Starter";
@@ -804,6 +918,7 @@ HTML = """<!doctype html>
       if (!file) return;
       $("file-hint").textContent = `${file.name} • ${(file.size / 1024 / 1024).toFixed(1)} MB`;
       $("output-name").value = safeOutputName(file.name);
+      sourceFrames.setFps(30);
       $("source-video").src = URL.createObjectURL(file);
       $("input-meta").textContent = file.type || "local file";
     });
@@ -829,6 +944,9 @@ HTML = """<!doctype html>
       if ($("scale").value) params.set("scale", $("scale").value);
       if ($("no-upscale").checked) params.set("no_upscale", "1");
       if ($("no-interpolate").checked) params.set("no_interpolate", "1");
+      state.outputFps = $("no-interpolate").checked
+        ? sourceFrames.fps()
+        : Number($("fps").value) || state.presetFps[$("preset").value] || 30;
 
       try {
         const response = await fetch(`/api/jobs?${params}`, {
@@ -865,6 +983,7 @@ HTML = """<!doctype html>
           $("result-name").textContent = job.output_name;
           $("result-path").textContent = "Enhanced synthetic copy";
           $("download").href = job.output_url;
+          outputFrames.setFps(state.outputFps);
           $("output-video").src = job.output_url;
           $("output-video").load();
         }
@@ -1253,7 +1372,14 @@ class Handler(BaseHTTPRequestHandler):
                 ffmpeg = "not found"
             self.send_json(
                 HTTPStatus.OK,
-                {"presets": available_presets(), "codecs": supported_video_codecs(), "ffmpeg": ffmpeg},
+                {
+                    "presets": available_presets(),
+                    "preset_fps": {
+                        name: get_preset(name).target_fps for name in available_presets()
+                    },
+                    "codecs": supported_video_codecs(),
+                    "ffmpeg": ffmpeg,
+                },
             )
             return
         if parsed.path.startswith("/api/sources/"):
@@ -1456,14 +1582,46 @@ class Handler(BaseHTTPRequestHandler):
 
     def serve_file(self, file: Path, content_type: str) -> None:
         try:
-            self.send_response(HTTPStatus.OK.value)
+            size = file.stat().st_size
+            start, end = 0, size - 1
+            status = HTTPStatus.OK
+            requested_range = self.headers.get("range", "").strip()
+            if requested_range:
+                match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested_range)
+                if not match or not any(match.groups()):
+                    self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE.value)
+                    self.send_header("content-range", f"bytes */{size}")
+                    self.end_headers()
+                    return
+                first, last = match.groups()
+                if first:
+                    start = int(first)
+                    end = min(int(last), size - 1) if last else size - 1
+                else:
+                    suffix = int(last)
+                    start = max(0, size - suffix)
+                if start >= size or start > end or (not first and int(last) == 0):
+                    self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE.value)
+                    self.send_header("content-range", f"bytes */{size}")
+                    self.end_headers()
+                    return
+                status = HTTPStatus.PARTIAL_CONTENT
+
+            length = max(0, end - start + 1)
+            self.send_response(status.value)
             self.send_header("content-type", content_type)
-            self.send_header("content-length", str(file.stat().st_size))
+            self.send_header("accept-ranges", "bytes")
+            self.send_header("content-length", str(length))
+            if status is HTTPStatus.PARTIAL_CONTENT:
+                self.send_header("content-range", f"bytes {start}-{end}/{size}")
             self.send_header("content-disposition", f'inline; filename="{file.name}"')
             self.end_headers()
             with file.open("rb") as source:
-                while chunk := source.read(1024 * 1024):
+                source.seek(start)
+                remaining = length
+                while remaining and (chunk := source.read(min(1024 * 1024, remaining))):
                     self.wfile.write(chunk)
+                    remaining -= len(chunk)
         except (BrokenPipeError, ConnectionResetError):
             return
 

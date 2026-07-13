@@ -104,6 +104,20 @@ def test_web_ui_contains_repost_discovery_controls() -> None:
         assert control in HTML
 
 
+def test_web_ui_contains_frame_playback_controls() -> None:
+    for player in ("source", "output"):
+        for control in (
+            f'id="{player}-frame-controls"',
+            f'id="{player}-previous-frame"',
+            f'id="{player}-one-fps"',
+            f'id="{player}-next-frame"',
+            f'id="{player}-frame-fps"',
+        ):
+            assert control in HTML
+    for label in ("Forrige bilde", "Spill av ett bilde per sekund", "Neste bilde"):
+        assert label in HTML
+
+
 def test_serve_file_ignores_client_disconnect(tmp_path: Path) -> None:
     class DisconnectedClient:
         def write(self, data: bytes) -> None:
@@ -112,12 +126,34 @@ def test_serve_file_ignores_client_disconnect(tmp_path: Path) -> None:
     file = tmp_path / "video.mp4"
     file.write_bytes(b"video")
     handler = object.__new__(Handler)
+    handler.headers = {}
     handler.wfile = DisconnectedClient()
     handler.send_response = lambda status: None
     handler.send_header = lambda name, value: None
     handler.end_headers = lambda: None
 
     handler.serve_file(file, "video/mp4")
+
+
+def test_video_files_support_byte_ranges(tmp_path: Path) -> None:
+    original = tmp_path / "source-source1" / "original.mp4"
+    original.parent.mkdir()
+    original.write_bytes(b"0123456789")
+    source = SourceJob("source1", "https://tiktok.com/x", {}, original.parent)
+    source.original_path = original
+
+    with running_server(tmp_path) as base:
+        SOURCES[source.id] = source
+        request = Request(
+            f"{base}/files/sources/source1/original",
+            headers={"Range": "bytes=2-5"},
+        )
+        with urlopen(request) as response:
+            assert response.status == 206
+            assert response.headers["accept-ranges"] == "bytes"
+            assert response.headers["content-range"] == "bytes 2-5/10"
+            assert response.headers["content-length"] == "4"
+            assert response.read() == b"2345"
 
 
 def test_build_options_uses_existing_preset_and_toggles() -> None:

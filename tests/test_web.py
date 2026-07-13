@@ -308,6 +308,7 @@ def test_enhancement_from_source_reuses_file_without_upload(
             pass
 
     monkeypatch.setattr(web.threading, "Thread", NoopThread)
+    monkeypatch.setattr(web, "build_ffmpeg_command", lambda *args, **kwargs: ["ffmpeg"])
     source = tmp_path / "source.mp4"
     source.write_bytes(b"video")
 

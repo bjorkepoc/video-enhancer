@@ -8,10 +8,9 @@ scaling, optional interpolation, and CPU encoding.
 For a social link:
 
 1. Paste an HTTPS TikTok or Instagram post URL.
-2. Optionally select Chrome, Safari, or Firefox when anonymous access fails.
-3. Inspect and select `Best available` or one listed source variant.
-4. Download the original, then optionally make a 60 FPS, 90 FPS, or 2x copy.
-5. Compare the verified saved metadata and preview the separate files.
+2. Inspect and select `Best available` or one listed source variant.
+3. Download the original, then optionally make a 60 FPS, 90 FPS, or 2x copy.
+4. Compare the verified saved metadata and preview the separate files.
 
 For a local file, choose `Local file` in the web app or use the CLI below.
 
@@ -33,7 +32,9 @@ ffmpeg -version
 
 Only HTTPS hosts at `tiktok.com` and `instagram.com`, including their
 subdomains, are accepted. Inspection uses yt-dlp structured metadata and never
-returns signed CDN URLs or browser cookies through the HTTP API. Duplicate
+returns signed CDN URLs through the HTTP API. Source requests are anonymous;
+the app ignores user yt-dlp configuration and never reads browser cookies.
+Duplicate
 formats with the same dimensions, FPS, bitrate, codecs, and container are shown
 as mirrors rather than separate quality levels.
 
@@ -47,9 +48,15 @@ An `Original platform stream` has not passed through a video encoder. A
 streams. Any 60/90 FPS or 2x result is an `Enhanced synthetic copy`; it cannot
 be treated as native platform quality.
 
-Browser sessions are opt-in per inspect/download/compare request. yt-dlp reads
-the selected local browser's cookies directly. The app does not copy, persist,
-or include those cookies in responses.
+The local server binds only to `127.0.0.1`. It keeps working media in a unique
+temporary directory, exposes no persistent work-directory option, and removes
+those files on normal shutdown or when you choose **Slett lokale arbeidsfiler**.
+Browser attachment downloads are the only files intentionally kept.
+
+Both players support normal playback, 1 FPS playback, calibrated previous/next
+frame steps, 1x-8x zoom around the pointer or touch midpoint, drag-to-pan,
+pinch/trackpad zoom, reset, volume, seeking, and fullscreen. Viewer zoom never
+changes or re-encodes the downloaded file.
 
 ## Alternative Sources
 

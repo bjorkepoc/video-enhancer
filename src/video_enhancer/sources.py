@@ -15,9 +15,15 @@ from urllib.parse import quote_plus, urlsplit
 
 
 SUPPORTED_HOSTS = {"tiktok.com": "tiktok", "instagram.com": "instagram"}
-SUPPORTED_BROWSERS = {"", "chrome", "safari", "firefox"}
 FORMAT_FIELDS = ("width", "height", "fps", "tbr", "vcodec", "acodec", "ext")
 BEST_FORMAT = "bv*+ba/b"
+INSPECTION_TIMEOUT_SECONDS = 120
+DOWNLOAD_TIMEOUT_SECONDS = 900
+SOCKET_TIMEOUT_SECONDS = 30
+NETWORK_RETRIES = 3
+MAX_SOURCE_SIZE = "8G"
+MAX_SOURCE_BYTES = 8 * 1024**3
+PROBE_TIMEOUT_SECONDS = 120
 
 
 class SourceError(ValueError):
@@ -25,27 +31,42 @@ class SourceError(ValueError):
 
 
 def _yt_dlp_command(yt_dlp: str) -> list[str]:
-    return [sys.executable, "-m", "yt_dlp"] if yt_dlp == "yt-dlp" else [yt_dlp]
+    executable = [sys.executable, "-m", "yt_dlp"] if yt_dlp == "yt-dlp" else [yt_dlp]
+    return [
+        *executable,
+        "--ignore-config",
+        "--no-config-locations",
+        "--no-plugin-dirs",
+        "--no-cache-dir",
+        "--no-exec",
+        "--no-cookies-from-browser",
+        "--no-playlist",
+        "--no-progress",
+        "--downloader",
+        "native",
+    ]
 
 
 def validate_social_url(raw: str) -> str:
     try:
         parsed = urlsplit(raw.strip())
+        host = parsed.hostname
+        port = parsed.port
     except ValueError as exc:
         raise SourceError("Use an HTTPS TikTok or Instagram video URL.") from exc
-    if parsed.scheme != "https" or not parsed.hostname:
+    if (
+        parsed.scheme != "https"
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+    ):
         raise SourceError("Use an HTTPS TikTok or Instagram video URL.")
-    host = parsed.hostname.lower().rstrip(".")
+    host = host.lower().rstrip(".")
     for domain, platform in SUPPORTED_HOSTS.items():
         if host == domain or host.endswith(f".{domain}"):
             return platform
     raise SourceError("Only TikTok and Instagram video URLs are supported.")
-
-
-def browser_args(browser: str) -> list[str]:
-    if browser not in SUPPORTED_BROWSERS:
-        raise SourceError("Browser session must be none, chrome, safari, or firefox.")
-    return ["--cookies-from-browser", browser] if browser else []
 
 
 def _format_key(format_data: Mapping[str, Any]) -> tuple[Any, ...]:
@@ -81,21 +102,29 @@ def group_formats(formats: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def inspect_source(
-    url: str, browser: str = "", *, yt_dlp: str = "yt-dlp"
-) -> dict[str, Any]:
+def inspect_source(url: str, *, yt_dlp: str = "yt-dlp") -> dict[str, Any]:
     normalized_url = url.strip()
     platform = validate_social_url(normalized_url)
     command = [
         *_yt_dlp_command(yt_dlp),
-        "--no-playlist",
+        "--socket-timeout",
+        str(SOCKET_TIMEOUT_SECONDS),
+        "--retries",
+        str(NETWORK_RETRIES),
         "--skip-download",
         "--dump-single-json",
-        *browser_args(browser),
         normalized_url,
     ]
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=INSPECTION_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SourceError("Source inspection timed out.") from exc
     except OSError as exc:
         raise SourceError(f"Could not start yt-dlp: {exc}") from exc
     if completed.returncode:
@@ -117,7 +146,6 @@ def inspect_source(
         "title": payload.get("title"),
         "uploader": payload.get("uploader"),
         "duration": payload.get("duration"),
-        "webpage_url": payload.get("webpage_url", normalized_url),
         "formats": group_formats(raw_formats),
     }
 
@@ -133,7 +161,6 @@ def _selected_format(format_id: str) -> str:
 def build_download_command(
     url: str,
     destination: Path,
-    browser: str = "",
     format_id: str = "",
     *,
     yt_dlp: str = "yt-dlp",
@@ -142,8 +169,15 @@ def build_download_command(
     validate_social_url(normalized_url)
     return [
         *_yt_dlp_command(yt_dlp),
-        "--no-playlist",
         "--no-overwrites",
+        "--max-filesize",
+        MAX_SOURCE_SIZE,
+        "--socket-timeout",
+        str(SOCKET_TIMEOUT_SECONDS),
+        "--retries",
+        str(NETWORK_RETRIES),
+        "--fragment-retries",
+        str(NETWORK_RETRIES),
         "--restrict-filenames",
         "--windows-filenames",
         "-f",
@@ -154,7 +188,6 @@ def build_download_command(
         "after_move:FILE:%(filepath)s",
         "--print",
         "after_move:FORMAT:%(format_id)s",
-        *browser_args(browser),
         normalized_url,
     ]
 
@@ -234,22 +267,26 @@ def probe_media(
         raise SourceError(f"Downloaded file does not exist: {path}")
     ffprobe_path = shutil.which(ffprobe)
     if ffprobe_path:
-        completed = subprocess.run(
-            [
-                ffprobe_path,
-                "-v",
-                "error",
-                "-show_streams",
-                "-show_format",
-                "-of",
-                "json",
-                str(path),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if completed.returncode == 0:
+        try:
+            completed = subprocess.run(
+                [
+                    ffprobe_path,
+                    "-v",
+                    "error",
+                    "-show_streams",
+                    "-show_format",
+                    "-of",
+                    "json",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=PROBE_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            completed = None
+        if completed and completed.returncode == 0:
             try:
                 media = parse_ffprobe(json.loads(completed.stdout))
                 media["size"] = path.stat().st_size
@@ -260,45 +297,50 @@ def probe_media(
     ffmpeg_path = shutil.which(ffmpeg)
     if not ffmpeg_path:
         raise SourceError("FFmpeg is required to verify the downloaded file.")
-    completed = subprocess.run(
-        [
-            ffmpeg_path,
-            "-hide_banner",
-            "-i",
-            str(path),
-            "-map",
-            "0:v:0",
-            "-frames:v",
-            "1",
-            "-f",
-            "null",
-            "-",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            [
+                ffmpeg_path,
+                "-hide_banner",
+                "-i",
+                str(path),
+                "-map",
+                "0:v:0",
+                "-frames:v",
+                "1",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SourceError("Media verification timed out.") from exc
+    except OSError as exc:
+        raise SourceError(f"Could not start FFmpeg: {exc}") from exc
     media = _parse_ffmpeg_probe(completed.stderr)
     media["size"] = path.stat().st_size
     return media
 
 
 def _remove_parts(destination: Path) -> None:
-    for part in destination.glob("*.part"):
+    for part in destination.glob("*.part*"):
         part.unlink(missing_ok=True)
 
 
 def download_source(
     url: str,
     destination: Path,
-    browser: str = "",
     format_id: str = "",
     *,
     yt_dlp: str = "yt-dlp",
 ) -> dict[str, Any]:
     destination.mkdir(parents=True, exist_ok=True)
     if format_id:
-        inspected = inspect_source(url, browser, yt_dlp=yt_dlp)
+        inspected = inspect_source(url, yt_dlp=yt_dlp)
         available = {
             current
             for group in inspected.get("formats", [])
@@ -307,16 +349,14 @@ def download_source(
         if format_id not in available:
             raise SourceError("The selected source format is no longer available.")
 
-    command = build_download_command(
-        url, destination, browser, format_id, yt_dlp=yt_dlp
-    )
+    command = build_download_command(url, destination, format_id, yt_dlp=yt_dlp)
     try:
         completed = subprocess.run(
             command,
             capture_output=True,
             text=True,
             check=False,
-            timeout=900,
+            timeout=DOWNLOAD_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
         _remove_parts(destination)
@@ -338,6 +378,9 @@ def download_source(
     root = destination.resolve()
     if not file_path.is_relative_to(root) or not file_path.is_file():
         raise SourceError("Download completed, but the saved file was not found.")
+    if file_path.stat().st_size > MAX_SOURCE_BYTES:
+        file_path.unlink(missing_ok=True)
+        raise SourceError("The downloaded source exceeds the 8 GiB limit.")
     selected = values.get("FORMAT", format_id or "best")
     return {
         "path": file_path,

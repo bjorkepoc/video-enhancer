@@ -12,9 +12,10 @@ your Mac; the app has no cloud backend.
 - TikTok and Instagram HTTPS links
 - Source inspection with grouped resolution, codec, bitrate, and CDN mirrors
 - Best-available original download with saved-file resolution/FPS verification
-- Optional Chrome, Safari, or Firefox session for sources that require login
 - 2x Lanczos or Bicubic upscaling
 - Frame interpolation to 48, 60, 90, 144 FPS, or any positive FPS value
+- 1 FPS playback, calibrated frame stepping, and 1x-8x focal zoom/pan
+- Physical browser downloads with byte-range video playback
 - Metadata search links, local keyframes, and advisory repost comparison
 - CPU encoders: `libx264`, `libx265`
 - Dry-run mode that prints the exact FFmpeg command
@@ -47,12 +48,18 @@ video-enhancer-web --open
 ```
 
 The server binds to `127.0.0.1`, previews original and derived files in the
-browser, and writes files under `outputs/web/`.
+browser, and keeps working files in a process-specific temporary directory.
+Use **Slett lokale arbeidsfiler** to clear them immediately; normal app shutdown
+also removes them.
 
 Paste a TikTok or Instagram link, inspect its variants, then download `Best
-available` or a specific format. Choose a browser session only when anonymous
-access fails; cookies are read by yt-dlp for that request and are not copied,
-stored, or returned by the app.
+available` or a specific format. Source access is anonymous: the app never
+reads browser cookies or handles platform login sessions.
+
+The local UI loads no ads, analytics, cookies, or third-party scripts. TikTok
+or Instagram is contacted only after a link action, and external search tools
+open only after their links are clicked. See
+[the launch/privacy/security checklist](docs/launch-privacy-security.md).
 
 Result labels are literal:
 
@@ -118,7 +125,7 @@ video-enhancer --list-encoders
 ## Limits
 
 - The app cannot guarantee Full HD, a particular bitrate, or native high FPS.
-  It can only save variants exposed by the platform for that post and session.
+  It can only save variants exposed anonymously for that post.
 - Platform compression cannot be reversed. No downloader can recreate detail
   discarded before the platform served the file.
 - Upscaling cannot recover detail that was never in the source.

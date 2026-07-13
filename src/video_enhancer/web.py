@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import secrets
+import shutil
 import subprocess
 import tempfile
 import threading
-import time
 import uuid
 import webbrowser
 from dataclasses import dataclass, field
@@ -24,7 +25,6 @@ from .ffmpeg import (
     FFmpegNotFoundError,
     VideoEnhancerError,
     build_ffmpeg_command,
-    format_command,
     resolve_ffmpeg,
 )
 from .presets import available_presets, get_preset
@@ -41,9 +41,14 @@ from .sources import (
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-DEFAULT_WORK_DIR = Path("outputs/web")
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".m4v", ".webm", ".avi"}
 MAX_JSON_BODY = 20_000
+MAX_VIDEO_BODY = 8 * 1024**3
+ENHANCEMENT_TIMEOUT_SECONDS = 6 * 60 * 60
+REQUEST_TIMEOUT_SECONDS = 60
+API_TOKEN_HEADER = "x-video-enhancer-token"  # nosec B105
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+BIND_HOSTS = {"127.0.0.1", "localhost"}
 MODES = {
     "60": {"fps": ["60"], "scale": ["1"], "preset": ["quality"]},
     "90": {"fps": ["90"], "scale": ["1"], "preset": ["ultra"]},
@@ -61,7 +66,7 @@ HTML = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Video Enhancer</title>
-  <style>
+  <style nonce="__CSP_NONCE__">
     :root {
       color-scheme: light;
       --bg: #f3f5f7;
@@ -109,6 +114,8 @@ HTML = """<!doctype html>
       font-size: 13px;
       white-space: nowrap;
     }
+    .header-actions { display: flex; align-items: center; gap: 8px; }
+    .header-actions button { width: auto; min-height: 36px; }
     main {
       display: grid;
       grid-template-columns: minmax(360px, 500px) minmax(0, 1fr);
@@ -151,12 +158,11 @@ HTML = """<!doctype html>
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(13, 127, 134, .13);
     }
-    .grid, .source-row, .action-grid {
+    .grid, .action-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 14px;
     }
-    .source-row { grid-template-columns: minmax(0, 1fr) 130px; }
     .action-grid { margin-top: 14px; }
     .segmented {
       display: grid;
@@ -229,6 +235,9 @@ HTML = """<!doctype html>
       background: #fbfdff;
     }
     .hint { color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .mt-8 { margin-top: 8px; }
+    .mt-10 { margin-top: 10px; }
+    .mt-14 { margin-top: 14px; }
     .source-summary {
       margin-top: 16px;
       padding-top: 16px;
@@ -289,12 +298,74 @@ HTML = """<!doctype html>
       background: var(--log);
     }
     .comparison-copy { margin-top: 6px; }
-    video {
+    .video-stage {
+      position: relative;
       width: 100%;
       aspect-ratio: 16 / 9;
+      overflow: hidden;
       border-radius: 8px;
       background: #101820;
+      touch-action: none;
+      user-select: none;
+    }
+    .video-stage[data-zoomed="true"] { cursor: grab; }
+    .video-stage.dragging { cursor: grabbing; }
+    .video-stage video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
       display: block;
+      transform-origin: 0 0;
+      will-change: transform;
+    }
+    .player-shell:fullscreen {
+      display: grid;
+      align-content: center;
+      padding: 16px;
+      background: #101820;
+    }
+    .player-shell:fullscreen .video-stage {
+      width: min(100%, calc((100vh - 70px) * 16 / 9));
+      margin: 0 auto;
+    }
+    .playback-controls {
+      display: grid;
+      grid-template-columns: 38px minmax(70px, 1fr) auto 38px minmax(62px, 80px) 38px;
+      gap: 6px;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .playback-controls button, .zoom-controls button {
+      min-height: 38px;
+      padding: 0;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+    }
+    .playback-controls button:hover, .zoom-controls button:hover {
+      border-color: var(--accent);
+      background: #fff;
+    }
+    .playback-controls input, .zoom-controls input {
+      min-width: 0;
+      min-height: 38px;
+      margin: 0;
+      padding: 0;
+    }
+    .playback-time {
+      min-width: 70px;
+      color: var(--muted);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+      white-space: nowrap;
+    }
+    .zoom-controls {
+      display: grid;
+      grid-template-columns: 38px minmax(80px, 1fr) 38px 48px;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
     }
     .frame-controls {
       display: grid;
@@ -368,26 +439,59 @@ HTML = """<!doctype html>
     .result strong { overflow-wrap: anywhere; }
     .result + .result { margin-top: 10px; }
     .button-status { min-height: 18px; margin-top: 10px; color: var(--danger); }
+    footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 0 18px 18px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    footer button { width: auto; min-height: 36px; }
+    dialog {
+      width: min(560px, calc(100vw - 32px));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0;
+      color: var(--ink);
+      background: #fff;
+    }
+    dialog::backdrop { background: rgba(16, 24, 32, .56); }
+    .dialog-body { padding: 20px; }
+    .dialog-body p + p { margin-top: 12px; }
+    .dialog-actions { display: flex; justify-content: flex-end; margin-top: 18px; }
+    .dialog-actions button { width: auto; }
     @media (max-width: 980px) {
       header, main { display: block; }
       main { padding: 12px; }
       .panel { margin-bottom: 12px; }
       .preview-grid, .grid, .action-grid { grid-template-columns: 1fr; }
       .status-pill { display: inline-block; margin-top: 12px; }
+      .header-actions { margin-top: 12px; }
     }
     @media (max-width: 520px) {
       header { padding: 16px; }
       .panel-inner { padding: 16px; }
-      .source-row, .media-meta { grid-template-columns: 1fr; }
+      .media-meta { grid-template-columns: 1fr; }
       .source-heading { display: block; }
       .quality-label { margin-top: 5px; text-align: left; }
+      .playback-controls { grid-template-columns: 38px minmax(60px, 1fr) auto 38px 38px; }
+      .volume-slider { display: none; }
+      footer { display: block; }
+      footer button { margin-top: 10px; }
     }
   </style>
 </head>
 <body>
   <header>
     <h1>Video Enhancer</h1>
-    <div class="status-pill" id="ffmpeg-status">Kontrollerer FFmpeg...</div>
+    <div class="header-actions">
+      <div class="status-pill" id="ffmpeg-status">Kontrollerer FFmpeg...</div>
+      <button class="secondary-button" id="privacy-open" type="button">Personvern</button>
+    </div>
   </header>
 
   <main>
@@ -400,20 +504,11 @@ HTML = """<!doctype html>
 
         <div id="link-controls" role="tabpanel">
           <h2>Kildevideo</h2>
-          <div class="source-row">
-            <label> TikTok- eller Instagram-link
-              <input id="source-url" type="url" inputmode="url" autocomplete="url" placeholder="https://...">
-            </label>
-            <label>Nettleserøkt
-              <select id="browser-session">
-                <option value="">Ingen</option>
-                <option value="safari">Safari</option>
-                <option value="chrome">Chrome</option>
-                <option value="firefox">Firefox</option>
-              </select>
-            </label>
-          </div>
-          <button id="inspect-source" type="button" style="margin-top:14px">Inspiser kilde</button>
+          <label>TikTok- eller Instagram-link
+            <input id="source-url" type="url" inputmode="url" autocomplete="url" placeholder="https://...">
+          </label>
+          <p class="hint mt-8">Bruk bare offentlige videoer du eier eller har tillatelse til å laste ned.</p>
+          <button class="mt-14" id="inspect-source" type="button">Inspiser kilde</button>
           <p class="hint button-status" id="source-error" role="alert"></p>
 
           <div class="source-summary" id="source-result" hidden>
@@ -429,7 +524,7 @@ HTML = """<!doctype html>
                 <option value="">Best tilgjengelig</option>
               </select>
             </label>
-            <button id="download-original" type="button" style="margin-top:14px">Last ned original</button>
+            <button class="mt-14" id="download-original" type="button">Last ned original</button>
             <div class="action-grid">
               <button class="secondary-button" id="download-60" type="button" disabled>Lag 60 FPS-kopi</button>
               <button class="secondary-button" id="download-90" type="button" disabled>Lag 90 FPS-kopi</button>
@@ -446,11 +541,11 @@ HTML = """<!doctype html>
                 <a class="secondary" id="search-tineye" href="#" target="_blank" rel="noreferrer">TinEye</a>
               </div>
               <div class="keyframe-grid" id="keyframes" hidden></div>
-              <label style="margin-top:14px">Kandidat-link
+              <label class="mt-14">Kandidat-link
                 <input id="candidate-url" type="url" inputmode="url" autocomplete="url" placeholder="https://..." disabled>
               </label>
-              <button class="secondary-button" id="compare-candidate" type="button" style="margin-top:10px" disabled>Sammenlign kandidat</button>
-              <div class="result" id="comparison-result" style="margin-top:10px" hidden>
+              <button class="secondary-button mt-10" id="compare-candidate" type="button" disabled>Sammenlign kandidat</button>
+              <div class="result mt-10" id="comparison-result" hidden>
                 <div>
                   <strong id="comparison-title"></strong>
                   <p class="hint comparison-copy" id="comparison-detail"></p>
@@ -486,12 +581,11 @@ HTML = """<!doctype html>
             <label class="check"><input id="no-interpolate" type="checkbox"> Ingen interpolering</label>
           </div>
 
-          <label style="margin-top:14px">Filnavn
+          <label class="mt-14">Filnavn
             <input id="output-name" type="text" placeholder="example-enhanced.mp4">
           </label>
 
-          <button id="start" type="button" style="margin-top:14px">Start eksport</button>
-          <pre id="command">Kommandoen vises når eksporten starter.</pre>
+          <button class="mt-14" id="start" type="button">Start eksport</button>
           </div>
         </div>
       </div>
@@ -500,9 +594,27 @@ HTML = """<!doctype html>
     <section class="panel">
       <div class="panel-inner">
         <div class="preview-grid">
-          <div class="video-preview" id="source-player">
+          <div class="video-preview" id="source-player" tabindex="0">
             <div class="video-title">Original <span class="meta" id="input-meta">Ikke lastet</span></div>
-            <video id="source-video" controls></video>
+            <div class="player-shell" id="source-shell">
+              <div class="video-stage" id="source-stage" data-zoomed="false">
+                <video id="source-video" preload="metadata" playsinline></video>
+              </div>
+              <div class="playback-controls" role="group" aria-label="Avspillingskontroller for original">
+                <button id="source-play" type="button" aria-label="Spill av" title="Spill av" disabled>&#9654;</button>
+                <input id="source-seek" type="range" min="0" max="0" step="0.001" value="0" aria-label="Tidslinje for original" disabled>
+                <span class="playback-time" id="source-time">0:00 / 0:00</span>
+                <button id="source-mute" type="button" aria-label="Demp lyd" title="Demp lyd" disabled>&#128266;</button>
+                <input class="volume-slider" id="source-volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Lydstyrke for original" disabled>
+                <button id="source-fullscreen" type="button" aria-label="Fullskjerm" title="Fullskjerm" disabled>&#9974;</button>
+              </div>
+            </div>
+            <div class="zoom-controls" role="group" aria-label="Zoomkontroller for original">
+              <button id="source-zoom-out" type="button" aria-label="Zoom ut" title="Zoom ut" disabled>&minus;</button>
+              <input id="source-zoom" type="range" min="1" max="8" step="0.1" value="1" aria-label="Zoomnivå for original" disabled>
+              <button id="source-zoom-in" type="button" aria-label="Zoom inn" title="Zoom inn" disabled>+</button>
+              <button id="source-zoom-reset" type="button" aria-label="Nullstill zoom" title="Nullstill zoom" disabled>1&times;</button>
+            </div>
             <div class="frame-controls" id="source-frame-controls" role="group" aria-label="Bildekontroller for original">
               <button id="source-previous-frame" type="button" aria-label="Forrige bilde" title="Forrige bilde" disabled>&#9664;</button>
               <button id="source-one-fps" type="button" aria-label="Spill av ett bilde per sekund" title="Spill av ett bilde per sekund" aria-pressed="false" disabled>1 FPS</button>
@@ -510,9 +622,27 @@ HTML = """<!doctype html>
               <label class="frame-fps"><span>Steg-FPS</span><input id="source-frame-fps" type="number" min="1" max="240" step="0.001" value="30" aria-label="Bilder per sekund for original" disabled></label>
             </div>
           </div>
-          <div class="video-preview" id="output-player">
+          <div class="video-preview" id="output-player" tabindex="0">
             <div class="video-title">Avledet kopi <span class="meta" id="output-meta">Ikke startet</span></div>
-            <video id="output-video" controls></video>
+            <div class="player-shell" id="output-shell">
+              <div class="video-stage" id="output-stage" data-zoomed="false">
+                <video id="output-video" preload="metadata" playsinline></video>
+              </div>
+              <div class="playback-controls" role="group" aria-label="Avspillingskontroller for avledet kopi">
+                <button id="output-play" type="button" aria-label="Spill av" title="Spill av" disabled>&#9654;</button>
+                <input id="output-seek" type="range" min="0" max="0" step="0.001" value="0" aria-label="Tidslinje for avledet kopi" disabled>
+                <span class="playback-time" id="output-time">0:00 / 0:00</span>
+                <button id="output-mute" type="button" aria-label="Demp lyd" title="Demp lyd" disabled>&#128266;</button>
+                <input class="volume-slider" id="output-volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Lydstyrke for avledet kopi" disabled>
+                <button id="output-fullscreen" type="button" aria-label="Fullskjerm" title="Fullskjerm" disabled>&#9974;</button>
+              </div>
+            </div>
+            <div class="zoom-controls" role="group" aria-label="Zoomkontroller for avledet kopi">
+              <button id="output-zoom-out" type="button" aria-label="Zoom ut" title="Zoom ut" disabled>&minus;</button>
+              <input id="output-zoom" type="range" min="1" max="8" step="0.1" value="1" aria-label="Zoomnivå for avledet kopi" disabled>
+              <button id="output-zoom-in" type="button" aria-label="Zoom inn" title="Zoom inn" disabled>+</button>
+              <button id="output-zoom-reset" type="button" aria-label="Nullstill zoom" title="Nullstill zoom" disabled>1&times;</button>
+            </div>
             <div class="frame-controls" id="output-frame-controls" role="group" aria-label="Bildekontroller for avledet kopi">
               <button id="output-previous-frame" type="button" aria-label="Forrige bilde" title="Forrige bilde" disabled>&#9664;</button>
               <button id="output-one-fps" type="button" aria-label="Spill av ett bilde per sekund" title="Spill av ett bilde per sekund" aria-pressed="false" disabled>1 FPS</button>
@@ -544,46 +674,255 @@ HTML = """<!doctype html>
     </section>
   </main>
 
-  <script>
-    const $ = (id) => document.getElementById(id);
-    const state = { file: null, poll: null, sourceId: null, outputFps: 30, presetFps: {} };
+  <footer>
+    <span>Kun midlertidige filer på denne Macen</span>
+    <button class="secondary-button" id="clear-session" type="button">Slett lokale arbeidsfiler</button>
+  </footer>
 
-    function createFrameController(name) {
+  <dialog id="privacy-dialog" aria-labelledby="privacy-title">
+    <div class="dialog-body">
+      <h2 id="privacy-title">Personvern</h2>
+      <p class="hint">Videoer og avledede filer behandles i en midlertidig mappe på denne Macen. Det finnes ingen konto, database, analyse, annonser, cookies eller annen nettleserlagring.</p>
+      <p class="hint">Når du bruker en TikTok- eller Instagram-link, kontakter denne Macen den valgte plattformen direkte. Eksterne søketjenester åpnes bare når du selv trykker på en søkelink. Ingenting lastes opp til en Video Enhancer-skytjeneste.</p>
+      <p class="hint">Arbeidsfilene slettes når appen stopper normalt, eller straks med sletteknappen. En fil du aktivt laster ned til en valgt mappe, beholdes av nettleseren.</p>
+      <p class="hint">Last bare ned innhold du eier eller har tillatelse til å bruke. Verktøyet omgår ikke privat innhold eller innlogging.</p>
+      <div class="dialog-actions">
+        <button id="privacy-close" type="button">Lukk</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script nonce="__CSP_NONCE__">
+    const $ = (id) => document.getElementById(id);
+    const sessionToken = "__SESSION_TOKEN__";
+    const state = {
+      file: null,
+      objectUrl: null,
+      poll: null,
+      sourceId: null,
+      outputFps: 30,
+      presetFps: {},
+    };
+
+    function apiFetch(path, options = {}) {
+      const headers = new Headers(options.headers || {});
+      headers.set("x-video-enhancer-token", sessionToken);
+      return fetch(path, { ...options, headers });
+    }
+
+    function localFileUrl(path, download = false) {
+      const url = new URL(path, window.location.origin);
+      url.searchParams.set("token", sessionToken);
+      if (download) url.searchParams.set("download", "1");
+      return `${url.pathname}${url.search}`;
+    }
+
+    function replaceOptions(select, values) {
+      select.replaceChildren(...values.map((value) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        return option;
+      }));
+    }
+
+    function clock(seconds) {
+      const value = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+      const minutes = Math.floor(value / 60);
+      return `${minutes}:${String(Math.floor(value % 60)).padStart(2, "0")}`;
+    }
+
+    function createPlayerController(name) {
       const player = $(`${name}-player`);
+      const shell = $(`${name}-shell`);
+      const stage = $(`${name}-stage`);
       const video = $(`${name}-video`);
+      const play = $(`${name}-play`);
+      const seek = $(`${name}-seek`);
+      const timeLabel = $(`${name}-time`);
+      const mute = $(`${name}-mute`);
+      const volume = $(`${name}-volume`);
+      const fullscreen = $(`${name}-fullscreen`);
+      const zoom = $(`${name}-zoom`);
+      const zoomOut = $(`${name}-zoom-out`);
+      const zoomIn = $(`${name}-zoom-in`);
+      const zoomReset = $(`${name}-zoom-reset`);
       const previous = $(`${name}-previous-frame`);
       const oneFps = $(`${name}-one-fps`);
       const next = $(`${name}-next-frame`);
       const fpsInput = $(`${name}-frame-fps`);
-      const controls = [previous, oneFps, next, fpsInput];
+      const controls = [
+        play, seek, mute, volume, fullscreen,
+        zoom, zoomOut, zoomIn, zoomReset,
+        previous, oneFps, next, fpsInput,
+      ];
+      const pointers = new Map();
       let timer = null;
+      let scale = 1;
+      let offsetX = 0;
+      let offsetY = 0;
+      let lastPoint = null;
+      let lastPinch = null;
 
       const fps = () => {
         const value = Number(fpsInput.value);
         return Number.isFinite(value) && value > 0 ? value : 30;
       };
-      const stop = () => {
+      const stopOneFps = () => {
         if (timer !== null) clearInterval(timer);
         timer = null;
         oneFps.setAttribute("aria-pressed", "false");
       };
       const step = (direction, keepOneFps = false) => {
-        if (!keepOneFps) stop();
+        if (!keepOneFps) stopOneFps();
         video.pause();
         const duration = Number.isFinite(video.duration) ? video.duration : 0;
-        const target = video.currentTime + direction / fps();
+        const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+        const target = current + direction / fps();
         video.currentTime = Math.max(0, Math.min(duration, target));
-        if (direction > 0 && target >= duration) stop();
+        if (direction > 0 && target >= duration) stopOneFps();
       };
-      const setEnabled = (enabled) => controls.forEach((control) => {
-        control.disabled = !enabled;
-      });
+      const setEnabled = (enabled) => {
+        controls.forEach((control) => { control.disabled = !enabled; });
+        fullscreen.disabled = !enabled || typeof shell.requestFullscreen !== "function";
+      };
+      const updatePlayback = () => {
+        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+        const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+        seek.max = String(duration);
+        seek.value = String(Math.min(current, duration));
+        timeLabel.textContent = `${clock(current)} / ${clock(duration)}`;
+        const paused = video.paused;
+        play.textContent = paused ? "\u25b6" : "\u275a\u275a";
+        play.setAttribute("aria-label", paused ? "Spill av" : "Pause");
+        play.title = paused ? "Spill av" : "Pause";
+        const muted = video.muted || video.volume === 0;
+        mute.textContent = muted ? "\\ud83d\\udd07" : "\\ud83d\\udd0a";
+        mute.setAttribute("aria-label", muted ? "Sl\u00e5 p\u00e5 lyd" : "Demp lyd");
+        mute.title = muted ? "Sl\u00e5 p\u00e5 lyd" : "Demp lyd";
+      };
+      const togglePlayback = () => {
+        stopOneFps();
+        if (video.paused) video.play().catch(() => {});
+        else video.pause();
+      };
+      const clampPan = () => {
+        const rect = stage.getBoundingClientRect();
+        offsetX = Math.min(0, Math.max(rect.width * (1 - scale), offsetX));
+        offsetY = Math.min(0, Math.max(rect.height * (1 - scale), offsetY));
+      };
+      const renderZoom = () => {
+        clampPan();
+        video.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+        zoom.value = String(Math.round(scale * 10) / 10);
+        stage.dataset.zoomed = String(scale > 1);
+      };
+      const zoomAt = (value, clientX, clientY) => {
+        const nextScale = Math.min(8, Math.max(1, Number(value) || 1));
+        const rect = stage.getBoundingClientRect();
+        const pointX = Number.isFinite(clientX) ? clientX - rect.left : rect.width / 2;
+        const pointY = Number.isFinite(clientY) ? clientY - rect.top : rect.height / 2;
+        const ratio = nextScale / scale;
+        offsetX = pointX - (pointX - offsetX) * ratio;
+        offsetY = pointY - (pointY - offsetY) * ratio;
+        scale = nextScale;
+        renderZoom();
+      };
+      const resetZoom = () => {
+        scale = 1;
+        offsetX = 0;
+        offsetY = 0;
+        renderZoom();
+      };
+      const gesture = () => {
+        const [first, second] = [...pointers.values()];
+        return {
+          x: (first.x + second.x) / 2,
+          y: (first.y + second.y) / 2,
+          distance: Math.hypot(second.x - first.x, second.y - first.y),
+        };
+      };
 
+      play.addEventListener("click", togglePlayback);
+      seek.addEventListener("input", () => {
+        stopOneFps();
+        video.currentTime = Number(seek.value);
+      });
+      mute.addEventListener("click", () => {
+        video.muted = !video.muted;
+        updatePlayback();
+      });
+      volume.addEventListener("input", () => {
+        video.volume = Number(volume.value);
+        video.muted = false;
+      });
+      fullscreen.addEventListener("click", () => {
+        if (document.fullscreenElement === shell) document.exitFullscreen();
+        else shell.requestFullscreen().catch(() => {});
+      });
+      zoom.addEventListener("input", () => zoomAt(Number(zoom.value)));
+      zoomOut.addEventListener("click", () => zoomAt(scale - 0.5));
+      zoomIn.addEventListener("click", () => zoomAt(scale + 0.5));
+      zoomReset.addEventListener("click", resetZoom);
+      stage.addEventListener("wheel", (event) => {
+        if (zoom.disabled) return;
+        event.preventDefault();
+        zoomAt(scale * Math.exp(-event.deltaY * 0.002), event.clientX, event.clientY);
+      }, { passive: false });
+      stage.addEventListener("dblclick", (event) => {
+        if (zoom.disabled) return;
+        event.preventDefault();
+        if (scale >= 7.9) resetZoom();
+        else zoomAt(Math.min(8, scale * 2), event.clientX, event.clientY);
+      });
+      stage.addEventListener("pointerdown", (event) => {
+        if (zoom.disabled) return;
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        stage.setPointerCapture(event.pointerId);
+        if (pointers.size === 1) lastPoint = { x: event.clientX, y: event.clientY };
+        if (pointers.size === 2) lastPinch = gesture();
+        if (scale > 1 || pointers.size > 1) stage.classList.add("dragging");
+      });
+      stage.addEventListener("pointermove", (event) => {
+        if (!pointers.has(event.pointerId)) return;
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        if (pointers.size >= 2) {
+          const current = gesture();
+          if (lastPinch) {
+            offsetX += current.x - lastPinch.x;
+            offsetY += current.y - lastPinch.y;
+            zoomAt(
+              scale * current.distance / Math.max(1, lastPinch.distance),
+              current.x,
+              current.y,
+            );
+          }
+          lastPinch = current;
+          event.preventDefault();
+          return;
+        }
+        if (scale > 1 && lastPoint) {
+          offsetX += event.clientX - lastPoint.x;
+          offsetY += event.clientY - lastPoint.y;
+          lastPoint = { x: event.clientX, y: event.clientY };
+          renderZoom();
+          event.preventDefault();
+        }
+      });
+      const endPointer = (event) => {
+        pointers.delete(event.pointerId);
+        if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
+        lastPinch = pointers.size >= 2 ? gesture() : null;
+        lastPoint = pointers.size === 1 ? [...pointers.values()][0] : null;
+        if (!pointers.size) stage.classList.remove("dragging");
+      };
+      stage.addEventListener("pointerup", endPointer);
+      stage.addEventListener("pointercancel", endPointer);
       previous.addEventListener("click", () => step(-1));
       next.addEventListener("click", () => step(1));
       oneFps.addEventListener("click", () => {
         if (timer !== null) {
-          stop();
+          stopOneFps();
           return;
         }
         video.pause();
@@ -591,17 +930,45 @@ HTML = """<!doctype html>
         timer = setInterval(() => step(1, true), 1000);
       });
       player.addEventListener("keydown", (event) => {
-        if (event.target === fpsInput || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
-        event.preventDefault();
-        step(event.key === "ArrowRight" ? 1 : -1);
+        if (event.target instanceof HTMLInputElement) return;
+        if (["ArrowLeft", "ArrowRight"].includes(event.key)) {
+          event.preventDefault();
+          step(event.key === "ArrowRight" ? 1 : -1);
+        } else if (event.code === "Space") {
+          event.preventDefault();
+          togglePlayback();
+        } else if (["+", "="].includes(event.key)) {
+          event.preventDefault();
+          zoomAt(scale + 0.5);
+        } else if (event.key === "-") {
+          event.preventDefault();
+          zoomAt(scale - 0.5);
+        } else if (event.key === "0") {
+          event.preventDefault();
+          resetZoom();
+        }
       });
-      video.addEventListener("loadedmetadata", () => setEnabled(true));
+      video.addEventListener("loadedmetadata", () => {
+        setEnabled(true);
+        resetZoom();
+        updatePlayback();
+      });
       video.addEventListener("emptied", () => {
-        stop();
+        stopOneFps();
+        resetZoom();
         setEnabled(false);
+        updatePlayback();
       });
-      video.addEventListener("play", stop);
-      video.addEventListener("ended", stop);
+      video.addEventListener("play", () => {
+        stopOneFps();
+        updatePlayback();
+      });
+      video.addEventListener("pause", updatePlayback);
+      video.addEventListener("timeupdate", updatePlayback);
+      video.addEventListener("durationchange", updatePlayback);
+      video.addEventListener("volumechange", updatePlayback);
+      video.addEventListener("ended", stopOneFps);
+      new ResizeObserver(renderZoom).observe(stage);
 
       return {
         fps,
@@ -610,11 +977,18 @@ HTML = """<!doctype html>
           const nextFps = Number.isFinite(parsed) && parsed > 0 ? parsed : 30;
           fpsInput.value = String(Math.round(nextFps * 1000) / 1000);
         },
+        reset() {
+          stopOneFps();
+          resetZoom();
+          fpsInput.value = "30";
+          setEnabled(false);
+          updatePlayback();
+        },
       };
     }
 
-    const sourceFrames = createFrameController("source");
-    const outputFrames = createFrameController("output");
+    const sourceFrames = createPlayerController("source");
+    const outputFrames = createPlayerController("output");
 
     function setLog(lines) {
       $("log").textContent = lines && lines.length ? lines.join("\\n") : "Klar.";
@@ -627,13 +1001,13 @@ HTML = """<!doctype html>
     }
 
     async function loadConfig() {
-      const response = await fetch("/api/config");
+      const response = await apiFetch("/api/config");
       const config = await response.json();
       $("ffmpeg-status").textContent = config.ffmpeg ? `FFmpeg: ${config.ffmpeg}` : "FFmpeg: ikke funnet";
-      $("preset").innerHTML = config.presets.map((name) => `<option value="${name}">${name}</option>`).join("");
+      replaceOptions($("preset"), config.presets);
       $("preset").value = "balanced";
       state.presetFps = config.preset_fps || {};
-      $("codec").innerHTML = config.codecs.map((name) => `<option value="${name}">${name}</option>`).join("");
+      replaceOptions($("codec"), config.codecs);
       $("codec").value = "libx264";
     }
 
@@ -661,7 +1035,7 @@ HTML = """<!doctype html>
     }
 
     async function postJSON(path, body) {
-      const response = await fetch(path, {
+      const response = await apiFetch(path, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -723,7 +1097,6 @@ HTML = """<!doctype html>
       try {
         showSourceInfo(await postJSON("/api/sources/inspect", {
           url,
-          browser: $("browser-session").value,
         }));
       } catch (error) {
         $("source-error").textContent = error.message;
@@ -740,7 +1113,6 @@ HTML = """<!doctype html>
       setLog(["Starter originalnedlasting..."]);
       try {
         const source = await postJSON(`/api/sources/${state.sourceId}/download`, {
-          browser: $("browser-session").value,
           format_id: $("source-format").value,
         });
         watchSource(source.id).catch(showPollingError);
@@ -780,9 +1152,9 @@ HTML = """<!doctype html>
       $("keyframes").replaceChildren(...urls.map((url, index) => {
         const link = document.createElement("a");
         const image = document.createElement("img");
-        link.href = url;
+        link.href = localFileUrl(url, true);
         link.download = `keyframe-${index + 1}.jpg`;
-        image.src = url;
+        image.src = localFileUrl(url);
         image.alt = `Nøkkelbilde ${index + 1}`;
         link.append(image);
         return link;
@@ -793,7 +1165,7 @@ HTML = """<!doctype html>
     async function watchSource(id) {
       clearInterval(state.poll);
       const tick = async () => {
-        const response = await fetch(`/api/sources/${id}`);
+        const response = await apiFetch(`/api/sources/${id}`);
         const source = await response.json();
         if (!response.ok) throw new Error(source.error || "Kildejobben ble ikke funnet");
         setLog(source.logs);
@@ -803,10 +1175,11 @@ HTML = """<!doctype html>
           $("source-quality").textContent = label;
           $("source-result-label").textContent = label;
           $("source-result-name").textContent = source.original_name;
-          $("source-download").href = source.original_url;
+          $("source-download").href = localFileUrl(source.original_url, true);
           $("source-download-result").hidden = false;
           sourceFrames.setFps(source.media.fps);
-          $("source-video").src = source.original_url;
+          releaseObjectUrl();
+          $("source-video").src = localFileUrl(source.original_url);
           $("source-video").load();
           $("input-meta").textContent = `${mediaValue(source.media.width)}x${mediaValue(source.media.height)} · ${mediaValue(source.media.fps, " FPS")}`;
           renderMedia(source.media);
@@ -841,7 +1214,6 @@ HTML = """<!doctype html>
       $("output-meta").textContent = "Starter";
       try {
         const job = await postJSON(`/api/sources/${state.sourceId}/enhance`, { mode });
-        $("command").textContent = job.command;
         watchJob(job.id, true).catch(showPollingError);
       } catch (error) {
         setDerivedDisabled(false);
@@ -866,7 +1238,6 @@ HTML = """<!doctype html>
       try {
         const source = await postJSON(`/api/sources/${state.sourceId}/compare`, {
           url,
-          browser: $("browser-session").value,
         });
         watchComparison(source.id).catch(showPollingError);
       } catch (error) {
@@ -894,7 +1265,7 @@ HTML = """<!doctype html>
     async function watchComparison(id) {
       clearInterval(state.poll);
       const tick = async () => {
-        const response = await fetch(`/api/sources/${id}`);
+        const response = await apiFetch(`/api/sources/${id}`);
         const source = await response.json();
         if (!response.ok) throw new Error(source.error || "Kildejobben ble ikke funnet");
         setLog(source.logs);
@@ -912,14 +1283,23 @@ HTML = """<!doctype html>
       await tick();
     }
 
+    function releaseObjectUrl() {
+      if (!state.objectUrl) return;
+      URL.revokeObjectURL(state.objectUrl);
+      state.objectUrl = null;
+    }
+
     $("file").addEventListener("change", () => {
       const file = $("file").files[0];
+      releaseObjectUrl();
       state.file = file || null;
       if (!file) return;
       $("file-hint").textContent = `${file.name} • ${(file.size / 1024 / 1024).toFixed(1)} MB`;
       $("output-name").value = safeOutputName(file.name);
       sourceFrames.setFps(30);
-      $("source-video").src = URL.createObjectURL(file);
+      state.objectUrl = URL.createObjectURL(file);
+      $("source-video").src = state.objectUrl;
+      $("source-video").load();
       $("input-meta").textContent = file.type || "local file";
     });
 
@@ -949,7 +1329,7 @@ HTML = """<!doctype html>
         : Number($("fps").value) || state.presetFps[$("preset").value] || 30;
 
       try {
-        const response = await fetch(`/api/jobs?${params}`, {
+        const response = await apiFetch(`/api/jobs?${params}`, {
           method: "POST",
           headers: {
             "content-type": "application/octet-stream",
@@ -959,7 +1339,6 @@ HTML = """<!doctype html>
         });
         const job = await response.json();
         if (!response.ok) throw new Error(job.error || "Export failed to start");
-        $("command").textContent = job.command;
         watchJob(job.id, false).catch(showPollingError);
       } catch (error) {
         setLog([error.message]);
@@ -970,7 +1349,7 @@ HTML = """<!doctype html>
     async function watchJob(id, fromSource) {
       clearInterval(state.poll);
       const tick = async () => {
-        const response = await fetch(`/api/jobs/${id}`);
+        const response = await apiFetch(`/api/jobs/${id}`);
         const job = await response.json();
         if (!response.ok) throw new Error(job.error || "Job not found");
         $("output-meta").textContent = job.status;
@@ -982,9 +1361,9 @@ HTML = """<!doctype html>
           $("result").hidden = false;
           $("result-name").textContent = job.output_name;
           $("result-path").textContent = "Enhanced synthetic copy";
-          $("download").href = job.output_url;
+          $("download").href = localFileUrl(job.output_url, true);
           outputFrames.setFps(state.outputFps);
-          $("output-video").src = job.output_url;
+          $("output-video").src = localFileUrl(job.output_url);
           $("output-video").load();
         }
         if (job.status === "error") {
@@ -999,6 +1378,53 @@ HTML = """<!doctype html>
       }), 1000);
       await tick();
     }
+
+    function resetInterface() {
+      clearInterval(state.poll);
+      state.poll = null;
+      state.file = null;
+      state.sourceId = null;
+      releaseObjectUrl();
+      $("file").value = "";
+      $("file-hint").textContent = "Ingen fil valgt";
+      $("source-url").value = "";
+      $("candidate-url").value = "";
+      $("candidate-url").disabled = true;
+      $("compare-candidate").disabled = true;
+      $("source-result").hidden = true;
+      $("source-download-result").hidden = true;
+      $("result").hidden = true;
+      $("source-media").hidden = true;
+      $("keyframes").hidden = true;
+      $("comparison-result").hidden = true;
+      $("source-error").textContent = "";
+      $("input-meta").textContent = "Ikke lastet";
+      $("output-meta").textContent = "Ikke startet";
+      for (const name of ["source", "output"]) {
+        const video = $(`${name}-video`);
+        video.removeAttribute("src");
+        video.load();
+      }
+      sourceFrames.reset();
+      outputFrames.reset();
+      setDerivedDisabled(true);
+      setLog(["Lokale arbeidsfiler er slettet."]);
+    }
+
+    $("clear-session").addEventListener("click", async () => {
+      $("clear-session").disabled = true;
+      try {
+        await postJSON("/api/session/clear", {});
+        resetInterface();
+      } catch (error) {
+        setLog([error.message]);
+      } finally {
+        $("clear-session").disabled = false;
+      }
+    });
+
+    $("privacy-open").addEventListener("click", () => $("privacy-dialog").showModal());
+    $("privacy-close").addEventListener("click", () => $("privacy-dialog").close());
 
     loadConfig().catch((error) => setLog([error.message]));
   </script>
@@ -1042,6 +1468,30 @@ SOURCES: dict[str, SourceJob] = {}
 LOCK = threading.Lock()
 
 
+def clear_session(work_dir: Path, *, force: bool = False) -> None:
+    """Forget completed jobs and remove this process's local working files."""
+
+    with LOCK:
+        busy = any(job.status in {"queued", "running"} for job in JOBS.values())
+        busy = busy or any(
+            source.status in {"queued", "downloading"}
+            or source.comparison_status in {"queued", "running"}
+            for source in SOURCES.values()
+        )
+        if busy and not force:
+            raise ValueError("Vent til aktive jobber er ferdige f\u00f8r du sletter.")
+        JOBS.clear()
+        SOURCES.clear()
+
+    if not work_dir.is_dir():
+        return
+    for path in work_dir.iterdir():
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+        else:
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def safe_filename(name: str, *, default: str = "video.mp4") -> str:
     """Return a pathless filename safe for local output directories."""
 
@@ -1080,47 +1530,48 @@ def build_options(params: dict[str, list[str]]) -> EnhancementOptions:
     )
 
 
-def append_log(job: Job, line: str) -> None:
-    with LOCK:
-        job.logs.append(line.rstrip())
-        job.logs = job.logs[-300:]
-
-
 def run_job(job: Job) -> None:
-    """Run FFmpeg for a job and keep a small in-memory log."""
+    """Run FFmpeg while exposing only path-free progress to the browser."""
 
-    # ponytail: in-memory job table; persist jobs when multi-user/history matters.
     with LOCK:
         job.status = "running"
         job.logs.append("Export started.")
     try:
-        process = subprocess.Popen(
+        completed = subprocess.run(
             job.command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-            bufsize=1,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=ENHANCEMENT_TIMEOUT_SECONDS,
         )
-    except OSError as exc:
+    except subprocess.TimeoutExpired:
+        job.output_path.unlink(missing_ok=True)
         with LOCK:
             job.status = "error"
-            job.error = str(exc)
-            job.logs.append(str(exc))
+            job.error = "Eksporten overskred tidsgrensen på seks timer."
+            job.logs.append(job.error)
+        return
+    except OSError:
+        job.output_path.unlink(missing_ok=True)
+        with LOCK:
+            job.status = "error"
+            job.error = "FFmpeg kunne ikke starte."
+            job.logs.append(job.error)
         return
 
-    assert process.stdout is not None
-    for line in process.stdout:
-        if line.strip():
-            append_log(job, line)
-    return_code = process.wait()
+    return_code = completed.returncode
     with LOCK:
-        if return_code == 0:
+        if return_code == 0 and job.output_path.is_file() and job.output_path.stat().st_size:
             job.status = "done"
             job.logs.append("Export finished.")
         else:
+            job.output_path.unlink(missing_ok=True)
             job.status = "error"
-            job.error = f"FFmpeg failed with exit code {return_code}."
+            job.error = (
+                f"FFmpeg failed with exit code {return_code}."
+                if return_code
+                else "FFmpeg did not create an output file."
+            )
             job.logs.append(job.error)
 
 
@@ -1130,10 +1581,8 @@ def job_payload(job: Job) -> dict[str, Any]:
         "status": job.status,
         "error": job.error,
         "logs": job.logs,
-        "command": format_command(job.command),
         "input_name": job.input_path.name,
         "output_name": job.output_path.name,
-        "output_path": str(job.output_path),
         "output_url": f"/files/{job.id}/output",
     }
 
@@ -1159,7 +1608,7 @@ def _safe_source_info(info: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         key: info.get(key)
-        for key in ("id", "platform", "title", "uploader", "duration", "webpage_url")
+        for key in ("id", "platform", "title", "uploader", "duration")
     } | {"formats": formats}
 
 
@@ -1209,7 +1658,11 @@ def create_enhancement_job(
     if Path(output_name).suffix.lower() not in {".mp4", ".mkv", ".mov", ".m4v"}:
         output_name = f"{Path(output_name).stem}.mp4"
     output_path = job_dir / output_name
-    command = build_ffmpeg_command(input_path, output_path, build_options(params))
+    try:
+        command = build_ffmpeg_command(input_path, output_path, build_options(params))
+    except Exception:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise
     job = Job(job_id, input_path, output_path, command)
     job.logs.append(f"Loaded {original}.")
     with LOCK:
@@ -1218,13 +1671,14 @@ def create_enhancement_job(
     return job
 
 
-def run_source_download(job: SourceJob, browser: str, format_id: str) -> None:
+def run_source_download(job: SourceJob, format_id: str) -> None:
     with LOCK:
         job.status = "downloading"
         job.logs.append("Original source download started.")
     try:
-        result = download_source(job.url, job.directory, browser, format_id)
+        result = download_source(job.url, job.directory, format_id)
     except (OSError, SourceError) as exc:
+        shutil.rmtree(job.directory, ignore_errors=True)
         with LOCK:
             job.status = "error"
             job.error = str(exc)
@@ -1273,14 +1727,14 @@ def _difference(left: Any, right: Any) -> float | None:
     return round(abs(float(left) - float(right)), 3)
 
 
-def compare_candidate(job: SourceJob, url: str, browser: str = "") -> dict[str, Any]:
+def compare_candidate(job: SourceJob, url: str) -> dict[str, Any]:
     if not job.original_path:
         raise SourceError("Download the original source before comparing it.")
-    info = inspect_source(url, browser)
+    info = inspect_source(url)
     format_id = _lowest_candidate_format(info)
     job.directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="candidate-", dir=job.directory) as temporary:
-        candidate = download_source(url, Path(temporary), browser, format_id)
+        candidate = download_source(url, Path(temporary), format_id)
         comparison = compare_hashes(
             sample_frame_hashes(job.original_path),
             sample_frame_hashes(candidate["path"]),
@@ -1298,7 +1752,7 @@ def compare_candidate(job: SourceJob, url: str, browser: str = "") -> dict[str, 
             ],
             "candidate": {
                 key: info.get(key)
-                for key in ("id", "platform", "title", "uploader", "webpage_url")
+                for key in ("id", "platform", "title", "uploader")
             },
             "candidate_format_id": format_id,
         }
@@ -1306,13 +1760,13 @@ def compare_candidate(job: SourceJob, url: str, browser: str = "") -> dict[str, 
     return comparison
 
 
-def run_source_comparison(job: SourceJob, url: str, browser: str) -> None:
+def run_source_comparison(job: SourceJob, url: str) -> None:
     with LOCK:
         job.comparison_status = "running"
         job.comparison_error = ""
         job.logs.append("Candidate comparison started.")
     try:
-        comparison = compare_candidate(job, url, browser)
+        comparison = compare_candidate(job, url)
     except (OSError, SourceError) as exc:
         with LOCK:
             job.comparison_status = "error"
@@ -1326,10 +1780,60 @@ def run_source_comparison(job: SourceJob, url: str, browser: str) -> None:
 
 
 class Handler(BaseHTTPRequestHandler):
-    work_dir = DEFAULT_WORK_DIR
+    work_dir = Path()
+    session_token = ""  # nosec B105
 
-    def log_message(self, format: str, *args: object) -> None:
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(REQUEST_TIMEOUT_SECONDS)
+
+    def log_message(self, _format: str, *args: object) -> None:
         return
+
+    def end_headers(self) -> None:
+        self.send_header("cache-control", "no-store")
+        self.send_header("x-content-type-options", "nosniff")
+        self.send_header("x-frame-options", "DENY")
+        self.send_header("referrer-policy", "no-referrer")
+        self.send_header("cross-origin-opener-policy", "same-origin")
+        self.send_header("cross-origin-resource-policy", "same-origin")
+        self.send_header(
+            "permissions-policy",
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        )
+        nonce = getattr(self, "response_nonce", "")
+        inline_policy = (
+            f"script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; "
+            if nonce
+            else "script-src 'none'; style-src 'none'; "
+        )
+        self.send_header(
+            "content-security-policy",
+            "default-src 'none'; "
+            f"{inline_policy}"
+            "img-src 'self'; media-src 'self' blob:; connect-src 'self'; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+        )
+        super().end_headers()
+
+    def allow_request(self, parsed: Any, *, token_required: bool) -> bool:
+        try:
+            host = urlparse(f"//{self.headers.get('host', '')}").hostname
+        except ValueError:
+            host = None
+        if not host or host.lower().rstrip(".") not in LOCAL_HOSTS:
+            self.send_error(HTTPStatus.MISDIRECTED_REQUEST.value)
+            return False
+        if not token_required:
+            return True
+        query_token = parse_qs(parsed.query).get("token", [""])[0]
+        supplied = self.headers.get(API_TOKEN_HEADER, "") or query_token
+        if not self.session_token or not secrets.compare_digest(
+            supplied, self.session_token
+        ):
+            self.send_json(HTTPStatus.FORBIDDEN, {"error": "Invalid local session."})
+            return False
+        return True
 
     def send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -1340,10 +1844,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def read_json(self) -> dict[str, Any]:
+        content_type = self.headers.get("content-type", "").split(";", 1)[0].lower()
+        if content_type != "application/json":
+            raise ValueError("JSON requests require application/json.")
         try:
             length = int(self.headers.get("content-length", "0"))
         except ValueError as exc:
             raise ValueError("Invalid content length.") from exc
+        if length < 0:
+            raise ValueError("Invalid content length.")
         if length > MAX_JSON_BODY:
             raise ValueError("JSON request body is too large.")
         try:
@@ -1356,8 +1865,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        token_required = parsed.path.startswith(("/api/", "/files/"))
+        if not self.allow_request(parsed, token_required=token_required):
+            return
         if parsed.path == "/":
-            body = HTML.encode("utf-8")
+            self.response_nonce = secrets.token_urlsafe(18)
+            body = (
+                HTML.replace("__SESSION_TOKEN__", self.session_token)
+                .replace("__CSP_NONCE__", self.response_nonce)
+                .encode("utf-8")
+            )
             self.send_response(HTTPStatus.OK.value)
             self.send_header("content-type", "text/html; charset=utf-8")
             self.send_header("content-length", str(len(body)))
@@ -1403,16 +1920,29 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.OK, payload)
             return
         if parsed.path.startswith("/files/sources/"):
-            self.serve_source_file(parsed.path)
+            self.serve_source_file(
+                parsed.path,
+                attachment=parse_qs(parsed.query).get("download") == ["1"],
+            )
             return
         if parsed.path.startswith("/files/"):
-            self.serve_job_file(parsed.path)
+            self.serve_job_file(
+                parsed.path,
+                attachment=parse_qs(parsed.query).get("download") == ["1"],
+            )
             return
         self.send_error(HTTPStatus.NOT_FOUND.value)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if not self.allow_request(parsed, token_required=True):
+            return
         try:
+            if parsed.path == "/api/session/clear":
+                self.read_json()
+                clear_session(self.work_dir)
+                self.send_json(HTTPStatus.OK, {"cleared": True})
+                return
             if parsed.path == "/api/sources/inspect":
                 self.send_json(HTTPStatus.OK, self.inspect_source_job(self.read_json()))
                 return
@@ -1432,8 +1962,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def inspect_source_job(self, body: dict[str, Any]) -> dict[str, Any]:
         url = str(body.get("url", "")).strip()
-        browser = str(body.get("browser", "")).strip()
-        info = inspect_source(url, browser)
+        info = inspect_source(url)
         source_id = uuid.uuid4().hex[:12]
         directory = self.work_dir / f"source-{source_id}"
         source = SourceJob(source_id, url, info, directory)
@@ -1455,14 +1984,13 @@ class Handler(BaseHTTPRequestHandler):
         if action == "download":
             if source.status in {"queued", "downloading"}:
                 raise ValueError("Source download is already running.")
-            browser = str(body.get("browser", "")).strip()
             format_id = str(body.get("format_id", "")).strip()
             with LOCK:
                 source.status = "queued"
                 source.error = ""
             threading.Thread(
                 target=run_source_download,
-                args=(source, browser, format_id),
+                args=(source, format_id),
                 daemon=True,
             ).start()
             self.send_json(HTTPStatus.ACCEPTED, source_payload(source))
@@ -1490,7 +2018,6 @@ class Handler(BaseHTTPRequestHandler):
             if source.comparison_status in {"queued", "running"}:
                 raise ValueError("A candidate comparison is already running.")
             url = str(body.get("url", "")).strip()
-            browser = str(body.get("browser", "")).strip()
             validate_social_url(url)
             with LOCK:
                 source.comparison_status = "queued"
@@ -1498,7 +2025,7 @@ class Handler(BaseHTTPRequestHandler):
                 source.comparison_error = ""
             threading.Thread(
                 target=run_source_comparison,
-                args=(source, url, browser),
+                args=(source, url),
                 daemon=True,
             ).start()
             self.send_json(HTTPStatus.ACCEPTED, source_payload(source))
@@ -1506,9 +2033,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND.value)
 
     def create_job(self, params: dict[str, list[str]]) -> dict[str, Any]:
+        content_type = self.headers.get("content-type", "").split(";", 1)[0].lower()
+        if content_type != "application/octet-stream":
+            raise ValueError("Video uploads require application/octet-stream.")
         length = int(self.headers.get("content-length", "0"))
         if length <= 0:
             raise ValueError("No input video received.")
+        if length > MAX_VIDEO_BODY:
+            self.close_connection = True
+            raise ValueError("Videoen er st\u00f8rre enn grensen p\u00e5 8 GiB.")
 
         original = safe_filename(self.headers.get("x-file-name", "input.mp4"))
         suffix = Path(original).suffix.lower()
@@ -1519,18 +2052,23 @@ class Handler(BaseHTTPRequestHandler):
         job_dir = self.work_dir / job_id
         job_dir.mkdir(parents=True, exist_ok=False)
         input_path = job_dir / f"input{suffix}"
-        remaining = length
-        with input_path.open("wb") as file:
-            while remaining:
-                chunk = self.rfile.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    raise ValueError("Upload ended before the full video was received.")
-                file.write(chunk)
-                remaining -= len(chunk)
+        try:
+            remaining = length
+            with input_path.open("wb") as file:
+                while remaining:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError("Upload ended before the full video was received.")
+                    file.write(chunk)
+                    remaining -= len(chunk)
+            return job_payload(
+                create_enhancement_job(input_path, original, params, self.work_dir)
+            )
+        except Exception:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
 
-        return job_payload(create_enhancement_job(input_path, original, params, self.work_dir))
-
-    def serve_source_file(self, request_path: str) -> None:
+    def serve_source_file(self, request_path: str, *, attachment: bool = False) -> None:
         parts = request_path.strip("/").split("/")
         if len(parts) < 3 or parts[:2] != ["files", "sources"]:
             self.send_error(HTTPStatus.NOT_FOUND.value)
@@ -1563,14 +2101,23 @@ class Handler(BaseHTTPRequestHandler):
         ):
             self.send_error(HTTPStatus.NOT_FOUND.value)
             return
-        self.serve_file(file, content_type)
+        self.serve_file(file, content_type, attachment=attachment)
 
-    def serve_job_file(self, request_path: str) -> None:
-        _, _, job_id, kind = request_path.split("/", 3)
+    def serve_job_file(self, request_path: str, *, attachment: bool = False) -> None:
+        parts = request_path.strip("/").split("/")
+        if len(parts) != 3 or parts[0] != "files":
+            self.send_error(HTTPStatus.NOT_FOUND.value)
+            return
+        _, job_id, kind = parts
         with LOCK:
             job = JOBS.get(job_id)
             file = job.output_path if job and kind == "output" else None
-        if not file or not file.exists():
+        root = self.work_dir.resolve()
+        if (
+            not file
+            or not file.is_file()
+            or not file.resolve().is_relative_to(root)
+        ):
             self.send_error(HTTPStatus.NOT_FOUND.value)
             return
         content_type = (
@@ -1578,16 +2125,18 @@ class Handler(BaseHTTPRequestHandler):
             if file.suffix.lower() in {".mp4", ".m4v"}
             else "application/octet-stream"
         )
-        self.serve_file(file, content_type)
+        self.serve_file(file, content_type, attachment=attachment)
 
-    def serve_file(self, file: Path, content_type: str) -> None:
+    def serve_file(
+        self, file: Path, content_type: str, *, attachment: bool = False
+    ) -> None:
         try:
             size = file.stat().st_size
             start, end = 0, size - 1
             status = HTTPStatus.OK
             requested_range = self.headers.get("range", "").strip()
             if requested_range:
-                match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested_range)
+                match = re.fullmatch(r"bytes=(\d{0,20})-(\d{0,20})", requested_range)
                 if not match or not any(match.groups()):
                     self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE.value)
                     self.send_header("content-range", f"bytes */{size}")
@@ -1614,7 +2163,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("content-length", str(length))
             if status is HTTPStatus.PARTIAL_CONTENT:
                 self.send_header("content-range", f"bytes {start}-{end}/{size}")
-            self.send_header("content-disposition", f'inline; filename="{file.name}"')
+            disposition = "attachment" if attachment else "inline"
+            self.send_header(
+                "content-disposition", f'{disposition}; filename="{file.name}"'
+            )
             self.end_headers()
             with file.open("rb") as source:
                 source.seek(start)
@@ -1622,14 +2174,18 @@ class Handler(BaseHTTPRequestHandler):
                 while remaining and (chunk := source.read(min(1024 * 1024, remaining))):
                     self.wfile.write(chunk)
                     remaining -= len(chunk)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
             return
 
 
-def run_server(host: str, port: int, work_dir: Path, *, open_browser: bool = False) -> None:
+def _serve(
+    host: str, port: int, work_dir: Path, *, open_browser: bool = False
+) -> None:
     Handler.work_dir = work_dir
+    Handler.session_token = secrets.token_hex(32)
     work_dir.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((host, port), Handler)
+    server.daemon_threads = True
     url = f"http://{host}:{port}"
     print(f"Video Enhancer Web running at {url}")
     if open_browser:
@@ -1638,16 +2194,29 @@ def run_server(host: str, port: int, work_dir: Path, *, open_browser: bool = Fal
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
+    finally:
+        server.server_close()
+        clear_session(work_dir, force=True)
+
+
+def run_server(
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    *,
+    open_browser: bool = False,
+) -> None:
+    if host.lower().rstrip(".") not in BIND_HOSTS:
+        raise ValueError("Video Enhancer kan bare bindes til denne maskinen.")
+    with tempfile.TemporaryDirectory(prefix="video-enhancer-") as temporary:
+        _serve(host, port, Path(temporary), open_browser=open_browser)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the local Video Enhancer web UI.")
-    parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--work-dir", type=Path, default=DEFAULT_WORK_DIR)
     parser.add_argument("--open", action="store_true", help="open the UI in the default browser")
     args = parser.parse_args()
-    run_server(args.host, args.port, args.work_dir, open_browser=args.open)
+    run_server(port=args.port, open_browser=args.open)
 
 
 if __name__ == "__main__":

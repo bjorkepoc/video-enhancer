@@ -12,7 +12,6 @@ import video_enhancer.sources as sources
 from video_enhancer.sources import (
     SourceError,
     build_download_command,
-    browser_args,
     compare_hashes,
     download_source,
     extract_keyframes,
@@ -48,11 +47,17 @@ def test_validate_social_url_rejects_malformed_ipv6() -> None:
         validate_social_url("https://[::1")
 
 
-def test_browser_args_supports_named_browser_sessions() -> None:
-    assert browser_args("") == []
-    assert browser_args("chrome") == ["--cookies-from-browser", "chrome"]
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:secret@tiktok.com/video/1",
+        "https://instagram.com:444/reel/1",
+        "https://instagram.com:invalid/reel/1",
+    ],
+)
+def test_validate_social_url_rejects_credentials_and_nonstandard_ports(url: str) -> None:
     with pytest.raises(SourceError):
-        browser_args("edge")
+        validate_social_url(url)
 
 
 def test_group_formats_collapses_cdn_mirrors() -> None:
@@ -95,7 +100,7 @@ def test_inspect_source_uses_dump_single_json(monkeypatch: pytest.MonkeyPatch) -
         return completed
 
     monkeypatch.setattr(subprocess, "run", run)
-    inspect_source("https://www.tiktok.com/@a/video/123", "chrome")
+    inspect_source("https://www.tiktok.com/@a/video/123")
 
     assert calls == [
         (
@@ -103,14 +108,30 @@ def test_inspect_source_uses_dump_single_json(monkeypatch: pytest.MonkeyPatch) -
                 sys.executable,
                 "-m",
                 "yt_dlp",
+                "--ignore-config",
+                "--no-config-locations",
+                "--no-plugin-dirs",
+                "--no-cache-dir",
+                "--no-exec",
+                "--no-cookies-from-browser",
                 "--no-playlist",
+                "--no-progress",
+                "--downloader",
+                "native",
+                "--socket-timeout",
+                "30",
+                "--retries",
+                "3",
                 "--skip-download",
                 "--dump-single-json",
-                "--cookies-from-browser",
-                "chrome",
                 "https://www.tiktok.com/@a/video/123",
             ],
-            {"capture_output": True, "text": True, "check": False},
+            {
+                "capture_output": True,
+                "text": True,
+                "check": False,
+                "timeout": 120,
+            },
         )
     ]
 
@@ -151,21 +172,44 @@ def test_inspect_source_reports_yt_dlp_startup_failure(
         inspect_source("https://www.tiktok.com/@a/video/123")
 
 
+def test_inspect_source_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    def time_out(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", time_out)
+
+    with pytest.raises(SourceError, match="inspection timed out"):
+        inspect_source("https://www.tiktok.com/@a/video/123")
+
+
 def test_download_command_is_source_first_and_has_no_recode_flags(tmp_path: Path) -> None:
     command = build_download_command("https://tiktok.com/x", tmp_path)
 
     assert command[command.index("-f") + 1] == "bv*+ba/b"
+    assert "--ignore-config" in command
+    assert "--no-config-locations" in command
+    assert "--no-plugin-dirs" in command
+    assert "--no-cache-dir" in command
+    assert "--no-exec" in command
+    assert "--no-cookies-from-browser" in command
+    assert "--no-progress" in command
+    assert command[command.index("--downloader") + 1] == "native"
+    assert command[command.index("--max-filesize") + 1] == "8G"
+    assert command[command.index("--socket-timeout") + 1] == "30"
+    assert command[command.index("--retries") + 1] == "3"
+    assert command[command.index("--fragment-retries") + 1] == "3"
     assert "--recode-video" not in command
     assert "--remux-video" not in command
 
 
 def test_download_command_adds_audio_to_an_inspected_format(tmp_path: Path) -> None:
     command = build_download_command(
-        "https://instagram.com/reel/x", tmp_path, "chrome", "dash-1080v"
+        "https://instagram.com/reel/x", tmp_path, "dash-1080v"
     )
 
     assert command[command.index("-f") + 1] == "dash-1080v+ba/dash-1080v"
-    assert command[-3:] == ["--cookies-from-browser", "chrome", "https://instagram.com/reel/x"]
+    assert "--cookies-from-browser" not in command
+    assert command[-1] == "https://instagram.com/reel/x"
 
 
 def test_download_command_rejects_unsafe_format_id(tmp_path: Path) -> None:
@@ -235,6 +279,49 @@ Stream #0:1: Video: hevc (Main), yuv420p, 1080x1920, 664 kb/s, 30 fps, 30 tbr
     assert media["size"] == 5
 
 
+def test_probe_media_falls_back_after_ffprobe_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"video")
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if command[0] == "ffprobe":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "",
+            "Duration: 00:00:01.00, start: 0.0, bitrate: 8 kb/s\n"
+            "Stream #0:0: Video: h264, yuv420p, 16x16, 1 kb/s, 30 fps, 30 tbr\n",
+        )
+
+    monkeypatch.setattr(sources.shutil, "which", lambda name: name)
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert probe_media(video)["fps"] == 30.0
+
+
+def test_probe_media_reports_ffmpeg_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"video")
+    monkeypatch.setattr(
+        sources.shutil, "which", lambda name: None if name == "ffprobe" else name
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **kwargs: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(command, kwargs["timeout"])
+        ),
+    )
+
+    with pytest.raises(SourceError, match="verification timed out"):
+        probe_media(video)
+
+
 def test_download_source_rejects_format_not_in_current_inspection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -276,6 +363,26 @@ def test_download_source_returns_contained_file_and_probe(
         "operation": "direct",
         "media": {"width": 1080, "height": 1920},
     }
+
+
+def test_download_source_removes_file_over_size_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "video.mp4"
+    output.write_bytes(b"oversized")
+    monkeypatch.setattr(sources, "MAX_SOURCE_BYTES", 4)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, f"FILE:{output}\nFORMAT:best\n", ""
+        ),
+    )
+
+    with pytest.raises(SourceError, match="8 GiB"):
+        download_source("https://tiktok.com/x", tmp_path)
+
+    assert not output.exists()
 
 
 def test_search_links_cover_metadata_and_both_platforms() -> None:

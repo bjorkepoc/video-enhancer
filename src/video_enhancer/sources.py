@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from statistics import median
@@ -23,11 +27,141 @@ SOCKET_TIMEOUT_SECONDS = 30
 NETWORK_RETRIES = 3
 MAX_SOURCE_SIZE = "8G"
 MAX_SOURCE_BYTES = 8 * 1024**3
+MAX_YT_DLP_OUTPUT_BYTES = 16 * 1024**2
 PROBE_TIMEOUT_SECONDS = 120
+PROCESS_POLL_SECONDS = 0.05
+PROCESS_STOP_SECONDS = 2
 
 
 class SourceError(ValueError):
     """Raised when a source URL or inspection result is invalid."""
+
+
+def _directory_size(directory: Path) -> int:
+    total = 0
+    pending = [directory]
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as iterator:
+                entries = list(iterator)
+        except FileNotFoundError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    total += entry.stat(follow_symlinks=False).st_size
+            except FileNotFoundError:
+                continue
+    return total
+
+
+def _stop_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+        process.wait(timeout=PROCESS_STOP_SECONDS)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        if process.poll() is None:
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+        process.wait()
+
+
+def _run_yt_dlp(
+    command: list[str],
+    *,
+    timeout: float,
+    destination: Path | None = None,
+    max_output_bytes: int = MAX_YT_DLP_OUTPUT_BYTES,
+    max_download_bytes: int | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run yt-dlp with bounded output, time, and optional download growth."""
+
+    baseline_size = _directory_size(destination) if destination else 0
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=os.name == "posix",
+    )
+    stdout, stderr = process.stdout, process.stderr
+    if stdout is None or stderr is None:
+        _stop_process(process)
+        raise SourceError("yt-dlp output pipes could not be created.")
+    buffers = [bytearray(), bytearray()]
+    output_size = 0
+    output_limit_reached = threading.Event()
+    output_lock = threading.Lock()
+
+    def drain(index: int, stream: Any) -> None:
+        nonlocal output_size
+        try:
+            while chunk := stream.read(64 * 1024):
+                with output_lock:
+                    remaining = max(0, max_output_bytes - output_size)
+                    buffers[index].extend(chunk[:remaining])
+                    output_size += min(len(chunk), remaining)
+                    if len(chunk) > remaining:
+                        output_limit_reached.set()
+        finally:
+            stream.close()
+
+    readers = [
+        threading.Thread(target=drain, args=(0, stdout), daemon=True),
+        threading.Thread(target=drain, args=(1, stderr), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    deadline = time.monotonic() + timeout
+    failure: BaseException | None = None
+    while process.poll() is None:
+        if output_limit_reached.is_set():
+            failure = SourceError("yt-dlp produced too much output.")
+        elif (
+            destination
+            and max_download_bytes is not None
+            and _directory_size(destination) - baseline_size > max_download_bytes
+        ):
+            failure = SourceError("The source download exceeds the 8 GiB limit.")
+        elif time.monotonic() >= deadline:
+            failure = subprocess.TimeoutExpired(command, timeout)
+        if failure:
+            _stop_process(process)
+            break
+        time.sleep(PROCESS_POLL_SECONDS)
+
+    return_code = process.wait()
+    for reader in readers:
+        reader.join()
+    if failure:
+        raise failure
+    if output_limit_reached.is_set():
+        raise SourceError("yt-dlp produced too much output.")
+    if (
+        destination
+        and max_download_bytes is not None
+        and _directory_size(destination) - baseline_size > max_download_bytes
+    ):
+        raise SourceError("The source download exceeds the 8 GiB limit.")
+    return subprocess.CompletedProcess(
+        command,
+        return_code,
+        buffers[0].decode("utf-8", "replace"),
+        buffers[1].decode("utf-8", "replace"),
+    )
 
 
 def _yt_dlp_command(yt_dlp: str) -> list[str]:
@@ -116,11 +250,8 @@ def inspect_source(url: str, *, yt_dlp: str = "yt-dlp") -> dict[str, Any]:
         normalized_url,
     ]
     try:
-        completed = subprocess.run(
+        completed = _run_yt_dlp(
             command,
-            capture_output=True,
-            text=True,
-            check=False,
             timeout=INSPECTION_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
@@ -128,7 +259,9 @@ def inspect_source(url: str, *, yt_dlp: str = "yt-dlp") -> dict[str, Any]:
     except OSError as exc:
         raise SourceError(f"Could not start yt-dlp: {exc}") from exc
     if completed.returncode:
-        detail = completed.stderr.strip()[-4000:] or "yt-dlp could not inspect the source."
+        detail = (
+            completed.stderr.strip()[-4000:] or "yt-dlp could not inspect the source."
+        )
         raise SourceError(detail)
     try:
         payload = json.loads(completed.stdout)
@@ -211,11 +344,17 @@ def _fps(value: Any) -> float | None:
 
 def parse_ffprobe(payload: dict[str, Any]) -> dict[str, Any]:
     streams = payload.get("streams") if isinstance(payload.get("streams"), list) else []
-    video = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
-    audio = next((stream for stream in streams if stream.get("codec_type") == "audio"), {})
+    video = next(
+        (stream for stream in streams if stream.get("codec_type") == "video"), {}
+    )
+    audio = next(
+        (stream for stream in streams if stream.get("codec_type") == "audio"), {}
+    )
     if not video:
         raise SourceError("The downloaded file has no video stream.")
-    format_data = payload.get("format") if isinstance(payload.get("format"), dict) else {}
+    format_data = (
+        payload.get("format") if isinstance(payload.get("format"), dict) else {}
+    )
     return {
         "width": _number(video.get("width"), int),
         "height": _number(video.get("height"), int),
@@ -245,7 +384,11 @@ def _parse_ffmpeg_probe(stderr: str) -> dict[str, Any]:
     seconds = None
     bitrate = None
     if duration:
-        seconds = int(duration.group(1)) * 3600 + int(duration.group(2)) * 60 + float(duration.group(3))
+        seconds = (
+            int(duration.group(1)) * 3600
+            + int(duration.group(2)) * 60
+            + float(duration.group(3))
+        )
         bitrate = int(duration.group(4)) * 1000
     return {
         "width": int(dimensions.group(1)) if dimensions else None,
@@ -253,7 +396,9 @@ def _parse_ffmpeg_probe(stderr: str) -> dict[str, Any]:
         "fps": float(fps.group(1)) if fps else None,
         "video_codec": video_codec.group(1) if video_codec else None,
         "audio_codec": audio_codec.group(1) if audio_codec else None,
-        "video_bitrate": int(float(video_bitrate.group(1)) * 1000) if video_bitrate else None,
+        "video_bitrate": int(float(video_bitrate.group(1)) * 1000)
+        if video_bitrate
+        else None,
         "bitrate": bitrate,
         "duration": seconds,
         "size": None,
@@ -326,9 +471,14 @@ def probe_media(
     return media
 
 
-def _remove_parts(destination: Path) -> None:
-    for part in destination.glob("*.part*"):
-        part.unlink(missing_ok=True)
+def _remove_new_entries(destination: Path, existing: set[str]) -> None:
+    for path in destination.iterdir():
+        if path.name in existing:
+            continue
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+        else:
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def download_source(
@@ -350,45 +500,54 @@ def download_source(
             raise SourceError("The selected source format is no longer available.")
 
     command = build_download_command(url, destination, format_id, yt_dlp=yt_dlp)
+    existing = {path.name for path in destination.iterdir()}
     try:
-        completed = subprocess.run(
+        completed = _run_yt_dlp(
             command,
-            capture_output=True,
-            text=True,
-            check=False,
             timeout=DOWNLOAD_TIMEOUT_SECONDS,
+            destination=destination,
+            max_download_bytes=MAX_SOURCE_BYTES,
         )
     except subprocess.TimeoutExpired as exc:
-        _remove_parts(destination)
+        _remove_new_entries(destination, existing)
         raise SourceError("The source download timed out.") from exc
     except OSError as exc:
-        _remove_parts(destination)
+        _remove_new_entries(destination, existing)
         raise SourceError(f"Could not start yt-dlp: {exc}") from exc
+    except SourceError:
+        _remove_new_entries(destination, existing)
+        raise
     if completed.returncode:
-        _remove_parts(destination)
-        detail = completed.stderr.strip()[-4000:] or "yt-dlp could not download the source."
+        _remove_new_entries(destination, existing)
+        detail = (
+            completed.stderr.strip()[-4000:] or "yt-dlp could not download the source."
+        )
         raise SourceError(detail)
 
-    values: dict[str, str] = {}
-    for line in completed.stdout.splitlines():
-        key, separator, value = line.partition(":")
-        if separator and key in {"FILE", "FORMAT"}:
-            values[key] = value.strip()
-    file_path = Path(values.get("FILE", "")).resolve()
-    root = destination.resolve()
-    if not file_path.is_relative_to(root) or not file_path.is_file():
-        raise SourceError("Download completed, but the saved file was not found.")
-    if file_path.stat().st_size > MAX_SOURCE_BYTES:
-        file_path.unlink(missing_ok=True)
-        raise SourceError("The downloaded source exceeds the 8 GiB limit.")
-    selected = values.get("FORMAT", format_id or "best")
-    return {
-        "path": file_path,
-        "filename": file_path.name,
-        "format_id": selected,
-        "operation": "remuxed" if "+" in selected else "direct",
-        "media": probe_media(file_path),
-    }
+    try:
+        values: dict[str, str] = {}
+        for line in completed.stdout.splitlines():
+            key, separator, value = line.partition(":")
+            if separator and key in {"FILE", "FORMAT"}:
+                values[key] = value.strip()
+        file_path = Path(values.get("FILE", "")).resolve()
+        root = destination.resolve()
+        if not file_path.is_relative_to(root) or not file_path.is_file():
+            raise SourceError("Download completed, but the saved file was not found.")
+        if file_path.stat().st_size > MAX_SOURCE_BYTES:
+            file_path.unlink(missing_ok=True)
+            raise SourceError("The downloaded source exceeds the 8 GiB limit.")
+        selected = values.get("FORMAT", format_id or "best")
+        return {
+            "path": file_path,
+            "filename": file_path.name,
+            "format_id": selected,
+            "operation": "remuxed" if "+" in selected else "direct",
+            "media": probe_media(file_path),
+        }
+    except (OSError, SourceError):
+        _remove_new_entries(destination, existing)
+        raise
 
 
 def search_links(info: dict[str, Any]) -> dict[str, str]:
@@ -461,7 +620,9 @@ def extract_keyframes(
         if completed.returncode or not frame.is_file():
             for output in frames:
                 output.unlink(missing_ok=True)
-            detail = completed.stderr.strip()[-2000:] or "FFmpeg did not create a keyframe."
+            detail = (
+                completed.stderr.strip()[-2000:] or "FFmpeg did not create a keyframe."
+            )
             raise SourceError(detail)
     return frames
 
@@ -526,5 +687,11 @@ def compare_hashes(left: list[int], right: list[int]) -> dict[str, Any]:
         for left_hash, right_hash in zip(left, right, strict=True)
     ]
     score = median(similarities)
-    result = "likely_match" if score >= 0.85 else "uncertain" if score >= 0.65 else "different"
+    result = (
+        "likely_match"
+        if score >= 0.85
+        else "uncertain"
+        if score >= 0.65
+        else "different"
+    )
     return {"result": result, "score": round(score, 4), "advisory": True}

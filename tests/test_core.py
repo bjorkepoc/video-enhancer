@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import math
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Sequence
 
 import pytest
 
+import video_enhancer.ffmpeg as ffmpeg
 from video_enhancer.encoders import supported_video_codecs
-from video_enhancer.ffmpeg import EnhancementOptions, ValidationError, build_ffmpeg_command
+from video_enhancer.ffmpeg import (
+    EnhancementOptions,
+    FFmpegExecutionError,
+    ValidationError,
+    build_ffmpeg_command,
+)
 from video_enhancer.presets import available_presets, get_preset
 
 ALL_PRESETS = ["fast", "balanced", "quality", "ultra"]
@@ -26,7 +34,9 @@ def _command_text(command: str | Sequence[object]) -> str:
 def _sample_paths(tmp_path: Path) -> tuple[Path, Path]:
     input_path = tmp_path / "input.mp4"
     output_path = tmp_path / "output.mp4"
-    input_path.write_bytes(b"not a real video; command-building tests must not decode it")
+    input_path.write_bytes(
+        b"not a real video; command-building tests must not decode it"
+    )
     return input_path, output_path
 
 
@@ -37,7 +47,9 @@ def _build(tmp_path: Path, preset: str = "balanced", **overrides: object) -> lis
         ffmpeg_path="ffmpeg",
         **overrides,
     )
-    return build_ffmpeg_command(input_path, output_path, options, check_executable=False)
+    return build_ffmpeg_command(
+        input_path, output_path, options, check_executable=False
+    )
 
 
 @pytest.mark.parametrize("preset", ALL_PRESETS)
@@ -113,7 +125,7 @@ def test_invalid_preset_is_rejected(bad_preset: str) -> None:
         get_preset(bad_preset)
 
 
-@pytest.mark.parametrize("bad_scale_factor", [0, -0.5])
+@pytest.mark.parametrize("bad_scale_factor", [0, -0.5, 2.01, math.inf, math.nan])
 def test_invalid_scale_factor_is_rejected(
     tmp_path: Path, bad_scale_factor: float
 ) -> None:
@@ -121,10 +133,43 @@ def test_invalid_scale_factor_is_rejected(
         _build(tmp_path, scale_factor=bad_scale_factor)
 
 
-@pytest.mark.parametrize("bad_fps", [0, -1])
+@pytest.mark.parametrize("bad_fps", [0, -1, 241])
 def test_invalid_fps_is_rejected(tmp_path: Path, bad_fps: int) -> None:
     with pytest.raises(ValidationError, match="fps"):
         _build(tmp_path, fps=bad_fps)
+
+
+def test_run_ffmpeg_has_a_runtime_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[Sequence[str], dict[str, object]]] = []
+
+    def run(
+        command: Sequence[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(ffmpeg.subprocess, "run", run)
+
+    ffmpeg.run_ffmpeg(["ffmpeg"])
+
+    assert calls == [
+        (
+            ["ffmpeg"],
+            {"check": False, "timeout": ffmpeg.ENHANCEMENT_TIMEOUT_SECONDS},
+        )
+    ]
+
+
+def test_run_ffmpeg_reports_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    def run(
+        command: Sequence[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(ffmpeg.subprocess, "run", run)
+
+    with pytest.raises(FFmpegExecutionError, match="six-hour"):
+        ffmpeg.run_ffmpeg(["ffmpeg"])
 
 
 def test_missing_input_path_is_rejected(tmp_path: Path) -> None:
@@ -133,7 +178,9 @@ def test_missing_input_path_is_rejected(tmp_path: Path) -> None:
     options = EnhancementOptions(preset=get_preset("balanced"), ffmpeg_path="ffmpeg")
 
     with pytest.raises(ValidationError, match="does not exist"):
-        build_ffmpeg_command(missing_input, output_path, options, check_executable=False)
+        build_ffmpeg_command(
+            missing_input, output_path, options, check_executable=False
+        )
 
 
 def test_available_presets_are_stable() -> None:

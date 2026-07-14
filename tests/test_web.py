@@ -32,6 +32,15 @@ from video_enhancer.web import (
 TOKEN = "test-session-token"
 
 
+@pytest.fixture(autouse=True)
+def reset_job_state() -> Iterator[None]:
+    JOBS.clear()
+    SOURCES.clear()
+    yield
+    JOBS.clear()
+    SOURCES.clear()
+
+
 @contextmanager
 def running_server(work_dir: Path) -> Iterator[str]:
     Handler.work_dir = work_dir
@@ -64,9 +73,7 @@ def post_json(base: str, path: str, payload: dict[str, object]) -> tuple[int, di
 
 
 def get_json(base: str, path: str) -> tuple[int, dict]:
-    request = Request(
-        f"{base}{path}", headers={"x-video-enhancer-token": TOKEN}
-    )
+    request = Request(f"{base}{path}", headers={"x-video-enhancer-token": TOKEN})
     with urlopen(request) as response:
         return response.status, json.load(response)
 
@@ -96,6 +103,7 @@ def test_web_ui_contains_source_first_controls() -> None:
         assert control in HTML
     assert "browser-session" not in HTML
     assert "cookies-from-browser" not in HTML
+    assert "if (!response.ok) throw new Error(config.error" in HTML
     for label in (
         "Original platform stream",
         "Remuxed without video re-encoding",
@@ -152,7 +160,8 @@ def test_local_page_has_security_headers_and_no_cookie(tmp_path: Path) -> None:
         with urlopen(base) as response:
             body = response.read().decode()
             content_security_policy = response.headers["content-security-policy"]
-            assert TOKEN in body
+            assert TOKEN not in body
+            assert "window.location.hash" in body
             assert response.headers["x-frame-options"] == "DENY"
             assert "frame-ancestors 'none'" in content_security_policy
             assert "unsafe-inline" not in content_security_policy
@@ -195,6 +204,33 @@ def test_run_server_uses_only_a_process_temporary_directory(
             web.run_server(host=host)
 
 
+def test_serve_opens_token_in_a_url_fragment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class FakeServer:
+        daemon_threads = False
+
+        def __init__(self, address: tuple[str, int], handler: type[Handler]) -> None:
+            pass
+
+        def serve_forever(self) -> None:
+            pass
+
+        def server_close(self) -> None:
+            pass
+
+    opened: list[str] = []
+    monkeypatch.setattr(web, "ThreadingHTTPServer", FakeServer)
+    monkeypatch.setattr(web.secrets, "token_hex", lambda size: TOKEN)
+    monkeypatch.setattr(web.webbrowser, "open", opened.append)
+
+    web._serve("127.0.0.1", 8765, tmp_path, open_browser=True)
+
+    url = f"http://127.0.0.1:8765/#token={TOKEN}"
+    assert opened == [url]
+    assert url in capsys.readouterr().out
+
+
 def test_serve_file_ignores_client_disconnect(tmp_path: Path) -> None:
     class DisconnectedClient:
         def write(self, _data: bytes) -> None:
@@ -210,6 +246,21 @@ def test_serve_file_ignores_client_disconnect(tmp_path: Path) -> None:
     handler.end_headers = lambda: None
 
     handler.serve_file(file, "video/mp4")
+
+
+@pytest.mark.skipif(not hasattr(web.os, "O_NOFOLLOW"), reason="requires O_NOFOLLOW")
+def test_serve_file_rejects_a_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "target.mp4"
+    target.write_bytes(b"video")
+    link = tmp_path / "link.mp4"
+    link.symlink_to(target)
+    errors: list[int] = []
+    handler = object.__new__(Handler)
+    handler.send_error = errors.append
+
+    handler.serve_file(link, "video/mp4")
+
+    assert errors == [404]
 
 
 def test_video_files_support_byte_ranges(tmp_path: Path) -> None:
@@ -312,9 +363,7 @@ def test_enhancement_from_source_reuses_file_without_upload(
     source = tmp_path / "source.mp4"
     source.write_bytes(b"video")
 
-    job = create_enhancement_job(
-        source, "source.mp4", {"preset": ["fast"]}, tmp_path
-    )
+    job = create_enhancement_job(source, "source.mp4", {"preset": ["fast"]}, tmp_path)
 
     assert job.input_path == source
     assert job.output_path.name == "source-enhanced.mp4"
@@ -335,6 +384,27 @@ def test_failed_enhancement_setup_removes_job_directory(
         create_enhancement_job(source, source.name, {}, tmp_path)
 
     assert list(tmp_path.iterdir()) == [source]
+
+
+def test_only_one_enhancement_can_be_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class NoopThread:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+    monkeypatch.setattr(web.threading, "Thread", NoopThread)
+    monkeypatch.setattr(web, "build_ffmpeg_command", lambda *args, **kwargs: ["ffmpeg"])
+
+    create_enhancement_job(source, source.name, {}, tmp_path)
+
+    with pytest.raises(ValueError, match="aktive eksporten"):
+        create_enhancement_job(source, source.name, {}, tmp_path)
 
 
 def test_source_payload_never_contains_browser_or_signed_url(tmp_path: Path) -> None:
@@ -415,7 +485,9 @@ def test_run_job_removes_partial_output_after_timeout(
     assert not output.exists()
 
 
-def test_source_payload_includes_searches_keyframes_and_comparison(tmp_path: Path) -> None:
+def test_source_payload_includes_searches_keyframes_and_comparison(
+    tmp_path: Path,
+) -> None:
     frame = tmp_path / "frames" / "frame-1.jpg"
     job = SourceJob(
         id="source1",
@@ -792,9 +864,7 @@ def test_compare_candidate_uses_lowest_360p_variant_and_cleans_temporary_file(
         lambda path: [0] if path == original else [(1 << 80) - 1],
     )
 
-    result = web.compare_candidate(
-        source, "https://instagram.com/reel/candidate"
-    )
+    result = web.compare_candidate(source, "https://instagram.com/reel/candidate")
 
     assert result["result"] == "uncertain"
     assert result["duration_difference"] == 0.5

@@ -13,7 +13,7 @@ your Mac; the app has no cloud backend.
 - Source inspection with grouped resolution, codec, bitrate, and CDN mirrors
 - Best-available original download with saved-file resolution/FPS verification
 - 2x Lanczos or Bicubic upscaling
-- Frame interpolation to 48, 60, 90, 144 FPS, or any positive FPS value
+- Frame interpolation to 48, 60, 90, 144 FPS, or another target up to 240 FPS
 - 1 FPS playback, calibrated frame stepping, and 1x-8x focal zoom/pan
 - Physical browser downloads with byte-range video playback
 - Metadata search links, local keyframes, and advisory repost comparison
@@ -51,6 +51,9 @@ The server binds to `127.0.0.1`, previews original and derived files in the
 browser, and keeps working files in a process-specific temporary directory.
 Use **Slett lokale arbeidsfiler** to clear them immediately; normal app shutdown
 also removes them.
+
+The printed local URL contains a random session key. Open it directly and do
+not share it; the key expires when the process stops.
 
 Paste a TikTok or Instagram link, inspect its variants, then download `Best
 available` or a specific format. Source access is anonymous: the app never

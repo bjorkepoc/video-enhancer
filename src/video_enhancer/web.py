@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -21,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .encoders import supported_video_codecs
 from .ffmpeg import (
+    ENHANCEMENT_TIMEOUT_SECONDS,
     EnhancementOptions,
     FFmpegNotFoundError,
     VideoEnhancerError,
@@ -44,7 +47,6 @@ DEFAULT_PORT = 8765
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".m4v", ".webm", ".avi"}
 MAX_JSON_BODY = 20_000
 MAX_VIDEO_BODY = 8 * 1024**3
-ENHANCEMENT_TIMEOUT_SECONDS = 6 * 60 * 60
 REQUEST_TIMEOUT_SECONDS = 60
 API_TOKEN_HEADER = "x-video-enhancer-token"  # nosec B105
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -694,7 +696,7 @@ HTML = """<!doctype html>
 
   <script nonce="__CSP_NONCE__">
     const $ = (id) => document.getElementById(id);
-    const sessionToken = "__SESSION_TOKEN__";
+    const sessionToken = new URLSearchParams(window.location.hash.slice(1)).get("token") || "";
     const state = {
       file: null,
       objectUrl: null,
@@ -1003,6 +1005,7 @@ HTML = """<!doctype html>
     async function loadConfig() {
       const response = await apiFetch("/api/config");
       const config = await response.json();
+      if (!response.ok) throw new Error(config.error || "Ugyldig lokal sesjon");
       $("ffmpeg-status").textContent = config.ffmpeg ? `FFmpeg: ${config.ffmpeg}` : "FFmpeg: ikke funnet";
       replaceOptions($("preset"), config.presets);
       $("preset").value = "balanced";
@@ -1561,7 +1564,11 @@ def run_job(job: Job) -> None:
 
     return_code = completed.returncode
     with LOCK:
-        if return_code == 0 and job.output_path.is_file() and job.output_path.stat().st_size:
+        if (
+            return_code == 0
+            and job.output_path.is_file()
+            and job.output_path.stat().st_size
+        ):
             job.status = "done"
             job.logs.append("Export finished.")
         else:
@@ -1647,27 +1654,37 @@ def create_enhancement_job(
     params: dict[str, list[str]],
     work_dir: Path,
 ) -> Job:
-    original = safe_filename(original_name)
-    job_id = uuid.uuid4().hex[:12]
-    job_dir = work_dir / job_id
-    job_dir.mkdir(parents=True, exist_ok=False)
-    output_name = safe_filename(
-        params.get("output", [f"{Path(original).stem}-enhanced.mp4"])[0],
-        default="enhanced.mp4",
-    )
-    if Path(output_name).suffix.lower() not in {".mp4", ".mkv", ".mov", ".m4v"}:
-        output_name = f"{Path(output_name).stem}.mp4"
-    output_path = job_dir / output_name
+    with LOCK:
+        if any(job.status in {"queued", "running"} for job in JOBS.values()):
+            raise ValueError("Vent til den aktive eksporten er ferdig.")
+        original = safe_filename(original_name)
+        job_id = uuid.uuid4().hex[:12]
+        job_dir = work_dir / job_id
+        job_dir.mkdir(parents=True, exist_ok=False)
+        output_name = safe_filename(
+            params.get("output", [f"{Path(original).stem}-enhanced.mp4"])[0],
+            default="enhanced.mp4",
+        )
+        if Path(output_name).suffix.lower() not in {".mp4", ".mkv", ".mov", ".m4v"}:
+            output_name = f"{Path(output_name).stem}.mp4"
+        output_path = job_dir / output_name
+        try:
+            command = build_ffmpeg_command(
+                input_path, output_path, build_options(params)
+            )
+        except Exception:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
+        job = Job(job_id, input_path, output_path, command)
+        job.logs.append(f"Loaded {original}.")
+        JOBS[job_id] = job
     try:
-        command = build_ffmpeg_command(input_path, output_path, build_options(params))
+        threading.Thread(target=run_job, args=(job,), daemon=True).start()
     except Exception:
+        with LOCK:
+            JOBS.pop(job_id, None)
         shutil.rmtree(job_dir, ignore_errors=True)
         raise
-    job = Job(job_id, input_path, output_path, command)
-    job.logs.append(f"Loaded {original}.")
-    with LOCK:
-        JOBS[job_id] = job
-    threading.Thread(target=run_job, args=(job,), daemon=True).start()
     return job
 
 
@@ -1710,7 +1727,9 @@ def _lowest_candidate_format(info: dict[str, Any]) -> str:
         and source_format.get("format_ids")
     ]
     if not eligible:
-        raise SourceError("The candidate has no comparable video variant at 360p or higher.")
+        raise SourceError(
+            "The candidate has no comparable video variant at 360p or higher."
+        )
     selected = min(
         eligible,
         key=lambda source_format: (
@@ -1733,7 +1752,9 @@ def compare_candidate(job: SourceJob, url: str) -> dict[str, Any]:
     info = inspect_source(url)
     format_id = _lowest_candidate_format(info)
     job.directory.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="candidate-", dir=job.directory) as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="candidate-", dir=job.directory
+    ) as temporary:
         candidate = download_source(url, Path(temporary), format_id)
         comparison = compare_hashes(
             sample_frame_hashes(job.original_path),
@@ -1751,8 +1772,7 @@ def compare_candidate(job: SourceJob, url: str) -> dict[str, Any]:
                 candidate_media.get("height"),
             ],
             "candidate": {
-                key: info.get(key)
-                for key in ("id", "platform", "title", "uploader")
+                key: info.get(key) for key in ("id", "platform", "title", "uploader")
             },
             "candidate_format_id": format_id,
         }
@@ -1870,11 +1890,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/":
             self.response_nonce = secrets.token_urlsafe(18)
-            body = (
-                HTML.replace("__SESSION_TOKEN__", self.session_token)
-                .replace("__CSP_NONCE__", self.response_nonce)
-                .encode("utf-8")
-            )
+            body = HTML.replace("__CSP_NONCE__", self.response_nonce).encode("utf-8")
             self.send_response(HTTPStatus.OK.value)
             self.send_header("content-type", "text/html; charset=utf-8")
             self.send_header("content-length", str(len(body)))
@@ -1892,7 +1908,8 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "presets": available_presets(),
                     "preset_fps": {
-                        name: get_preset(name).target_fps for name in available_presets()
+                        name: get_preset(name).target_fps
+                        for name in available_presets()
                     },
                     "codecs": supported_video_codecs(),
                     "ffmpeg": ffmpeg,
@@ -2058,7 +2075,9 @@ class Handler(BaseHTTPRequestHandler):
                 while remaining:
                     chunk = self.rfile.read(min(1024 * 1024, remaining))
                     if not chunk:
-                        raise ValueError("Upload ended before the full video was received.")
+                        raise ValueError(
+                            "Upload ended before the full video was received."
+                        )
                     file.write(chunk)
                     remaining -= len(chunk)
             return job_payload(
@@ -2094,11 +2113,7 @@ class Handler(BaseHTTPRequestHandler):
                 file = None
                 content_type = "application/octet-stream"
         root = self.work_dir.resolve()
-        if (
-            not file
-            or not file.is_file()
-            or not file.resolve().is_relative_to(root)
-        ):
+        if not file or not file.is_file() or not file.resolve().is_relative_to(root):
             self.send_error(HTTPStatus.NOT_FOUND.value)
             return
         self.serve_file(file, content_type, attachment=attachment)
@@ -2113,11 +2128,7 @@ class Handler(BaseHTTPRequestHandler):
             job = JOBS.get(job_id)
             file = job.output_path if job and kind == "output" else None
         root = self.work_dir.resolve()
-        if (
-            not file
-            or not file.is_file()
-            or not file.resolve().is_relative_to(root)
-        ):
+        if not file or not file.is_file() or not file.resolve().is_relative_to(root):
             self.send_error(HTTPStatus.NOT_FOUND.value)
             return
         content_type = (
@@ -2130,8 +2141,24 @@ class Handler(BaseHTTPRequestHandler):
     def serve_file(
         self, file: Path, content_type: str, *, attachment: bool = False
     ) -> None:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         try:
-            size = file.stat().st_size
+            descriptor = os.open(file, flags)
+            try:
+                source = os.fdopen(descriptor, "rb")
+            except Exception:
+                os.close(descriptor)
+                raise
+            metadata = os.fstat(source.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                source.close()
+                self.send_error(HTTPStatus.NOT_FOUND.value)
+                return
+        except OSError:
+            self.send_error(HTTPStatus.NOT_FOUND.value)
+            return
+        try:
+            size = metadata.st_size
             start, end = 0, size - 1
             status = HTTPStatus.OK
             requested_range = self.headers.get("range", "").strip()
@@ -2168,25 +2195,24 @@ class Handler(BaseHTTPRequestHandler):
                 "content-disposition", f'{disposition}; filename="{file.name}"'
             )
             self.end_headers()
-            with file.open("rb") as source:
-                source.seek(start)
-                remaining = length
-                while remaining and (chunk := source.read(min(1024 * 1024, remaining))):
-                    self.wfile.write(chunk)
-                    remaining -= len(chunk)
+            source.seek(start)
+            remaining = length
+            while remaining and (chunk := source.read(min(1024 * 1024, remaining))):
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             return
+        finally:
+            source.close()
 
 
-def _serve(
-    host: str, port: int, work_dir: Path, *, open_browser: bool = False
-) -> None:
+def _serve(host: str, port: int, work_dir: Path, *, open_browser: bool = False) -> None:
     Handler.work_dir = work_dir
     Handler.session_token = secrets.token_hex(32)
     work_dir.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((host, port), Handler)
     server.daemon_threads = True
-    url = f"http://{host}:{port}"
+    url = f"http://{host}:{port}/#token={Handler.session_token}"
     print(f"Video Enhancer Web running at {url}")
     if open_browser:
         webbrowser.open(url)
@@ -2214,7 +2240,9 @@ def run_server(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the local Video Enhancer web UI.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--open", action="store_true", help="open the UI in the default browser")
+    parser.add_argument(
+        "--open", action="store_true", help="open the UI in the default browser"
+    )
     args = parser.parse_args()
     run_server(port=args.port, open_browser=args.open)
 

@@ -137,7 +137,10 @@ advice rather than representing the anonymous extractor as approved.
 - Loopback-only binding and rejection of non-local `Host` headers mitigate
   accidental network exposure and DNS rebinding.
 - A random 256-bit process token protects API and file routes from blind
-  cross-origin requests. It is never a user login or persistent credential.
+  cross-origin or local requests. The server never returns it from the
+  bootstrap page: it arrives in a URL fragment that browsers do not send in
+  HTTP requests or referrers. It is not a login or reusable credential and
+  expires when the local process stops.
 - Restrictive CSP, framing, MIME-sniffing, referrer, opener, resource, and
   permissions headers reduce browser attack surface.
 - API JSON, upload size, HTTP range syntax, source hostname, format ID, and file
@@ -145,12 +148,16 @@ advice rather than representing the anonymous extractor as approved.
 - `yt-dlp` ignores user configuration and cache, never reads browser cookies,
   disables plugins, external commands, and playlists, forces its native
   downloader, and has socket, retry, inspection, download, and source-size
-  bounds.
+  bounds. Output capture is bounded and download growth is stopped while the
+  process is running, rather than checked only after completion.
 - Subprocesses use argument arrays with `shell=False`; selected format IDs are
   allowlisted and filenames are sanitized.
 - Local HTTP clients have an idle timeout. Web-triggered FFmpeg exports discard
   raw diagnostics, enforce a six-hour ceiling, and remove failed partial files.
-- Only registered files contained by the process work directory are served.
+- Enhancement inputs are limited to 2x scale and 240 FPS, and only one encoder
+  job can be active at a time.
+- Only registered files contained by the process work directory are served;
+  final file opens reject symbolic links.
 - Jobs and source records live in memory and are cleared with their files.
 - CI runs the full Python matrix, dependency vulnerability audit, and Bandit.
   Dependabot monitors Python and GitHub Actions dependencies.

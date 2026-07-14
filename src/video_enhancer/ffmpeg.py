@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import shlex
 import shutil
@@ -12,6 +13,11 @@ from typing import Sequence
 
 from .encoders import build_video_encoder_args, validate_video_codec
 from .presets import EnhancementPreset
+
+
+MAX_SCALE_FACTOR = 2.0
+MAX_TARGET_FPS = 240
+ENHANCEMENT_TIMEOUT_SECONDS = 6 * 60 * 60
 
 
 class VideoEnhancerError(Exception):
@@ -46,7 +52,9 @@ class EnhancementOptions:
     ffmpeg_path: str = "ffmpeg"
 
 
-def validate_paths(input_path: Path, output_path: Path, *, overwrite: bool = False) -> None:
+def validate_paths(
+    input_path: Path, output_path: Path, *, overwrite: bool = False
+) -> None:
     """Validate input and output paths before building or running FFmpeg."""
 
     if not input_path.exists():
@@ -64,16 +72,25 @@ def validate_paths(input_path: Path, output_path: Path, *, overwrite: bool = Fal
     if input_path.resolve() == output_path.resolve():
         raise ValidationError("Input and output must be different files.")
     if not output_path.suffix:
-        raise ValidationError("Output path must include a file extension such as .mp4 or .mkv.")
+        raise ValidationError(
+            "Output path must include a file extension such as .mp4 or .mkv."
+        )
 
 
 def validate_options(options: EnhancementOptions) -> None:
     """Validate enhancement values that may come from CLI overrides."""
 
-    if options.scale_factor is not None and options.scale_factor <= 0:
-        raise ValidationError("--scale-factor must be greater than 0.")
-    if options.fps is not None and options.fps <= 0:
-        raise ValidationError("--fps must be greater than 0.")
+    if options.scale_factor is not None and (
+        not math.isfinite(options.scale_factor)
+        or not 0 < options.scale_factor <= MAX_SCALE_FACTOR
+    ):
+        raise ValidationError(
+            f"--scale-factor must be greater than 0 and at most {MAX_SCALE_FACTOR:g}."
+        )
+    if options.fps is not None and not 0 < options.fps <= MAX_TARGET_FPS:
+        raise ValidationError(
+            f"--fps must be greater than 0 and at most {MAX_TARGET_FPS}."
+        )
     if options.quality is not None and not 0 <= options.quality <= 51:
         raise ValidationError("--quality must be between 0 and 51.")
     try:
@@ -112,7 +129,9 @@ def build_ffmpeg_command(
 
     validate_options(options)
     validate_paths(input_path, output_path, overwrite=options.overwrite)
-    ffmpeg = resolve_ffmpeg(options.ffmpeg_path) if check_executable else options.ffmpeg_path
+    ffmpeg = (
+        resolve_ffmpeg(options.ffmpeg_path) if check_executable else options.ffmpeg_path
+    )
     filters = options.preset.video_filters(
         scale_factor=options.scale_factor,
         fps=options.fps,
@@ -157,15 +176,23 @@ def run_ffmpeg(command: Sequence[str]) -> None:
     """Run FFmpeg and convert low-level failures into clear CLI errors."""
 
     try:
-        completed = subprocess.run(command, check=False)
+        completed = subprocess.run(
+            command,
+            check=False,
+            timeout=ENHANCEMENT_TIMEOUT_SECONDS,
+        )
     except FileNotFoundError as exc:
         raise FFmpegNotFoundError(
             "FFmpeg was not found while starting the process. Install FFmpeg and ensure "
             "'ffmpeg' is on PATH, or pass --ffmpeg with the full path to the executable."
         ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise FFmpegExecutionError("FFmpeg exceeded the six-hour time limit.") from exc
 
     if completed.returncode != 0:
-        raise FFmpegExecutionError(f"FFmpeg failed with exit code {completed.returncode}.")
+        raise FFmpegExecutionError(
+            f"FFmpeg failed with exit code {completed.returncode}."
+        )
 
 
 def enhance_video(

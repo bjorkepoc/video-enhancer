@@ -55,33 +55,87 @@ def test_validate_social_url_rejects_malformed_ipv6() -> None:
         "https://instagram.com:invalid/reel/1",
     ],
 )
-def test_validate_social_url_rejects_credentials_and_nonstandard_ports(url: str) -> None:
+def test_validate_social_url_rejects_credentials_and_nonstandard_ports(
+    url: str,
+) -> None:
     with pytest.raises(SourceError):
         validate_social_url(url)
 
 
 def test_group_formats_collapses_cdn_mirrors() -> None:
-    grouped = group_formats([
-        {"format_id": "1080-0", "width": 1080, "height": 1920, "fps": 30,
-         "tbr": 767, "vcodec": "h265", "acodec": "aac", "ext": "mp4"},
-        {"format_id": "1080-1", "width": 1080, "height": 1920, "fps": 30,
-         "tbr": 767, "vcodec": "h265", "acodec": "aac", "ext": "mp4"},
-    ])
+    grouped = group_formats(
+        [
+            {
+                "format_id": "1080-0",
+                "width": 1080,
+                "height": 1920,
+                "fps": 30,
+                "tbr": 767,
+                "vcodec": "h265",
+                "acodec": "aac",
+                "ext": "mp4",
+            },
+            {
+                "format_id": "1080-1",
+                "width": 1080,
+                "height": 1920,
+                "fps": 30,
+                "tbr": 767,
+                "vcodec": "h265",
+                "acodec": "aac",
+                "ext": "mp4",
+            },
+        ]
+    )
     assert grouped[0]["format_ids"] == ["1080-0", "1080-1"]
     assert grouped[0]["mirrors"] == 2
 
 
 def test_group_formats_sorts_by_resolution_then_fps_then_bitrate() -> None:
-    grouped = group_formats([
-        {"format_id": "low-resolution", "width": 720, "height": 1280,
-         "fps": 120, "tbr": 999, "vcodec": "h264", "acodec": "aac", "ext": "mp4"},
-        {"format_id": "high-resolution-low-fps", "width": 1080, "height": 1920,
-         "fps": 30, "tbr": 100, "vcodec": "h264", "acodec": "aac", "ext": "mp4"},
-        {"format_id": "high-resolution-high-fps-low-bitrate", "width": 1080,
-         "height": 1920, "fps": 60, "tbr": 100, "vcodec": "h264", "acodec": "aac", "ext": "mp4"},
-        {"format_id": "high-resolution-high-fps-high-bitrate", "width": 1080,
-         "height": 1920, "fps": 60, "tbr": 200, "vcodec": "h264", "acodec": "aac", "ext": "mp4"},
-    ])
+    grouped = group_formats(
+        [
+            {
+                "format_id": "low-resolution",
+                "width": 720,
+                "height": 1280,
+                "fps": 120,
+                "tbr": 999,
+                "vcodec": "h264",
+                "acodec": "aac",
+                "ext": "mp4",
+            },
+            {
+                "format_id": "high-resolution-low-fps",
+                "width": 1080,
+                "height": 1920,
+                "fps": 30,
+                "tbr": 100,
+                "vcodec": "h264",
+                "acodec": "aac",
+                "ext": "mp4",
+            },
+            {
+                "format_id": "high-resolution-high-fps-low-bitrate",
+                "width": 1080,
+                "height": 1920,
+                "fps": 60,
+                "tbr": 100,
+                "vcodec": "h264",
+                "acodec": "aac",
+                "ext": "mp4",
+            },
+            {
+                "format_id": "high-resolution-high-fps-high-bitrate",
+                "width": 1080,
+                "height": 1920,
+                "fps": 60,
+                "tbr": 200,
+                "vcodec": "h264",
+                "acodec": "aac",
+                "ext": "mp4",
+            },
+        ]
+    )
 
     assert [group["format_ids"][0] for group in grouped] == [
         "high-resolution-high-fps-high-bitrate",
@@ -99,7 +153,7 @@ def test_inspect_source_uses_dump_single_json(monkeypatch: pytest.MonkeyPatch) -
         calls.append((args[0], kwargs))
         return completed
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(sources, "_run_yt_dlp", run)
     inspect_source("https://www.tiktok.com/@a/video/123")
 
     assert calls == [
@@ -127,33 +181,46 @@ def test_inspect_source_uses_dump_single_json(monkeypatch: pytest.MonkeyPatch) -
                 "https://www.tiktok.com/@a/video/123",
             ],
             {
-                "capture_output": True,
-                "text": True,
-                "check": False,
                 "timeout": 120,
             },
         )
     ]
 
 
-def test_inspect_source_never_returns_signed_urls(monkeypatch: pytest.MonkeyPatch) -> None:
-    completed = completed_json({
-        "id": "123", "title": "Sample", "webpage_url": "https://tiktok.com/x",
-        "formats": [{"format_id": "best", "url": "https://signed.example/token",
-                     "width": 1080, "height": 1920, "vcodec": "h265", "acodec": "aac"}],
-    })
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+def test_inspect_source_never_returns_signed_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completed = completed_json(
+        {
+            "id": "123",
+            "title": "Sample",
+            "webpage_url": "https://tiktok.com/x",
+            "formats": [
+                {
+                    "format_id": "best",
+                    "url": "https://signed.example/token",
+                    "width": 1080,
+                    "height": 1920,
+                    "vcodec": "h265",
+                    "acodec": "aac",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(sources, "_run_yt_dlp", lambda *args, **kwargs: completed)
     result = inspect_source("https://www.tiktok.com/@a/video/123")
     assert "signed.example" not in json.dumps(result)
 
 
 def test_inspect_source_omits_signed_thumbnail(monkeypatch: pytest.MonkeyPatch) -> None:
-    completed = completed_json({
-        "id": "123",
-        "thumbnail": "https://signed-thumbnail.example/thumb?token=secret",
-        "formats": [],
-    })
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+    completed = completed_json(
+        {
+            "id": "123",
+            "thumbnail": "https://signed-thumbnail.example/thumb?token=secret",
+            "formats": [],
+        }
+    )
+    monkeypatch.setattr(sources, "_run_yt_dlp", lambda *args, **kwargs: completed)
     result = inspect_source("https://www.tiktok.com/@a/video/123")
 
     assert "signed-thumbnail.example" not in json.dumps(result)
@@ -166,7 +233,7 @@ def test_inspect_source_reports_yt_dlp_startup_failure(
     def fail_to_start(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         raise FileNotFoundError("yt-dlp")
 
-    monkeypatch.setattr(subprocess, "run", fail_to_start)
+    monkeypatch.setattr(sources, "_run_yt_dlp", fail_to_start)
 
     with pytest.raises(SourceError, match="Could not start yt-dlp"):
         inspect_source("https://www.tiktok.com/@a/video/123")
@@ -176,13 +243,15 @@ def test_inspect_source_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     def time_out(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
 
-    monkeypatch.setattr(subprocess, "run", time_out)
+    monkeypatch.setattr(sources, "_run_yt_dlp", time_out)
 
     with pytest.raises(SourceError, match="inspection timed out"):
         inspect_source("https://www.tiktok.com/@a/video/123")
 
 
-def test_download_command_is_source_first_and_has_no_recode_flags(tmp_path: Path) -> None:
+def test_download_command_is_source_first_and_has_no_recode_flags(
+    tmp_path: Path,
+) -> None:
     command = build_download_command("https://tiktok.com/x", tmp_path)
 
     assert command[command.index("-f") + 1] == "bv*+ba/b"
@@ -266,7 +335,9 @@ Stream #0:0: Audio: aac (HE-AAC), 44100 Hz, stereo
 Stream #0:1: Video: hevc (Main), yuv420p, 1080x1920, 664 kb/s, 30 fps, 30 tbr
 """,
     )
-    monkeypatch.setattr(sources.shutil, "which", lambda name: None if name == "ffprobe" else name)
+    monkeypatch.setattr(
+        sources.shutil, "which", lambda name: None if name == "ffprobe" else name
+    )
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
 
     media = probe_media(video)
@@ -346,13 +417,15 @@ def test_download_source_returns_contained_file_and_probe(
         lambda *args, **kwargs: {"formats": [{"format_ids": ["best-id"]}]},
     )
     monkeypatch.setattr(
-        subprocess,
-        "run",
+        sources,
+        "_run_yt_dlp",
         lambda *args, **kwargs: subprocess.CompletedProcess(
             args[0], 0, f"FILE:{output}\nFORMAT:best-id\n", ""
         ),
     )
-    monkeypatch.setattr(sources, "probe_media", lambda path: {"width": 1080, "height": 1920})
+    monkeypatch.setattr(
+        sources, "probe_media", lambda path: {"width": 1080, "height": 1920}
+    )
 
     result = download_source("https://tiktok.com/x", tmp_path, format_id="best-id")
 
@@ -372,8 +445,8 @@ def test_download_source_removes_file_over_size_limit(
     output.write_bytes(b"oversized")
     monkeypatch.setattr(sources, "MAX_SOURCE_BYTES", 4)
     monkeypatch.setattr(
-        subprocess,
-        "run",
+        sources,
+        "_run_yt_dlp",
         lambda *args, **kwargs: subprocess.CompletedProcess(
             args[0], 0, f"FILE:{output}\nFORMAT:best\n", ""
         ),
@@ -383,6 +456,54 @@ def test_download_source_removes_file_over_size_limit(
         download_source("https://tiktok.com/x", tmp_path)
 
     assert not output.exists()
+
+
+def test_yt_dlp_runner_stops_excessive_output() -> None:
+    command = [
+        sys.executable,
+        "-c",
+        "import sys,time;sys.stdout.buffer.write(b'x'*65536);sys.stdout.flush();time.sleep(2)",
+    ]
+
+    with pytest.raises(SourceError, match="too much output"):
+        sources._run_yt_dlp(command, timeout=2, max_output_bytes=1024)
+
+
+def test_yt_dlp_runner_stops_download_growth(tmp_path: Path) -> None:
+    output = tmp_path / "source.part"
+    command = [
+        sys.executable,
+        "-c",
+        "import pathlib,sys,time;pathlib.Path(sys.argv[1]).write_bytes(b'x'*65536);time.sleep(2)",
+        str(output),
+    ]
+
+    with pytest.raises(SourceError, match="8 GiB"):
+        sources._run_yt_dlp(
+            command,
+            timeout=2,
+            destination=tmp_path,
+            max_output_bytes=4096,
+            max_download_bytes=1024,
+        )
+
+
+def test_download_source_removes_new_files_after_runner_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keep = tmp_path / "keep.txt"
+    keep.write_text("keep")
+
+    def fail(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        (tmp_path / "partial.part").write_bytes(b"partial")
+        raise SourceError("download limit")
+
+    monkeypatch.setattr(sources, "_run_yt_dlp", fail)
+
+    with pytest.raises(SourceError, match="download limit"):
+        download_source("https://tiktok.com/x", tmp_path)
+
+    assert [path.name for path in tmp_path.iterdir()] == ["keep.txt"]
 
 
 def test_search_links_cover_metadata_and_both_platforms() -> None:

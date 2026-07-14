@@ -52,6 +52,8 @@ The local server binds only to `127.0.0.1`. It keeps working media in a unique
 temporary directory, exposes no persistent work-directory option, and removes
 those files on normal shutdown or when you choose **Slett lokale arbeidsfiler**.
 Browser attachment downloads are the only files intentionally kept.
+The printed local URL contains a random process-only session key; do not share
+that URL. Reload using the printed URL if you remove its query string.
 
 Both players support normal playback, 1 FPS playback, calibrated previous/next
 frame steps, 1x-8x zoom around the pointer or touch midpoint, drag-to-pan,
@@ -79,8 +81,8 @@ video-enhancer input.mp4 output.mp4 [options]
 | Option | Meaning |
 | --- | --- |
 | `--preset fast|balanced|quality|ultra` | Select speed and quality tuning. |
-| `--scale-factor 2` | Override the upscale factor. |
-| `--fps 60` | Override the interpolation target FPS. |
+| `--scale-factor 2` | Override the upscale factor, up to 2x. |
+| `--fps 60` | Override the interpolation target FPS, up to 240. |
 | `--no-upscale` | Guard scaling so output is never larger than input dimensions. |
 | `--no-interpolate` | Disable generated intermediate frames. |
 | `--video-codec libx264|libx265` | Select the CPU video encoder. |

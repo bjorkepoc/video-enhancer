@@ -7,17 +7,16 @@ import os
 import shlex
 import shutil
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
-from .encoders import build_video_encoder_args, validate_video_codec
 from .presets import EnhancementPreset
-
 
 MAX_SCALE_FACTOR = 2.0
 MAX_TARGET_FPS = 240
 ENHANCEMENT_TIMEOUT_SECONDS = 6 * 60 * 60
+SUPPORTED_VIDEO_CODECS = ("libx264", "libx265")
 
 
 class VideoEnhancerError(Exception):
@@ -93,15 +92,18 @@ def validate_options(options: EnhancementOptions) -> None:
         )
     if options.quality is not None and not 0 <= options.quality <= 51:
         raise ValidationError("--quality must be between 0 and 51.")
-    try:
-        validate_video_codec(options.video_codec)
-    except ValueError as exc:
-        raise ValidationError(str(exc)) from exc
+    if options.video_codec not in SUPPORTED_VIDEO_CODECS:
+        valid = ", ".join(SUPPORTED_VIDEO_CODECS)
+        raise ValidationError(
+            f"Unknown video codec '{options.video_codec}'. Choose one of: {valid}."
+        )
 
 
 def resolve_ffmpeg(ffmpeg_path: str = "ffmpeg") -> str:
     """Return an executable FFmpeg path or raise a clear user-facing error."""
 
+    if ffmpeg_path == "ffmpeg":
+        ffmpeg_path = os.environ.get("VIDEO_ENHANCER_FFMPEG", ffmpeg_path)
     candidate = Path(ffmpeg_path)
     if candidate.parent != Path(".") and candidate.exists():
         if candidate.is_file():
@@ -138,12 +140,7 @@ def build_ffmpeg_command(
         no_upscale=options.no_upscale,
         no_interpolate=options.no_interpolate,
     )
-    video_encoder_args = build_video_encoder_args(
-        codec=options.video_codec,
-        default_preset=options.preset.encoder_preset,
-        quality=options.quality if options.quality is not None else options.preset.crf,
-        encoder_preset=options.encoder_preset,
-    )
+    quality = options.quality if options.quality is not None else options.preset.crf
 
     return [
         ffmpeg,
@@ -153,7 +150,12 @@ def build_ffmpeg_command(
         str(input_path),
         "-vf",
         filters,
-        *video_encoder_args,
+        "-c:v",
+        options.video_codec,
+        "-preset",
+        options.encoder_preset or options.preset.encoder_preset,
+        "-crf",
+        str(quality),
         "-pix_fmt",
         "yuv420p",
         "-c:a",

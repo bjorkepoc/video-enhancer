@@ -3,18 +3,19 @@ from __future__ import annotations
 import math
 import shlex
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 import pytest
 
-import video_enhancer.ffmpeg as ffmpeg
-from video_enhancer.encoders import supported_video_codecs
+from video_enhancer import ffmpeg, macos_app
 from video_enhancer.ffmpeg import (
+    SUPPORTED_VIDEO_CODECS,
     EnhancementOptions,
     FFmpegExecutionError,
     ValidationError,
     build_ffmpeg_command,
+    resolve_ffmpeg,
 )
 from video_enhancer.presets import available_presets, get_preset
 
@@ -63,7 +64,43 @@ def test_public_presets_build_ffmpeg_commands(tmp_path: Path, preset: str) -> No
 
 
 def test_supported_video_codecs_are_cpu_only() -> None:
-    assert supported_video_codecs() == ("libx264", "libx265")
+    assert SUPPORTED_VIDEO_CODECS == ("libx264", "libx265")
+
+
+def test_packaged_ffmpeg_override_is_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packaged = tmp_path / "ffmpeg"
+    packaged.write_bytes(b"binary")
+    monkeypatch.setenv("VIDEO_ENHANCER_FFMPEG", str(packaged))
+
+    assert resolve_ffmpeg() == str(packaged)
+
+
+def test_macos_app_uses_bundled_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("ffmpeg", "yt-dlp"):
+        (bin_dir / name).write_bytes(b"binary")
+    called: dict[str, object] = {}
+    monkeypatch.setattr(macos_app.sys, "_MEIPASS", str(tmp_path), raising=False)
+    monkeypatch.setattr(
+        macos_app,
+        "run_server",
+        lambda **options: called.update(options),
+    )
+    monkeypatch.setenv("VIDEO_ENHANCER_FFMPEG", "")
+    monkeypatch.setenv("VIDEO_ENHANCER_YT_DLP", "")
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    macos_app.main()
+
+    assert called == {"port": 0, "open_browser": True}
+    assert macos_app.os.environ["VIDEO_ENHANCER_FFMPEG"] == str(bin_dir / "ffmpeg")
+    assert macos_app.os.environ["VIDEO_ENHANCER_YT_DLP"] == str(bin_dir / "yt-dlp")
+    assert macos_app.os.environ["PATH"].split(macos_app.os.pathsep)[0] == str(bin_dir)
 
 
 @pytest.mark.parametrize("codec", ["libx264", "libx265"])

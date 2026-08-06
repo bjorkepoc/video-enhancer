@@ -8,26 +8,15 @@ from typing import Any
 
 import pytest
 
-import video_enhancer.sources as sources
+from video_enhancer import sources
 from video_enhancer.sources import (
     SourceError,
     build_download_command,
-    compare_hashes,
     download_source,
-    extract_keyframes,
-    frame_hash,
-    group_formats,
-    inspect_source,
     parse_ffprobe,
     probe_media,
-    search_links,
-    sample_frame_hashes,
     validate_social_url,
 )
-
-
-def completed_json(payload: dict[str, object]) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(["yt-dlp"], 0, json.dumps(payload), "")
 
 
 def test_validate_social_url_allows_only_supported_https_hosts() -> None:
@@ -37,231 +26,33 @@ def test_validate_social_url_allows_only_supported_https_hosts() -> None:
         "http://tiktok.com/a",
         "https://tiktok.com.evil.test/a",
         "https://example.com/a",
+        "https://user:secret@tiktok.com/video/1",
+        "https://instagram.com:444/reel/1",
+        "https://instagram.com:invalid/reel/1",
+        "https://[::1",
     ):
         with pytest.raises(SourceError):
             validate_social_url(url)
 
 
-def test_validate_social_url_rejects_malformed_ipv6() -> None:
-    with pytest.raises(SourceError, match="Use an HTTPS TikTok or Instagram video URL"):
-        validate_social_url("https://[::1")
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "https://user:secret@tiktok.com/video/1",
-        "https://instagram.com:444/reel/1",
-        "https://instagram.com:invalid/reel/1",
-    ],
-)
-def test_validate_social_url_rejects_credentials_and_nonstandard_ports(
-    url: str,
-) -> None:
-    with pytest.raises(SourceError):
-        validate_social_url(url)
-
-
-def test_group_formats_collapses_cdn_mirrors() -> None:
-    grouped = group_formats(
-        [
-            {
-                "format_id": "1080-0",
-                "width": 1080,
-                "height": 1920,
-                "fps": 30,
-                "tbr": 767,
-                "vcodec": "h265",
-                "acodec": "aac",
-                "ext": "mp4",
-            },
-            {
-                "format_id": "1080-1",
-                "width": 1080,
-                "height": 1920,
-                "fps": 30,
-                "tbr": 767,
-                "vcodec": "h265",
-                "acodec": "aac",
-                "ext": "mp4",
-            },
-        ]
-    )
-    assert grouped[0]["format_ids"] == ["1080-0", "1080-1"]
-    assert grouped[0]["mirrors"] == 2
-
-
-def test_group_formats_sorts_by_resolution_then_fps_then_bitrate() -> None:
-    grouped = group_formats(
-        [
-            {
-                "format_id": "low-resolution",
-                "width": 720,
-                "height": 1280,
-                "fps": 120,
-                "tbr": 999,
-                "vcodec": "h264",
-                "acodec": "aac",
-                "ext": "mp4",
-            },
-            {
-                "format_id": "high-resolution-low-fps",
-                "width": 1080,
-                "height": 1920,
-                "fps": 30,
-                "tbr": 100,
-                "vcodec": "h264",
-                "acodec": "aac",
-                "ext": "mp4",
-            },
-            {
-                "format_id": "high-resolution-high-fps-low-bitrate",
-                "width": 1080,
-                "height": 1920,
-                "fps": 60,
-                "tbr": 100,
-                "vcodec": "h264",
-                "acodec": "aac",
-                "ext": "mp4",
-            },
-            {
-                "format_id": "high-resolution-high-fps-high-bitrate",
-                "width": 1080,
-                "height": 1920,
-                "fps": 60,
-                "tbr": 200,
-                "vcodec": "h264",
-                "acodec": "aac",
-                "ext": "mp4",
-            },
-        ]
-    )
-
-    assert [group["format_ids"][0] for group in grouped] == [
-        "high-resolution-high-fps-high-bitrate",
-        "high-resolution-high-fps-low-bitrate",
-        "high-resolution-low-fps",
-        "low-resolution",
-    ]
-
-
-def test_inspect_source_uses_dump_single_json(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[list[str], dict[str, Any]]] = []
-    completed = completed_json({"id": "123", "formats": []})
-
-    def run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        calls.append((args[0], kwargs))
-        return completed
-
-    monkeypatch.setattr(sources, "_run_yt_dlp", run)
-    inspect_source("https://www.tiktok.com/@a/video/123")
-
-    assert calls == [
-        (
-            [
-                sys.executable,
-                "-m",
-                "yt_dlp",
-                "--ignore-config",
-                "--no-config-locations",
-                "--no-plugin-dirs",
-                "--no-cache-dir",
-                "--no-exec",
-                "--no-cookies-from-browser",
-                "--no-playlist",
-                "--no-progress",
-                "--downloader",
-                "native",
-                "--socket-timeout",
-                "30",
-                "--retries",
-                "3",
-                "--skip-download",
-                "--dump-single-json",
-                "https://www.tiktok.com/@a/video/123",
-            ],
-            {
-                "timeout": 120,
-            },
-        )
-    ]
-
-
-def test_inspect_source_never_returns_signed_urls(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    completed = completed_json(
-        {
-            "id": "123",
-            "title": "Sample",
-            "webpage_url": "https://tiktok.com/x",
-            "formats": [
-                {
-                    "format_id": "best",
-                    "url": "https://signed.example/token",
-                    "width": 1080,
-                    "height": 1920,
-                    "vcodec": "h265",
-                    "acodec": "aac",
-                }
-            ],
-        }
-    )
-    monkeypatch.setattr(sources, "_run_yt_dlp", lambda *args, **kwargs: completed)
-    result = inspect_source("https://www.tiktok.com/@a/video/123")
-    assert "signed.example" not in json.dumps(result)
-
-
-def test_inspect_source_omits_signed_thumbnail(monkeypatch: pytest.MonkeyPatch) -> None:
-    completed = completed_json(
-        {
-            "id": "123",
-            "thumbnail": "https://signed-thumbnail.example/thumb?token=secret",
-            "formats": [],
-        }
-    )
-    monkeypatch.setattr(sources, "_run_yt_dlp", lambda *args, **kwargs: completed)
-    result = inspect_source("https://www.tiktok.com/@a/video/123")
-
-    assert "signed-thumbnail.example" not in json.dumps(result)
-    assert "thumbnail" not in result
-
-
-def test_inspect_source_reports_yt_dlp_startup_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_to_start(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        raise FileNotFoundError("yt-dlp")
-
-    monkeypatch.setattr(sources, "_run_yt_dlp", fail_to_start)
-
-    with pytest.raises(SourceError, match="Could not start yt-dlp"):
-        inspect_source("https://www.tiktok.com/@a/video/123")
-
-
-def test_inspect_source_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    def time_out(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
-
-    monkeypatch.setattr(sources, "_run_yt_dlp", time_out)
-
-    with pytest.raises(SourceError, match="inspection timed out"):
-        inspect_source("https://www.tiktok.com/@a/video/123")
-
-
-def test_download_command_is_source_first_and_has_no_recode_flags(
-    tmp_path: Path,
-) -> None:
+def test_download_command_uses_best_source_without_recode(tmp_path: Path) -> None:
     command = build_download_command("https://tiktok.com/x", tmp_path)
 
     assert command[command.index("-f") + 1] == "bv*+ba/b"
-    assert "--ignore-config" in command
-    assert "--no-config-locations" in command
-    assert "--no-plugin-dirs" in command
-    assert "--no-cache-dir" in command
-    assert "--no-exec" in command
-    assert "--no-cookies-from-browser" in command
-    assert "--no-progress" in command
+    assert command[command.index("--format-sort") + 1] == (
+        "res,fps,quality,hdr:12,vcodec,size,br,asr,source"
+    )
+    for option in (
+        "--ignore-config",
+        "--no-config-locations",
+        "--no-plugin-dirs",
+        "--no-cache-dir",
+        "--no-exec",
+        "--no-cookies-from-browser",
+        "--no-progress",
+        "--no-playlist",
+    ):
+        assert option in command
     assert command[command.index("--downloader") + 1] == "native"
     assert command[command.index("--max-filesize") + 1] == "8G"
     assert command[command.index("--socket-timeout") + 1] == "30"
@@ -269,21 +60,22 @@ def test_download_command_is_source_first_and_has_no_recode_flags(
     assert command[command.index("--fragment-retries") + 1] == "3"
     assert "--recode-video" not in command
     assert "--remux-video" not in command
+    assert command[-1] == "https://tiktok.com/x"
 
 
-def test_download_command_adds_audio_to_an_inspected_format(tmp_path: Path) -> None:
-    command = build_download_command(
-        "https://instagram.com/reel/x", tmp_path, "dash-1080v"
-    )
+def test_download_command_uses_packaged_yt_dlp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packaged = tmp_path / "yt-dlp"
+    ffmpeg = tmp_path / "ffmpeg"
+    monkeypatch.setenv("VIDEO_ENHANCER_YT_DLP", str(packaged))
+    monkeypatch.setenv("VIDEO_ENHANCER_FFMPEG", str(ffmpeg))
 
-    assert command[command.index("-f") + 1] == "dash-1080v+ba/dash-1080v"
-    assert "--cookies-from-browser" not in command
-    assert command[-1] == "https://instagram.com/reel/x"
+    command = build_download_command("https://tiktok.com/x", tmp_path)
 
-
-def test_download_command_rejects_unsafe_format_id(tmp_path: Path) -> None:
-    with pytest.raises(SourceError, match="Invalid source format"):
-        build_download_command("https://tiktok.com/x", tmp_path, format_id="best;rm")
+    assert command[0] == str(packaged)
+    assert "-m" not in command[:3]
+    assert command[command.index("--ffmpeg-location") + 1] == str(ffmpeg)
 
 
 def test_parse_ffprobe_reports_saved_stream() -> None:
@@ -321,66 +113,73 @@ def test_parse_ffprobe_reports_saved_stream() -> None:
     }
 
 
+def test_probe_media_uses_ffprobe_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"video")
+    payload = {
+        "streams": [
+            {
+                "codec_type": "video",
+                "codec_name": "h264",
+                "width": 16,
+                "height": 16,
+                "avg_frame_rate": "30/1",
+            }
+        ],
+        "format": {"duration": "1"},
+    }
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(sources.shutil, "which", lambda name: "/usr/bin/ffprobe")
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert probe_media(video)["fps"] == 30.0
+    assert calls[0][0][:2] == ["/usr/bin/ffprobe", "-v"]
+    assert calls[0][1]["timeout"] == sources.PROBE_TIMEOUT_SECONDS
+
+
 def test_probe_media_falls_back_to_ffmpeg(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     video = tmp_path / "source.mp4"
     video.write_bytes(b"video")
-    completed = subprocess.CompletedProcess(
-        ["ffmpeg"],
-        0,
-        "",
-        """Duration: 00:01:45.03, start: 0.000000, bitrate: 767 kb/s
-Stream #0:0: Audio: aac (HE-AAC), 44100 Hz, stereo
-Stream #0:1: Video: hevc (Main), yuv420p, 1080x1920, 664 kb/s, 30 fps, 30 tbr
-""",
+    stderr = """
+Duration: 00:00:01.00, start: 0.000000, bitrate: 100 kb/s
+Stream #0:0: Video: h264, yuv420p, 16x16, 90 kb/s, 30 fps, 30 tbr
+Stream #0:1: Audio: aac, 48000 Hz, stereo
+"""
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        sources.shutil,
+        "which",
+        lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None,
     )
     monkeypatch.setattr(
-        sources.shutil, "which", lambda name: None if name == "ffprobe" else name
+        subprocess,
+        "run",
+        lambda command, **kwargs: (
+            calls.append(command)
+            or subprocess.CompletedProcess(command, 0, "", stderr)
+        ),
     )
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
-
-    media = probe_media(video)
-
-    assert (media["width"], media["height"], media["fps"]) == (1080, 1920, 30.0)
-    assert media["video_codec"] == "hevc"
-    assert media["audio_codec"] == "aac"
-    assert media["duration"] == 105.03
-    assert media["bitrate"] == 767000
-    assert media["size"] == 5
-
-
-def test_probe_media_falls_back_after_ffprobe_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    video = tmp_path / "source.mp4"
-    video.write_bytes(b"video")
-
-    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if command[0] == "ffprobe":
-            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            "",
-            "Duration: 00:00:01.00, start: 0.0, bitrate: 8 kb/s\n"
-            "Stream #0:0: Video: h264, yuv420p, 16x16, 1 kb/s, 30 fps, 30 tbr\n",
-        )
-
-    monkeypatch.setattr(sources.shutil, "which", lambda name: name)
-    monkeypatch.setattr(subprocess, "run", run)
 
     assert probe_media(video)["fps"] == 30.0
+    assert calls[0][:2] == ["/usr/bin/ffmpeg", "-hide_banner"]
 
 
-def test_probe_media_reports_ffmpeg_timeout(
+def test_probe_media_reports_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     video = tmp_path / "source.mp4"
     video.write_bytes(b"video")
-    monkeypatch.setattr(
-        sources.shutil, "which", lambda name: None if name == "ffprobe" else name
-    )
+    monkeypatch.setattr(sources.shutil, "which", lambda name: name)
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -393,29 +192,11 @@ def test_probe_media_reports_ffmpeg_timeout(
         probe_media(video)
 
 
-def test_download_source_rejects_format_not_in_current_inspection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        sources,
-        "inspect_source",
-        lambda *args, **kwargs: {"formats": [{"format_ids": ["available"]}]},
-    )
-
-    with pytest.raises(SourceError, match="no longer available"):
-        download_source("https://tiktok.com/x", tmp_path, format_id="missing")
-
-
 def test_download_source_returns_contained_file_and_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     output = tmp_path / "video-123.mp4"
     output.write_bytes(b"video")
-    monkeypatch.setattr(
-        sources,
-        "inspect_source",
-        lambda *args, **kwargs: {"formats": [{"format_ids": ["best-id"]}]},
-    )
     monkeypatch.setattr(
         sources,
         "_run_yt_dlp",
@@ -427,7 +208,7 @@ def test_download_source_returns_contained_file_and_probe(
         sources, "probe_media", lambda path: {"width": 1080, "height": 1920}
     )
 
-    result = download_source("https://tiktok.com/x", tmp_path, format_id="best-id")
+    result = download_source("https://tiktok.com/x", tmp_path)
 
     assert result == {
         "path": output,
@@ -436,6 +217,45 @@ def test_download_source_returns_contained_file_and_probe(
         "operation": "direct",
         "media": {"width": 1080, "height": 1920},
     }
+
+
+def test_download_source_hides_raw_yt_dlp_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        sources,
+        "_run_yt_dlp",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, "", "private platform diagnostic"
+        ),
+    )
+
+    with pytest.raises(SourceError) as error:
+        download_source("https://tiktok.com/x", tmp_path)
+
+    assert str(error.value) == (
+        "The source platform did not provide this public video. "
+        "Check that the link is public and try again."
+    )
+    assert "private platform diagnostic" not in str(error.value)
+
+
+def test_download_source_rejects_file_outside_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "downloads"
+    outside = tmp_path / "outside.mp4"
+    outside.write_bytes(b"video")
+    monkeypatch.setattr(
+        sources,
+        "_run_yt_dlp",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, f"FILE:{outside}\nFORMAT:best\n", ""
+        ),
+    )
+
+    with pytest.raises(SourceError, match="saved file was not found"):
+        download_source("https://tiktok.com/x", destination)
 
 
 def test_download_source_removes_file_over_size_limit(
@@ -504,88 +324,3 @@ def test_download_source_removes_new_files_after_runner_failure(
         download_source("https://tiktok.com/x", tmp_path)
 
     assert [path.name for path in tmp_path.iterdir()] == ["keep.txt"]
-
-
-def test_search_links_cover_metadata_and_both_platforms() -> None:
-    links = search_links(
-        {"id": "123", "title": "Closet Cleanout", "uploader": "aurora"}
-    )
-
-    assert set(links) == {"web", "tiktok", "instagram", "google_lens", "tineye"}
-    assert "Closet+Cleanout" in links["web"]
-    assert "site%3Atiktok.com" in links["tiktok"]
-    assert "site%3Ainstagram.com" in links["instagram"]
-
-
-def test_frame_hash_compares_horizontal_grayscale_differences() -> None:
-    rising = bytes(range(17)) * 16
-    falling = bytes(reversed(range(17))) * 16
-
-    assert frame_hash(rising).bit_count() == 256
-    assert frame_hash(falling) == 0
-    with pytest.raises(SourceError, match="frame size"):
-        frame_hash(b"short")
-
-
-def test_compare_hashes_classifies_match_uncertain_and_different() -> None:
-    assert compare_hashes([0], [0])["result"] == "likely_match"
-    assert compare_hashes([0], [(1 << 80) - 1])["result"] == "uncertain"
-    assert compare_hashes([0], [(1 << 256) - 1])["result"] == "different"
-    assert compare_hashes([0], [0])["advisory"] is True
-
-    with pytest.raises(SourceError, match="same number"):
-        compare_hashes([0], [0, 1])
-
-
-def test_extract_keyframes_uses_three_bounded_ffmpeg_seeks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    video = tmp_path / "video.mp4"
-    video.write_bytes(b"video")
-    calls: list[list[str]] = []
-    monkeypatch.setattr(sources, "_duration", lambda path, ffmpeg: 100.0)
-    monkeypatch.setattr(sources, "_ffmpeg_executable", lambda ffmpeg: ffmpeg)
-
-    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        Path(command[-1]).write_bytes(b"jpeg")
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr(subprocess, "run", run)
-
-    frames = extract_keyframes(video, tmp_path / "frames")
-
-    assert [frame.name for frame in frames] == [
-        "frame-1.jpg",
-        "frame-2.jpg",
-        "frame-3.jpg",
-    ]
-    assert [command[command.index("-ss") + 1] for command in calls] == [
-        "25.000",
-        "50.000",
-        "75.000",
-    ]
-    assert all(command[command.index("-frames:v") + 1] == "1" for command in calls)
-
-
-def test_sample_frame_hashes_reads_five_fixed_size_frames(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    video = tmp_path / "video.mp4"
-    video.write_bytes(b"video")
-    raw = bytes(range(17)) * 16
-    calls: list[list[str]] = []
-    monkeypatch.setattr(sources, "_duration", lambda path, ffmpeg: 60.0)
-    monkeypatch.setattr(sources, "_ffmpeg_executable", lambda ffmpeg: ffmpeg)
-
-    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        calls.append(command)
-        return subprocess.CompletedProcess(command, 0, raw, b"")
-
-    monkeypatch.setattr(subprocess, "run", run)
-
-    hashes = sample_frame_hashes(video)
-
-    assert len(hashes) == 5
-    assert all(value.bit_count() == 256 for value in hashes)
-    assert all("scale=17:16,format=gray" in command for command in calls)

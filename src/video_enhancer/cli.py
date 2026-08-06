@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
-from .encoders import describe_supported_encoders, supported_video_codecs
 from .ffmpeg import (
+    SUPPORTED_VIDEO_CODECS,
     EnhancementOptions,
     VideoEnhancerError,
     enhance_video,
@@ -94,23 +94,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--video-codec",
-        choices=supported_video_codecs(),
+        choices=SUPPORTED_VIDEO_CODECS,
         default="libx264",
-        help="video encoder codec, including hardware encoders when available",
+        help="CPU video encoder codec",
     )
     parser.add_argument(
         "--encoder-preset",
-        help="override encoder preset, e.g. slow, p6, quality",
+        help="override the CPU encoder preset, e.g. slow",
     )
     parser.add_argument(
         "--quality",
         type=quality_value,
-        help="quality level 0-51; lower is higher quality; maps to CRF/CQ/QVBR",
+        help="CRF quality level 0-51; lower is higher quality",
     )
     parser.add_argument(
         "--list-encoders",
         action="store_true",
-        help="list supported CPU and hardware encoder codec names",
+        help="list supported CPU video encoder codecs",
     )
     parser.add_argument(
         "--overwrite",
@@ -131,7 +131,11 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.list_encoders:
-        print(describe_supported_encoders())
+        print(
+            "Supported video encoders:\n"
+            "  libx264  H.264, most compatible\n"
+            "  libx265  HEVC, smaller files, slower"
+        )
         return 0
     if args.input is None or args.output is None:
         parser.error("input and output are required unless --list-encoders is used")

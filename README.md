@@ -10,13 +10,11 @@ your Mac; the app has no cloud backend.
 ## Features
 
 - TikTok and Instagram HTTPS links
-- Source inspection with grouped resolution, codec, bitrate, and CDN mirrors
 - Best-available original download with saved-file resolution/FPS verification
 - 2x Lanczos or Bicubic upscaling
 - Frame interpolation to 48, 60, 90, 144 FPS, or another target up to 240 FPS
 - 1 FPS playback, calibrated frame stepping, and 1x-8x focal zoom/pan
 - Physical browser downloads with byte-range video playback
-- Metadata search links, local keyframes, and advisory repost comparison
 - CPU encoders: `libx264`, `libx265`
 - Dry-run mode that prints the exact FFmpeg command
 - Local web UI for choosing, previewing, exporting, and downloading videos
@@ -24,7 +22,8 @@ your Mac; the app has no cloud backend.
 ## Requirements
 
 - Python 3.10+
-- FFmpeg in `PATH`, or passed with `--ffmpeg`
+- FFmpeg in `PATH`; ffprobe is optional and used when available
+- The CLI also accepts a custom FFmpeg executable through `--ffmpeg`
 - `yt-dlp` (installed automatically with this package)
 
 On macOS:
@@ -35,10 +34,12 @@ brew install ffmpeg
 
 ## Install
 
+Install the tagged `0.1.0` release in a virtual environment:
+
 ```bash
 python -m venv .venv
-python -m pip install -U pip
-python -m pip install -e .
+. .venv/bin/activate
+python -m pip install "https://github.com/bjorkepoc/video-enhancer/releases/download/v0.1.0/video_enhancer-0.1.0-py3-none-any.whl"
 ```
 
 ## Web UI
@@ -47,22 +48,55 @@ python -m pip install -e .
 video-enhancer-web --open
 ```
 
-The server binds to `127.0.0.1`, previews original and derived files in the
-browser, and keeps working files in a process-specific temporary directory.
-Use **Slett lokale arbeidsfiler** to clear them immediately; normal app shutdown
-also removes them.
+The server binds to `127.0.0.1`, accepts public TikTok or Instagram links,
+previews original and derived files in the browser, and keeps working files in
+a process-specific temporary directory. Use **Clear local files** to remove
+them immediately; normal app shutdown also removes them.
 
 The printed local URL contains a random session key. Open it directly and do
 not share it; the key expires when the process stops.
 
-Paste a TikTok or Instagram link, inspect its variants, then download `Best
-available` or a specific format. Source access is anonymous: the app never
-reads browser cookies or handles platform login sessions.
+Paste a TikTok or Instagram link to download the best available source. Source
+access is anonymous: the app never reads browser cookies or handles platform
+login sessions.
 
-The local UI loads no ads, analytics, cookies, or third-party scripts. TikTok
-or Instagram is contacted only after a link action, and external search tools
-open only after their links are clicked. See
+The local UI loads no ads, analytics, cookies, or third-party code. TikTok or
+Instagram is contacted only after a link action. See
 [the launch/privacy/security checklist](docs/launch-privacy-security.md).
+
+Advertising networks do not belong inside this localhost app. Any future
+ad-network advertising must live on a separate public site and pass the platform,
+publisher-policy, privacy, and consent gates in that checklist first.
+
+## macOS App Build
+
+The consumer artifact is a self-contained Apple Silicon `.app` distributed as
+a ZIP. It bundles pinned arm64 builds of yt-dlp and FFmpeg, so recipients do not
+need Python, Homebrew, or a separate FFmpeg install.
+
+Local ad-hoc build:
+
+```bash
+uv run --extra macos scripts/build_macos.sh
+```
+
+Developer ID signing and notarization use the same command after the signing
+identity and notary credentials are installed:
+
+```bash
+xcrun notarytool store-credentials video-enhancer-notary --apple-id APPLE_ID --team-id TEAM_ID
+CODESIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" \
+NOTARY_PROFILE=video-enhancer-notary \
+uv run --extra macos scripts/build_macos.sh
+```
+
+The output ZIP and SHA-256 file are written to `dist/`. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before distributing it.
+
+Tagged GitHub releases also require repository secrets for the Developer ID
+certificate (`MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, and
+`MACOS_SIGNING_IDENTITY`) and notarization (`APPLE_ID`, `APPLE_TEAM_ID`, and
+`APPLE_APP_PASSWORD`). A tag is not published if signing or notarization fails.
 
 Result labels are literal:
 
@@ -135,8 +169,6 @@ video-enhancer --list-encoders
 - `minterpolate` can create artifacts around fast motion, hard cuts, text,
   hands, flashing lights, water, and motion blur.
 - 90/144 FPS exports can be much slower than real time.
-- Search links and frame hashes can find likely reposts, but crops, overlays,
-  reordered clips, and re-edits can make the comparison uncertain or wrong.
 
 ## Development
 
@@ -145,7 +177,11 @@ python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
-More CLI detail: [docs/usage-and-requirements.md](docs/usage-and-requirements.md).
+Pushing a tag that exactly matches the project version, such as `v0.1.0`, runs
+tests, lint, security checks, builds the wheel and source archive, and creates
+the GitHub release with SHA-256 checksums.
+
+Run `video-enhancer --help` for every CLI option.
 
 ## License
 

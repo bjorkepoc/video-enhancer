@@ -1,6 +1,6 @@
-# Launch, Privacy, Ads, And Security
+# Launch, Privacy, And Security
 
-Status: implementation baseline verified 2026-07-13. This is an engineering
+Status: implementation baseline reviewed 2026-08-06. This is an engineering
 launch gate, not legal advice or a promise of worldwide legal compliance.
 
 ## Product Boundary
@@ -20,85 +20,57 @@ The product is a local Mac application with a browser UI on `127.0.0.1`.
 
 The operator never receives the submitted URL or video through this
 architecture. The local process sends a user-initiated request directly from
-the user's IP address to TikTok or Instagram and their media CDNs. Search,
-Lens, and TinEye links open only when the user chooses them. A file explicitly
-downloaded through the browser persists wherever the user saves it.
+the user's IP address to TikTok or Instagram and their media CDNs. A file
+explicitly downloaded through the browser persists wherever the user saves it.
 
-Temporary source videos, keyframes, comparison candidates, and enhanced copies
-are deleted by **Slett lokale arbeidsfiler** and on normal process shutdown.
+Temporary source videos and enhanced copies are deleted by **Clear local
+files** and on normal process shutdown.
 An operating-system crash, power loss, or `SIGKILL` can prevent normal cleanup;
 the process directory is still inside the Mac's temporary-file area and never
 becomes operator storage.
 
 ## Cookies And Privacy Notice
 
-The local application must not show a cookie consent banner because it uses no
-cookies or similar browser storage. Norway's Data Protection Authority says a
-site using only exempt, strictly necessary storage neither needs nor should use
-a consent banner. If any analytics, ad tag, fingerprinting, embedded media,
-consent preference, or other device storage is later added, this conclusion
-must be reviewed before release.
+The local application has no cookie consent banner because it uses no cookies
+or similar browser storage. If any analytics, ad tag, fingerprinting, embedded
+media, consent preference, or other device storage is later added, this
+conclusion must be reviewed before release.
 
 The in-app privacy disclosure must remain accurate and say:
 
 - files are temporary and local;
-- there is no account, operator database, analytics, advertising, or browser
-  storage;
+- there is no account, operator database, analytics, advertising technology,
+  or browser storage;
 - TikTok or Instagram receives the user's direct request and IP address;
-- external searches happen only after a click;
 - a browser download is a persistent copy chosen by the user.
 
-A future public download or information website is a separate system. Its host
-will ordinarily process IP addresses and access logs even if the app does not.
-That site needs a privacy notice naming the legal operator and contact details,
-the actual processors, purposes, legal bases, retention periods, transfers,
-rights, complaint route, and security contacts before public launch.
+Any future public website, analytics, live advertising, or changed business
+model requires a fresh privacy and legal review before release.
 
-## Advertising Decision
+## Advertising And Funding
 
-Advertising is intentionally excluded from the local UI. Remote ad code would
-send device and page data to third parties, weaken the Content Security Policy,
-and make the current no-cookie/no-tracking statement false.
+The localhost application is intentionally ad-free. Do not embed AdSense or
+another remote ad network in it: doing so would distribute advertising through
+desktop software, weaken the current CSP, and make the no-tracking disclosure
+false.
 
-Ads may be evaluated only on a separate public distribution site that never
-receives video links or video files. Before the first ad request, all of these
-gates must be complete:
+AdSense is not a launch option for this product until platform permission and
+publisher-policy review are complete. Google's publisher policies restrict ads
+on products that enable downloads when the content provider prohibits them.
+If advertising is later approved, put it on a separate, crawlable HTTPS site
+that never receives video URLs or files. That site needs its own operator and
+contact details, privacy notice, consent/CMP flow where required, approved
+publisher and slot IDs, and `ads.txt` entry.
 
-- legal operator name, address or jurisdiction, and privacy contact published;
-- domain, host, CDN, log retention, and processor contracts documented;
-- ad provider and every downstream vendor inventoried;
-- ads and nonessential tags blocked before valid consent where required;
-- accept and reject offered with comparable prominence on the same layer;
-- granular choices, withdrawal, and proof of consent implemented;
-- Google ads in the EEA, UK, or Switzerland use a Google-certified CMP with
-  IAB TCF 2.3; no Google ad tag is called without the required Purpose 1 signal;
-- advertising is visibly identifiable and not disguised as an app command;
-- children are not targeted and sensitive-video context is not used for ad
-  profiling;
-- the page honors applicable opt-out preference signals such as Global Privacy
-  Control and provides required regional privacy links;
-- accessibility, vendor failure, consent revocation, and tracker-blocking tests
-  pass in every supported browser.
+For EEA, UK, and Swiss visitors, use a Google-certified CMP integrated with
+TCF v2.3. Accept and reject must be equally prominent on the same layer,
+withdrawal must be easy, and no non-essential storage or ad request may happen
+before valid consent. See Google's European consent requirements below.
 
-Choosing "non-personalized" ads does not automatically remove consent or
-privacy obligations because ad delivery and measurement can still access a
-device or process personal data.
-
-## International Release Gates
-
-| Market | Gate before a public site with ads or analytics |
-| --- | --- |
-| Norway and EEA | GDPR controller information and lawful bases; Ekomloven section 3-15 consent before nonessential storage/access; processor and transfer review; equal reject; easy withdrawal. |
-| UK | UK GDPR plus current PECR storage/access guidance; consent or a documented statutory exception; child-access and online-advertising review. |
-| Switzerland | Swiss privacy review plus the ad provider's Swiss consent requirements. Google requires its certified CMP flow for covered ad serving. |
-| California | Determine CCPA applicability using current thresholds. If covered and selling/sharing data, publish required notices and rights methods, honor GPC/OOPS, and confirm the opt-out state. |
-| Other US states | Build a state-law applicability matrix with the selected providers; implement sale/share/targeted-ad opt-outs and universal signals where required. |
-| US children | Do not make the service child-directed. If COPPA applies or there is actual knowledge of a user under 13, stop data collection/ads until the notice, minimization, deletion, security, and verifiable parental-consent flow is reviewed. |
-| Canada, Brazil, Australia, Japan, South Korea, India, South Africa, and other targeted markets | Obtain a jurisdiction-specific review of notices, consent/opt-out, children, cross-border transfers, retention, breach handling, and local representation before targeted promotion or ad activation. |
-
-Do not claim "worldwide compliant." Re-run the matrix whenever the business
-model, target markets, host, domain, CMP, ad provider, analytics, or processors
-change.
+A direct sponsor inside the app is the only technically local-first option:
+fixed bundled text or artwork plus a normal HTTPS link, clearly labelled, with
+no remote creative, pixel, identifier, or click beacon. Add it only when an
+actual sponsor, licensed creative, destination, and campaign period exist.
 
 ## Content Rights And Platform Terms
 
@@ -106,8 +78,8 @@ Users must download only public content they own or have permission to use.
 Local execution, one-at-a-time use, and a private-copy exception do not create
 copyright permission, a commercial license, or platform approval.
 
-TikTok's EEA terms, last updated August 2025, prohibit extracting platform data
-or content with automated software not provided or approved by TikTok.
+TikTok's EEA terms prohibit extracting platform data or content with automated
+software not provided or approved by TikTok.
 Instagram's terms effective 2025-01-01 prohibit automated access or collection
 without express permission, including while logged out. Similar downloader
 sites existing on the internet is not evidence that their operation complies
@@ -120,9 +92,7 @@ The current app therefore:
   access control;
 - performs only the user's explicit local request;
 - labels native source quality separately from synthetic upscale/interpolation;
-- does not host, index, recommend, or redistribute videos;
-- treats repost search and frame hashes as advisory, not proof of ownership or
-  identity.
+- does not host, index, recommend, or redistribute videos.
 
 Platform-contract risk remains. A lower-risk official TikTok route requires a
 registered app, Login Kit, Webhooks, approved Data Portability scopes, and user
@@ -143,15 +113,14 @@ advice rather than representing the anonymous extractor as approved.
   expires when the local process stops.
 - Restrictive CSP, framing, MIME-sniffing, referrer, opener, resource, and
   permissions headers reduce browser attack surface.
-- API JSON, upload size, HTTP range syntax, source hostname, format ID, and file
-  containment are validated.
+- API JSON, HTTP range syntax, source hostname, and file containment are
+  validated.
 - `yt-dlp` ignores user configuration and cache, never reads browser cookies,
   disables plugins, external commands, and playlists, forces its native
-  downloader, and has socket, retry, inspection, download, and source-size
-  bounds. Output capture is bounded and download growth is stopped while the
+  downloader, and has socket, retry, download, and source-size bounds. Output
+  capture is bounded and download growth is stopped while the
   process is running, rather than checked only after completion.
-- Subprocesses use argument arrays with `shell=False`; selected format IDs are
-  allowlisted and filenames are sanitized.
+- Subprocesses use argument arrays with `shell=False`; filenames are sanitized.
 - Local HTTP clients have an idle timeout. Web-triggered FFmpeg exports discard
   raw diagnostics, enforce a six-hour ceiling, and remove failed partial files.
 - Enhancement inputs are limited to 2x scale and 240 FPS, and only one encoder
@@ -166,8 +135,9 @@ advice rather than representing the anonymous extractor as approved.
 
 - A malicious process already running as the same macOS user is inside this
   tool's trust boundary and can access loopback or local temporary files.
-- `yt-dlp`, FFmpeg, and ffprobe parse untrusted platform responses and media.
-  Keep them current and install them only from trusted sources.
+- `yt-dlp`, FFmpeg, and optional ffprobe parse untrusted platform responses and
+  media.
+  Keep release pins current and verify bundled artifact digests.
 - The platform controls redirects and CDN destinations after the initial strict
   hostname validation. This is acceptable for a user-run local tool but would
   require stronger egress isolation in a hosted backend.
@@ -197,19 +167,19 @@ Local application release:
 - downloaded media resolution/FPS/codec are verified from the saved file;
 - attachment download, byte ranges, 1 FPS, frame stepping, zoom, pan, reset,
   clear-session, desktop, and mobile layouts pass browser QA;
-- no cookies, browser storage, remote scripts, ads, analytics, or non-loopback
-  listeners are present;
+- no cookies, browser storage, remote scripts, ads, analytics, or
+  non-loopback listeners are present;
 - security report path and dependency-update automation are enabled.
 
-Public distribution site release:
+Public distribution release:
 
-- operator identity, privacy contact, domain, host, processors, retention, and
-  target markets are known;
-- the privacy notice describes observed production behavior, including logs;
-- ad/CMP gates above are complete, or the site launches without ads/analytics;
-- terms, copyright/takedown contact, acceptable use, and security contact are
-  published and operational;
-- legal review addresses platform terms before commercial promotion.
+- the exact tagged commit passes CI and produces verified release artifacts;
+- authorized TikTok and Instagram flows pass end to end;
+- platform permission or targeted legal advice covers the chosen release;
+- operator identity and privacy, copyright, and security contacts are public;
+- a consumer Mac build is Developer ID signed and notarized, or the release is
+  clearly limited to a technical Python-package audience;
+- any advertising remains disabled until its separate gates above pass.
 
 ## Primary Sources
 
@@ -218,9 +188,6 @@ Public distribution site release:
 - Instagram terms: https://www.facebook.com/help/instagram/581066165581870
 - Norway cookie guidance: https://www.datatilsynet.no/personvern-pa-ulike-omrader/internett-og-apper/bruk-av-informasjonskapsler-og-andre-sporingsteknologier/
 - Norway transparency guidance: https://www.datatilsynet.no/rettigheter-og-plikter/virksomhetenes-plikter/informasjon-og-apenhet/
-- UK storage/access guidance, updated 2026-04-29: https://ico.org.uk/for-organisations/direct-marketing-and-privacy-and-electronic-communications/guidance-on-the-use-of-storage-and-access-technologies/
-- Google certified CMP requirement: https://support.google.com/adsense/answer/13554020
-- Google TCF 2.3 transition: https://support.google.com/adsense/answer/9804260
-- California privacy FAQ and current thresholds: https://cppa.ca.gov/faq
-- California GPC enforcement examples: https://oag.ca.gov/privacy/ccpa/enforcement
-- FTC COPPA final-rule summary: https://www.ftc.gov/news-events/news/press-releases/2025/01/ftc-finalizes-changes-childrens-privacy-rule-limiting-companies-ability-monetize-kids-data
+- Google AdSense desktop software policy: https://support.google.com/adsense/answer/1346295
+- Google publisher download policy: https://support.google.com/publisherpolicies/answer/10436828
+- Google European consent requirements: https://support.google.com/adsense/answer/13554116

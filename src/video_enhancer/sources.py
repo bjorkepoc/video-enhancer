@@ -1,27 +1,23 @@
-"""Inspect supported social video sources without exposing media URLs."""
+"""Download supported social videos without exposing media URLs."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
-import signal
 import shutil
+import signal
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Mapping
 from pathlib import Path
-from statistics import median
 from typing import Any
-from urllib.parse import quote_plus, urlsplit
-
+from urllib.parse import urlsplit
 
 SUPPORTED_HOSTS = {"tiktok.com": "tiktok", "instagram.com": "instagram"}
-FORMAT_FIELDS = ("width", "height", "fps", "tbr", "vcodec", "acodec", "ext")
 BEST_FORMAT = "bv*+ba/b"
-INSPECTION_TIMEOUT_SECONDS = 120
+BEST_FORMAT_SORT = "res,fps,quality,hdr:12,vcodec,size,br,asr,source"
 DOWNLOAD_TIMEOUT_SECONDS = 900
 SOCKET_TIMEOUT_SECONDS = 30
 NETWORK_RETRIES = 3
@@ -34,7 +30,7 @@ PROCESS_STOP_SECONDS = 2
 
 
 class SourceError(ValueError):
-    """Raised when a source URL or inspection result is invalid."""
+    """Raised when a source URL or download result is invalid."""
 
 
 def _directory_size(directory: Path) -> int:
@@ -165,7 +161,15 @@ def _run_yt_dlp(
 
 
 def _yt_dlp_command(yt_dlp: str) -> list[str]:
-    executable = [sys.executable, "-m", "yt_dlp"] if yt_dlp == "yt-dlp" else [yt_dlp]
+    packaged = os.environ.get("VIDEO_ENHANCER_YT_DLP") if yt_dlp == "yt-dlp" else None
+    ffmpeg = os.environ.get("VIDEO_ENHANCER_FFMPEG")
+    executable = (
+        [packaged]
+        if packaged
+        else [sys.executable, "-m", "yt_dlp"]
+        if yt_dlp == "yt-dlp"
+        else [yt_dlp]
+    )
     return [
         *executable,
         "--ignore-config",
@@ -176,6 +180,7 @@ def _yt_dlp_command(yt_dlp: str) -> list[str]:
         "--no-cookies-from-browser",
         "--no-playlist",
         "--no-progress",
+        *(["--ffmpeg-location", ffmpeg] if ffmpeg else []),
         "--downloader",
         "native",
     ]
@@ -203,98 +208,9 @@ def validate_social_url(raw: str) -> str:
     raise SourceError("Only TikTok and Instagram video URLs are supported.")
 
 
-def _format_key(format_data: Mapping[str, Any]) -> tuple[Any, ...]:
-    return tuple(format_data.get(field) for field in FORMAT_FIELDS)
-
-
-def _sort_value(value: Any) -> float:
-    return float(value) if isinstance(value, (int, float)) else 0.0
-
-
-def group_formats(formats: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[tuple[Any, ...], dict[str, Any]] = {}
-    for format_data in formats:
-        key = _format_key(format_data)
-        group = groups.get(key)
-        if group is None:
-            group = {field: format_data.get(field) for field in FORMAT_FIELDS}
-            group["format_ids"] = []
-            groups[key] = group
-        group["format_ids"].append(format_data.get("format_id"))
-
-    result = list(groups.values())
-    for group in result:
-        group["mirrors"] = len(group["format_ids"])
-    result.sort(
-        key=lambda group: (
-            _sort_value(group.get("width")) * _sort_value(group.get("height")),
-            _sort_value(group.get("fps")),
-            _sort_value(group.get("tbr")),
-        ),
-        reverse=True,
-    )
-    return result
-
-
-def inspect_source(url: str, *, yt_dlp: str = "yt-dlp") -> dict[str, Any]:
-    normalized_url = url.strip()
-    platform = validate_social_url(normalized_url)
-    command = [
-        *_yt_dlp_command(yt_dlp),
-        "--socket-timeout",
-        str(SOCKET_TIMEOUT_SECONDS),
-        "--retries",
-        str(NETWORK_RETRIES),
-        "--skip-download",
-        "--dump-single-json",
-        normalized_url,
-    ]
-    try:
-        completed = _run_yt_dlp(
-            command,
-            timeout=INSPECTION_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise SourceError("Source inspection timed out.") from exc
-    except OSError as exc:
-        raise SourceError(f"Could not start yt-dlp: {exc}") from exc
-    if completed.returncode:
-        detail = (
-            completed.stderr.strip()[-4000:] or "yt-dlp could not inspect the source."
-        )
-        raise SourceError(detail)
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise SourceError("yt-dlp returned invalid JSON.") from exc
-    if not isinstance(payload, dict):
-        raise SourceError("yt-dlp returned an invalid source record.")
-
-    raw_formats = payload.get("formats", [])
-    if not isinstance(raw_formats, list):
-        raw_formats = []
-    return {
-        "id": payload.get("id"),
-        "platform": platform,
-        "title": payload.get("title"),
-        "uploader": payload.get("uploader"),
-        "duration": payload.get("duration"),
-        "formats": group_formats(raw_formats),
-    }
-
-
-def _selected_format(format_id: str) -> str:
-    if not format_id:
-        return BEST_FORMAT
-    if not re.fullmatch(r"[A-Za-z0-9._+-]+", format_id):
-        raise SourceError("Invalid source format.")
-    return f"{format_id}+ba/{format_id}"
-
-
 def build_download_command(
     url: str,
     destination: Path,
-    format_id: str = "",
     *,
     yt_dlp: str = "yt-dlp",
 ) -> list[str]:
@@ -313,8 +229,10 @@ def build_download_command(
         str(NETWORK_RETRIES),
         "--restrict-filenames",
         "--windows-filenames",
+        "--format-sort",
+        BEST_FORMAT_SORT,
         "-f",
-        _selected_format(format_id),
+        BEST_FORMAT,
         "-o",
         str(destination / "%(title).80s-%(id)s.%(ext)s"),
         "--print",
@@ -325,7 +243,7 @@ def build_download_command(
     ]
 
 
-def _number(value: Any, cast: type[int] | type[float]) -> int | float | None:
+def _number(value: Any, cast: type[int | float]) -> int | float | None:
     try:
         return cast(value)
     except (TypeError, ValueError):
@@ -381,15 +299,13 @@ def _parse_ffmpeg_probe(stderr: str) -> dict[str, Any]:
     video_codec = re.search(r"Video:\s*([^,\s(]+)", video_line)
     audio_codec = re.search(r"Audio:\s*([^,\s(]+)", audio_line)
     video_bitrate = re.search(r",\s*([\d.]+)\s*kb/s(?:,|\s)", video_line)
-    seconds = None
-    bitrate = None
-    if duration:
-        seconds = (
-            int(duration.group(1)) * 3600
-            + int(duration.group(2)) * 60
-            + float(duration.group(3))
-        )
-        bitrate = int(duration.group(4)) * 1000
+    seconds = (
+        int(duration.group(1)) * 3600
+        + int(duration.group(2)) * 60
+        + float(duration.group(3))
+        if duration
+        else None
+    )
     return {
         "width": int(dimensions.group(1)) if dimensions else None,
         "height": int(dimensions.group(2)) if dimensions else None,
@@ -399,7 +315,7 @@ def _parse_ffmpeg_probe(stderr: str) -> dict[str, Any]:
         "video_bitrate": int(float(video_bitrate.group(1)) * 1000)
         if video_bitrate
         else None,
-        "bitrate": bitrate,
+        "bitrate": int(duration.group(4)) * 1000 if duration else None,
         "duration": seconds,
         "size": None,
     }
@@ -429,7 +345,9 @@ def probe_media(
                 check=False,
                 timeout=PROBE_TIMEOUT_SECONDS,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired as exc:
+            raise SourceError("Media verification timed out.") from exc
+        except OSError:
             completed = None
         if completed and completed.returncode == 0:
             try:
@@ -439,9 +357,16 @@ def probe_media(
             except (json.JSONDecodeError, SourceError):
                 pass
 
-    ffmpeg_path = shutil.which(ffmpeg)
+    ffmpeg_name = (
+        os.environ.get("VIDEO_ENHANCER_FFMPEG", ffmpeg)
+        if ffmpeg == "ffmpeg"
+        else ffmpeg
+    )
+    ffmpeg_path = shutil.which(ffmpeg_name)
+    if not ffmpeg_path and Path(ffmpeg_name).is_file():
+        ffmpeg_path = ffmpeg_name
     if not ffmpeg_path:
-        raise SourceError("FFmpeg is required to verify the downloaded file.")
+        raise SourceError("FFmpeg or ffprobe is required to verify the downloaded file.")
     try:
         completed = subprocess.run(
             [
@@ -484,22 +409,11 @@ def _remove_new_entries(destination: Path, existing: set[str]) -> None:
 def download_source(
     url: str,
     destination: Path,
-    format_id: str = "",
     *,
     yt_dlp: str = "yt-dlp",
 ) -> dict[str, Any]:
     destination.mkdir(parents=True, exist_ok=True)
-    if format_id:
-        inspected = inspect_source(url, yt_dlp=yt_dlp)
-        available = {
-            current
-            for group in inspected.get("formats", [])
-            for current in group.get("format_ids", [])
-        }
-        if format_id not in available:
-            raise SourceError("The selected source format is no longer available.")
-
-    command = build_download_command(url, destination, format_id, yt_dlp=yt_dlp)
+    command = build_download_command(url, destination, yt_dlp=yt_dlp)
     existing = {path.name for path in destination.iterdir()}
     try:
         completed = _run_yt_dlp(
@@ -519,10 +433,10 @@ def download_source(
         raise
     if completed.returncode:
         _remove_new_entries(destination, existing)
-        detail = (
-            completed.stderr.strip()[-4000:] or "yt-dlp could not download the source."
+        raise SourceError(
+            "The source platform did not provide this public video. "
+            "Check that the link is public and try again."
         )
-        raise SourceError(detail)
 
     try:
         values: dict[str, str] = {}
@@ -537,7 +451,7 @@ def download_source(
         if file_path.stat().st_size > MAX_SOURCE_BYTES:
             file_path.unlink(missing_ok=True)
             raise SourceError("The downloaded source exceeds the 8 GiB limit.")
-        selected = values.get("FORMAT", format_id or "best")
+        selected = values.get("FORMAT", "best")
         return {
             "path": file_path,
             "filename": file_path.name,
@@ -548,150 +462,3 @@ def download_source(
     except (OSError, SourceError):
         _remove_new_entries(destination, existing)
         raise
-
-
-def search_links(info: dict[str, Any]) -> dict[str, str]:
-    title = str(info.get("title", "")).strip()
-    suffix = " ".join(
-        str(info.get(key, "")).strip() for key in ("uploader", "id")
-    ).strip()
-    terms = " ".join(part for part in (f'"{title}"' if title else "", suffix) if part)
-    encoded = quote_plus(terms)
-    return {
-        "web": f"https://www.google.com/search?q={encoded}",
-        "tiktok": f"https://www.google.com/search?q={quote_plus(f'site:tiktok.com {terms}')}",
-        "instagram": f"https://www.google.com/search?q={quote_plus(f'site:instagram.com {terms}')}",
-        "google_lens": "https://lens.google.com/",
-        "tineye": "https://tineye.com/",
-    }
-
-
-def _ffmpeg_executable(ffmpeg: str) -> str:
-    executable = shutil.which(ffmpeg)
-    if not executable:
-        raise SourceError("FFmpeg is required for frame extraction.")
-    return executable
-
-
-def _duration(path: Path, ffmpeg: str) -> float:
-    duration = probe_media(path, ffmpeg=ffmpeg).get("duration")
-    if not isinstance(duration, (int, float)) or duration <= 0:
-        raise SourceError("The video duration is unavailable for frame extraction.")
-    return float(duration)
-
-
-def extract_keyframes(
-    path: Path, destination: Path, *, ffmpeg: str = "ffmpeg"
-) -> list[Path]:
-    executable = _ffmpeg_executable(ffmpeg)
-    duration = _duration(path, ffmpeg)
-    destination.mkdir(parents=True, exist_ok=True)
-    frames = [destination / f"frame-{index}.jpg" for index in range(1, 4)]
-    for frame, fraction in zip(frames, (0.25, 0.5, 0.75), strict=True):
-        try:
-            completed = subprocess.run(
-                [
-                    executable,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-ss",
-                    f"{duration * fraction:.3f}",
-                    "-i",
-                    str(path),
-                    "-frames:v",
-                    "1",
-                    "-vf",
-                    "scale='min(960,iw)':-2",
-                    "-q:v",
-                    "2",
-                    "-y",
-                    str(frame),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=120,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            for output in frames:
-                output.unlink(missing_ok=True)
-            raise SourceError(f"Could not extract keyframes: {exc}") from exc
-        if completed.returncode or not frame.is_file():
-            for output in frames:
-                output.unlink(missing_ok=True)
-            detail = (
-                completed.stderr.strip()[-2000:] or "FFmpeg did not create a keyframe."
-            )
-            raise SourceError(detail)
-    return frames
-
-
-def frame_hash(raw: bytes, width: int = 17, height: int = 16) -> int:
-    if len(raw) != width * height:
-        raise SourceError("Unexpected grayscale frame size.")
-    result = 0
-    for row in range(height):
-        offset = row * width
-        for column in range(width - 1):
-            result = (result << 1) | (raw[offset + column] < raw[offset + column + 1])
-    return result
-
-
-def sample_frame_hashes(
-    path: Path, count: int = 5, *, ffmpeg: str = "ffmpeg"
-) -> list[int]:
-    if count < 1 or count > 10:
-        raise SourceError("Frame sample count must be between 1 and 10.")
-    executable = _ffmpeg_executable(ffmpeg)
-    duration = _duration(path, ffmpeg)
-    hashes = []
-    for index in range(1, count + 1):
-        try:
-            completed = subprocess.run(
-                [
-                    executable,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-ss",
-                    f"{duration * index / (count + 1):.3f}",
-                    "-i",
-                    str(path),
-                    "-frames:v",
-                    "1",
-                    "-vf",
-                    "scale=17:16,format=gray",
-                    "-f",
-                    "rawvideo",
-                    "pipe:1",
-                ],
-                capture_output=True,
-                check=False,
-                timeout=120,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise SourceError(f"Could not sample video frames: {exc}") from exc
-        if completed.returncode:
-            detail = completed.stderr.decode("utf-8", "replace").strip()[-2000:]
-            raise SourceError(detail or "FFmpeg could not sample the video.")
-        hashes.append(frame_hash(completed.stdout))
-    return hashes
-
-
-def compare_hashes(left: list[int], right: list[int]) -> dict[str, Any]:
-    if not left or len(left) != len(right):
-        raise SourceError("Frame hash lists must have the same number of samples.")
-    similarities = [
-        1 - ((left_hash ^ right_hash).bit_count() / 256)
-        for left_hash, right_hash in zip(left, right, strict=True)
-    ]
-    score = median(similarities)
-    result = (
-        "likely_match"
-        if score >= 0.85
-        else "uncertain"
-        if score >= 0.65
-        else "different"
-    )
-    return {"result": result, "score": round(score, 4), "advisory": True}

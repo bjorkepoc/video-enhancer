@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,7 +9,8 @@ description = "Free local FFmpeg video enhancer with upscaling and frame interpo
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "bjork" }]
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["video", "ffmpeg", "upscaling", "frame-interpolation"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -20,7 +21,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Multimedia :: Video :: Conversion",
 ]
-dependencies = ["yt-dlp>=2026.7.4"]
+dependencies = ["yt-dlp[default,curl-cffi]>=2026.7.4"]
 
 [project.urls]
 Homepage = "https://github.com/bjorkepoc/video-enhancer"
@@ -28,7 +29,8 @@ Repository = "https://github.com/bjorkepoc/video-enhancer"
 Issues = "https://github.com/bjorkepoc/video-enhancer/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff==0.16.1"]
+macos = ["imageio-ffmpeg==0.6.0", "pyinstaller==6.21.0"]
 
 [project.scripts]
 video-enhancer = "video_enhancer.cli:main"

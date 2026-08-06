@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   python-test:
     runs-on: ubuntu-latest
@@ -20,6 +23,15 @@ jobs:
         run: python -m pip install -e ".[dev]"
       - name: Run tests
         run: python -m pytest
+      - name: Lint
+        if: matrix.python-version == '3.12'
+        run: python -m ruff check src tests
+      - name: Verify release artifacts
+        if: matrix.python-version == '3.12'
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*.whl dist/*.tar.gz
 
   security:
     runs-on: ubuntu-latest
@@ -28,9 +40,79 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
-      - name: Install audit tools
-        run: python -m pip install bandit pip-audit
+      - name: Install package and audit tools
+        run: python -m pip install -e ".[macos]" bandit pip-audit
       - name: Audit Python dependencies
-        run: python -m pip_audit . --strict --progress-spinner off
+        run: python -m pip_audit --local --strict --progress-spinner off
       - name: Scan Python source
         run: bandit -q -r src --skip B404,B603
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [python-test, security]
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Verify tag matches package version
+        run: python -c 'import os, pathlib, tomllib; version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]; assert os.environ["GITHUB_REF_NAME"] == f"v{version}"'
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          for name in MACOS_CERTIFICATE_BASE64 MACOS_CERTIFICATE_PASSWORD MACOS_SIGNING_IDENTITY; do
+            test -n "${!name}" || { echo "::error::$name secret is required"; exit 1; }
+          done
+          certificate="$RUNNER_TEMP/developer-id.p12"
+          keychain="$RUNNER_TEMP/app-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          CERTIFICATE_PATH="$certificate" python -c 'import base64, os, pathlib; pathlib.Path(os.environ["CERTIFICATE_PATH"]).write_bytes(base64.b64decode(os.environ["MACOS_CERTIFICATE_BASE64"]))'
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -d user -s "$keychain"
+          security find-identity -v -p codesigning "$keychain" | grep -F "$MACOS_SIGNING_IDENTITY"
+      - name: Store notarization credentials
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          for name in APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            test -n "${!name}" || { echo "::error::$name secret is required"; exit 1; }
+          done
+          xcrun notarytool store-credentials video-enhancer-ci \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
+      - name: Build release artifacts
+        env:
+          CODESIGN_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARY_PROFILE: video-enhancer-ci
+        run: |
+          python -m pip install ".[macos]" build twine
+          python -m build
+          python -m twine check dist/*.whl dist/*.tar.gz
+          bash scripts/build_macos.sh
+          cd dist
+          shasum -a 256 *.whl *.tar.gz Video-Enhancer-*.zip > SHA256SUMS
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          dist/*.whl dist/*.tar.gz dist/Video-Enhancer-*.zip
+          dist/Video-Enhancer-*.zip.sha256 dist/SHA256SUMS
+          --generate-notes --verify-tag
+      - name: Remove temporary signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true

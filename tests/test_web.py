@@ -4,23 +4,23 @@ import json
 import re
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import Iterator
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
 
-import video_enhancer.web as web
+from video_enhancer import web
 from video_enhancer.presets import get_preset
 from video_enhancer.web import (
     HTML,
-    Handler,
     JOBS,
     MODES,
     SOURCES,
+    Handler,
     Job,
     SourceJob,
     build_options,
@@ -84,11 +84,8 @@ def test_safe_filename_removes_paths_and_unsafe_chars() -> None:
 
 def test_web_ui_contains_source_first_controls() -> None:
     for control in (
-        'id="input-link"',
-        'id="input-local"',
+        'id="source-form"',
         'id="source-url"',
-        'id="inspect-source"',
-        'id="source-format"',
         'id="download-original"',
         'id="download-60"',
         'id="download-90"',
@@ -99,8 +96,14 @@ def test_web_ui_contains_source_first_controls() -> None:
         'id="output-zoom"',
         'id="clear-session"',
         'id="privacy-dialog"',
+        'id="terms-dialog"',
     ):
         assert control in HTML
+    assert '<html lang="en">' in HTML
+    assert 'id="input-local"' not in HTML
+    assert 'id="local-controls"' not in HTML
+    assert 'type="file"' not in HTML
+    assert 'apiFetch(`/api/jobs?' not in HTML
     assert "browser-session" not in HTML
     assert "cookies-from-browser" not in HTML
     assert "if (!response.ok) throw new Error(config.error" in HTML
@@ -110,25 +113,23 @@ def test_web_ui_contains_source_first_controls() -> None:
         "Enhanced synthetic copy",
     ):
         assert label in HTML
-
-
-def test_web_ui_contains_repost_discovery_controls() -> None:
-    for control in (
-        'id="search-web"',
-        'id="search-tiktok"',
-        'id="search-instagram"',
-        'id="search-google-lens"',
-        'id="search-tineye"',
-        'id="keyframes"',
-        'id="candidate-url"',
-        'id="compare-candidate"',
-        'id="comparison-result"',
-    ):
-        assert control in HTML
+    for label in ("Privacy at a glance", "Terms of use"):
+        assert label in HTML
+    assert "Advertisement" not in HTML
+    assert 'postJSON("/api/sources/download", { url })' in HTML
+    assert "inspect-source" not in HTML
+    assert "compare-candidate" not in HTML
 
 
 def test_web_ui_contains_frame_playback_controls() -> None:
     for player in ("source", "output"):
+        shell = HTML.index(f'id="{player}-shell"')
+        frame_controls = HTML.index(f'id="{player}-frame-controls"')
+        zoom_label = "original" if player == "source" else "enhanced copy"
+        zoom_controls = HTML.index(f'aria-label="Zoom controls for {zoom_label}"')
+        assert shell < frame_controls < zoom_controls
+        assert f'<video id="{player}-video" preload="metadata" playsinline controls>' in HTML
+        assert f'id="{player}-play"' not in HTML
         for control in (
             f'id="{player}-frame-controls"',
             f'id="{player}-previous-frame"',
@@ -137,8 +138,9 @@ def test_web_ui_contains_frame_playback_controls() -> None:
             f'id="{player}-frame-fps"',
         ):
             assert control in HTML
-    for label in ("Forrige bilde", "Spill av ett bilde per sekund", "Neste bilde"):
+    for label in ("Previous frame", "Play one frame per second", "Next frame"):
         assert label in HTML
+    assert ".player-shell:fullscreen .frame-controls" in HTML
 
 
 def test_web_ui_wires_focal_zoom_and_physical_downloads() -> None:
@@ -150,24 +152,28 @@ def test_web_ui_wires_focal_zoom_and_physical_downloads() -> None:
         'stage.addEventListener("wheel"',
         'stage.addEventListener("pointermove"',
         'url.searchParams.set("download", "1")',
-        "image.src = localFileUrl(url)",
     ):
         assert marker in HTML
 
 
 def test_local_page_has_security_headers_and_no_cookie(tmp_path: Path) -> None:
-    with running_server(tmp_path) as base:
-        with urlopen(base) as response:
-            body = response.read().decode()
-            content_security_policy = response.headers["content-security-policy"]
-            assert TOKEN not in body
-            assert "window.location.hash" in body
-            assert response.headers["x-frame-options"] == "DENY"
-            assert "frame-ancestors 'none'" in content_security_policy
-            assert "unsafe-inline" not in content_security_policy
-            nonce = re.search(r'<script nonce="([^"]+)">', body)
-            assert nonce and f"'nonce-{nonce.group(1)}'" in content_security_policy
-            assert response.headers.get("set-cookie") is None
+    with running_server(tmp_path) as base, urlopen(base) as response:
+        body = response.read().decode()
+        content_security_policy = response.headers["content-security-policy"]
+        assert TOKEN not in body
+        assert "window.location.hash" in body
+        assert response.headers["x-frame-options"] == "DENY"
+        assert "frame-ancestors 'none'" in content_security_policy
+        assert "unsafe-inline" not in content_security_policy
+        nonce = re.search(r'<script nonce="([^"]+)">', body)
+        assert nonce and f"'nonce-{nonce.group(1)}'" in content_security_policy
+        assert response.headers.get("set-cookie") is None
+
+
+def test_favicon_request_does_not_log_a_404(tmp_path: Path) -> None:
+    with running_server(tmp_path) as base, urlopen(f"{base}/favicon.ico") as response:
+        assert response.status == 204
+        assert response.read() == b""
 
 
 def test_api_rejects_missing_token_and_nonlocal_host(tmp_path: Path) -> None:
@@ -200,7 +206,7 @@ def test_run_server_uses_only_a_process_temporary_directory(
     assert captured["port"] == 4321
     assert not Path(captured["work_dir"]).exists()
     for host in ("0.0.0.0", "::1", "example.com"):
-        with pytest.raises(ValueError, match="bare bindes"):
+        with pytest.raises(ValueError, match="only bind"):
             web.run_server(host=host)
 
 
@@ -209,6 +215,7 @@ def test_serve_opens_token_in_a_url_fragment(
 ) -> None:
     class FakeServer:
         daemon_threads = False
+        server_port = 54321
 
         def __init__(self, address: tuple[str, int], handler: type[Handler]) -> None:
             pass
@@ -224,9 +231,9 @@ def test_serve_opens_token_in_a_url_fragment(
     monkeypatch.setattr(web.secrets, "token_hex", lambda size: TOKEN)
     monkeypatch.setattr(web.webbrowser, "open", opened.append)
 
-    web._serve("127.0.0.1", 8765, tmp_path, open_browser=True)
+    web._serve("127.0.0.1", 0, tmp_path, open_browser=True)
 
-    url = f"http://127.0.0.1:8765/#token={TOKEN}"
+    url = f"http://127.0.0.1:54321/#token={TOKEN}"
     assert opened == [url]
     assert url in capsys.readouterr().out
 
@@ -267,7 +274,7 @@ def test_video_files_support_byte_ranges(tmp_path: Path) -> None:
     original = tmp_path / "source-source1" / "original.mp4"
     original.parent.mkdir()
     original.write_bytes(b"0123456789")
-    source = SourceJob("source1", "https://tiktok.com/x", {}, original.parent)
+    source = SourceJob("source1", "https://tiktok.com/x", original.parent)
     source.original_path = original
 
     with running_server(tmp_path) as base:
@@ -291,7 +298,7 @@ def test_video_files_reject_unbounded_range_numbers(tmp_path: Path) -> None:
     original = tmp_path / "source-source1" / "original.mp4"
     original.parent.mkdir()
     original.write_bytes(b"0123456789")
-    source = SourceJob("source1", "https://tiktok.com/x", {}, original.parent)
+    source = SourceJob("source1", "https://tiktok.com/x", original.parent)
     source.original_path = original
 
     with running_server(tmp_path) as base:
@@ -313,7 +320,7 @@ def test_download_query_serves_a_physical_attachment(tmp_path: Path) -> None:
     original = tmp_path / "source-source1" / "original.mp4"
     original.parent.mkdir()
     original.write_bytes(b"video")
-    source = SourceJob("source1", "https://tiktok.com/x", {}, original.parent)
+    source = SourceJob("source1", "https://tiktok.com/x", original.parent)
     source.original_path = original
 
     with running_server(tmp_path) as base:
@@ -403,26 +410,21 @@ def test_only_one_enhancement_can_be_active(
 
     create_enhancement_job(source, source.name, {}, tmp_path)
 
-    with pytest.raises(ValueError, match="aktive eksporten"):
+    with pytest.raises(ValueError, match="active export"):
         create_enhancement_job(source, source.name, {}, tmp_path)
 
 
-def test_source_payload_never_contains_browser_or_signed_url(tmp_path: Path) -> None:
+def test_source_payload_does_not_expose_url_or_local_path(tmp_path: Path) -> None:
     job = SourceJob(
         id="source1",
-        url="https://tiktok.com/x",
-        info={
-            "id": "123",
-            "title": "Sample",
-            "formats": [{"format_ids": ["best"], "url": "https://signed/x"}],
-        },
+        url="https://tiktok.com/private-source",
         directory=tmp_path,
     )
 
     payload = source_payload(job)
 
-    assert "browser" not in payload
-    assert "signed" not in json.dumps(payload)
+    assert "url" not in payload
+    assert str(tmp_path) not in json.dumps(payload)
 
 
 def test_job_payload_does_not_expose_local_paths(tmp_path: Path) -> None:
@@ -481,36 +483,8 @@ def test_run_job_removes_partial_output_after_timeout(
     web.run_job(job)
 
     assert job.status == "error"
-    assert "seks timer" in job.error
+    assert "six-hour" in job.error
     assert not output.exists()
-
-
-def test_source_payload_includes_searches_keyframes_and_comparison(
-    tmp_path: Path,
-) -> None:
-    frame = tmp_path / "frames" / "frame-1.jpg"
-    job = SourceJob(
-        id="source1",
-        url="https://tiktok.com/x",
-        info={"id": "123", "title": "Sample", "formats": []},
-        directory=tmp_path,
-    )
-    job.keyframes = [frame]
-    job.comparison_status = "done"
-    job.comparison = {"result": "likely_match", "score": 0.9, "advisory": True}
-
-    payload = source_payload(job)
-
-    assert set(payload["searches"]) == {
-        "web",
-        "tiktok",
-        "instagram",
-        "google_lens",
-        "tineye",
-    }
-    assert payload["keyframes"] == ["/files/sources/source1/frames/1"]
-    assert payload["comparison_status"] == "done"
-    assert payload["comparison"]["advisory"] is True
 
 
 def test_source_modes_are_explicit_synthetic_derivatives() -> None:
@@ -525,38 +499,10 @@ def test_source_modes_are_explicit_synthetic_derivatives() -> None:
     }
 
 
-def test_inspect_source_http_route_stores_safe_job(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        web,
-        "inspect_source",
-        lambda url: {
-            "id": "123",
-            "platform": "tiktok",
-            "title": "Sample",
-            "formats": [{"format_ids": ["best"], "mirrors": 1}],
-        },
-    )
-
-    with running_server(tmp_path) as base:
-        status, payload = post_json(
-            base,
-            "/api/sources/inspect",
-            {"url": "https://tiktok.com/@a/video/123"},
-        )
-
-    assert status == 200
-    assert payload["status"] == "inspected"
-    assert payload["info"]["platform"] == "tiktok"
-    assert payload["id"] in SOURCES
-    assert "browser" not in json.dumps(payload)
-
-
 def test_source_json_body_is_bounded(tmp_path: Path) -> None:
     with running_server(tmp_path) as base:
         request = Request(
-            f"{base}/api/sources/inspect",
+            f"{base}/api/sources/download",
             data=json.dumps({"url": "x" * 21_000}).encode(),
             headers={
                 "content-type": "application/json",
@@ -570,14 +516,11 @@ def test_source_json_body_is_bounded(tmp_path: Path) -> None:
     assert error.value.code == 400
 
 
-def test_video_upload_body_is_bounded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(web, "MAX_VIDEO_BODY", 4)
+def test_web_rejects_local_file_uploads(tmp_path: Path) -> None:
     with running_server(tmp_path) as base:
         request = Request(
             f"{base}/api/jobs",
-            data=b"12345",
+            data=b"video",
             headers={
                 "content-type": "application/octet-stream",
                 "x-file-name": "video.mp4",
@@ -588,34 +531,14 @@ def test_video_upload_body_is_bounded(
         with pytest.raises(HTTPError) as error:
             urlopen(request)
 
-    assert error.value.code == 400
-
-
-def test_failed_upload_removes_partial_local_file(tmp_path: Path) -> None:
-    class ShortBody:
-        def read(self, size: int) -> bytes:
-            return b"12" if size > 2 else b""
-
-    handler = object.__new__(Handler)
-    handler.work_dir = tmp_path
-    handler.headers = {
-        "content-type": "application/octet-stream",
-        "content-length": "4",
-        "x-file-name": "video.mp4",
-    }
-    handler.rfile = ShortBody()
-
-    with pytest.raises(ValueError, match="full video"):
-        handler.create_job({})
-
-    assert list(tmp_path.iterdir()) == []
+    assert error.value.code == 404
 
 
 def test_clear_session_removes_completed_local_files(tmp_path: Path) -> None:
     directory = tmp_path / "source-source1"
     directory.mkdir()
     (directory / "video.mp4").write_bytes(b"video")
-    source = SourceJob("source1", "https://tiktok.com/x", {}, directory)
+    source = SourceJob("source1", "https://tiktok.com/x", directory)
     source.status = "done"
 
     with running_server(tmp_path) as base:
@@ -631,56 +554,47 @@ def test_clear_session_removes_completed_local_files(tmp_path: Path) -> None:
 def test_source_download_route_runs_async_and_reports_saved_media(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fake_download(
-        url: str, destination: Path, format_id: str = ""
-    ) -> dict[str, object]:
-        assert format_id == "1080"
+    def fake_download(url: str, destination: Path) -> dict[str, object]:
+        assert url == "https://tiktok.com/@a/video/123"
         destination.mkdir(parents=True)
         path = destination / "source.mp4"
         path.write_bytes(b"video")
         return {
             "path": path,
             "media": {"width": 1080, "height": 1920, "fps": 30.0},
-            "format_id": format_id,
+            "format_id": "best",
             "operation": "direct",
         }
 
     monkeypatch.setattr(web, "download_source", fake_download)
-    source = SourceJob(
-        "source1",
-        "https://tiktok.com/@a/video/123",
-        {"formats": []},
-        tmp_path / "source-source1",
-    )
-    SOURCES[source.id] = source
 
     with running_server(tmp_path) as base:
-        SOURCES[source.id] = source
         status, payload = post_json(
             base,
-            "/api/sources/source1/download",
-            {"format_id": "1080"},
+            "/api/sources/download",
+            {"url": "https://tiktok.com/@a/video/123"},
         )
         assert status == 202
         assert payload["status"] in {"queued", "downloading", "done"}
+        source_id = payload["id"]
 
         deadline = time.monotonic() + 2
         while True:
-            _, payload = get_json(base, "/api/sources/source1")
+            _, payload = get_json(base, f"/api/sources/{source_id}")
             if payload["status"] == "done" or time.monotonic() >= deadline:
                 break
             time.sleep(0.01)
 
     assert payload["status"] == "done"
     assert payload["media"]["width"] == 1080
-    assert payload["original_url"] == "/files/sources/source1/original"
+    assert payload["original_url"] == f"/files/sources/{source_id}/original"
 
 
 def test_source_file_route_serves_only_files_inside_work_dir(tmp_path: Path) -> None:
     inside = tmp_path / "source-source1" / "original.mp4"
     inside.parent.mkdir()
     inside.write_bytes(b"inside")
-    source = SourceJob("source1", "https://tiktok.com/x", {}, inside.parent)
+    source = SourceJob("source1", "https://tiktok.com/x", inside.parent)
     source.original_path = inside
 
     with running_server(tmp_path) as base:
@@ -702,41 +616,13 @@ def test_source_file_route_serves_only_files_inside_work_dir(tmp_path: Path) -> 
     assert error.value.code == 404
 
 
-def test_source_frame_route_serves_only_registered_keyframes(tmp_path: Path) -> None:
-    frame = tmp_path / "source-source1" / "frames" / "frame-1.jpg"
-    frame.parent.mkdir(parents=True)
-    frame.write_bytes(b"jpeg")
-    source = SourceJob("source1", "https://tiktok.com/x", {}, frame.parents[1])
-    source.keyframes = [frame]
-
-    with running_server(tmp_path) as base:
-        SOURCES[source.id] = source
-        request = Request(
-            f"{base}/files/sources/source1/frames/1",
-            headers={"x-video-enhancer-token": TOKEN},
-        )
-        with urlopen(request) as response:
-            assert response.status == 200
-            assert response.headers["content-type"] == "image/jpeg"
-            assert response.read() == b"jpeg"
-        with pytest.raises(HTTPError) as error:
-            urlopen(
-                Request(
-                    f"{base}/files/sources/source1/frames/2",
-                    headers={"x-video-enhancer-token": TOKEN},
-                )
-            )
-
-    assert error.value.code == 404
-
-
 def test_source_enhance_route_reuses_original_with_explicit_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     original = tmp_path / "source-source1" / "original.mp4"
     original.parent.mkdir()
     original.write_bytes(b"video")
-    source = SourceJob("source1", "https://tiktok.com/x", {}, original.parent)
+    source = SourceJob("source1", "https://tiktok.com/x", original.parent)
     source.original_path = original
     source.status = "done"
     captured: dict[str, object] = {}
@@ -772,102 +658,3 @@ def test_source_enhance_route_reuses_original_with_explicit_mode(
         "preset": ["quality"],
         "output": ["original-60fps.mp4"],
     }
-
-
-def test_source_compare_route_runs_async_and_reports_advisory_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    original = tmp_path / "source-source1" / "original.mp4"
-    original.parent.mkdir()
-    original.write_bytes(b"video")
-    source = SourceJob("source1", "https://tiktok.com/x", {}, original.parent)
-    source.original_path = original
-    source.status = "done"
-
-    monkeypatch.setattr(
-        web,
-        "compare_candidate",
-        lambda job, url: {
-            "result": "likely_match",
-            "score": 0.91,
-            "advisory": True,
-        },
-        raising=False,
-    )
-
-    with running_server(tmp_path) as base:
-        SOURCES[source.id] = source
-        status, payload = post_json(
-            base,
-            "/api/sources/source1/compare",
-            {"url": "https://instagram.com/reel/candidate"},
-        )
-        assert status == 202
-        assert payload["comparison_status"] in {"queued", "running", "done"}
-
-        deadline = time.monotonic() + 2
-        while True:
-            _, payload = get_json(base, "/api/sources/source1")
-            if payload["comparison_status"] == "done" or time.monotonic() >= deadline:
-                break
-            time.sleep(0.01)
-
-    assert payload["comparison_status"] == "done"
-    assert payload["comparison"] == {
-        "result": "likely_match",
-        "score": 0.91,
-        "advisory": True,
-    }
-
-
-def test_compare_candidate_uses_lowest_360p_variant_and_cleans_temporary_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    original = tmp_path / "source" / "original.mp4"
-    original.parent.mkdir()
-    original.write_bytes(b"original")
-    source = SourceJob("source1", "https://tiktok.com/x", {}, original.parent)
-    source.original_path = original
-    source.media = {"width": 1080, "height": 1920, "duration": 10.0}
-    downloaded_to: list[Path] = []
-
-    monkeypatch.setattr(
-        web,
-        "inspect_source",
-        lambda url: {
-            "id": "candidate",
-            "platform": "instagram",
-            "formats": [
-                {"width": 720, "height": 1280, "tbr": 1000, "format_ids": ["high"]},
-                {"width": 360, "height": 640, "tbr": 400, "format_ids": ["low"]},
-                {"width": 180, "height": 320, "tbr": 100, "format_ids": ["too-low"]},
-            ],
-        },
-    )
-
-    def fake_download(
-        url: str, destination: Path, format_id: str = ""
-    ) -> dict[str, object]:
-        assert format_id == "low"
-        downloaded_to.append(destination)
-        path = destination / "candidate.mp4"
-        path.write_bytes(b"candidate")
-        return {
-            "path": path,
-            "media": {"width": 360, "height": 640, "duration": 9.5},
-        }
-
-    monkeypatch.setattr(web, "download_source", fake_download)
-    monkeypatch.setattr(
-        web,
-        "sample_frame_hashes",
-        lambda path: [0] if path == original else [(1 << 80) - 1],
-    )
-
-    result = web.compare_candidate(source, "https://instagram.com/reel/candidate")
-
-    assert result["result"] == "uncertain"
-    assert result["duration_difference"] == 0.5
-    assert result["candidate_resolution"] == [360, 640]
-    assert result["candidate_format_id"] == "low"
-    assert downloaded_to and not downloaded_to[0].exists()

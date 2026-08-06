@@ -21,32 +21,21 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .encoders import supported_video_codecs
 from .ffmpeg import (
     ENHANCEMENT_TIMEOUT_SECONDS,
+    SUPPORTED_VIDEO_CODECS,
     EnhancementOptions,
     FFmpegNotFoundError,
     VideoEnhancerError,
     build_ffmpeg_command,
     resolve_ffmpeg,
 )
-from .presets import available_presets, get_preset
-from .sources import (
-    SourceError,
-    compare_hashes,
-    download_source,
-    extract_keyframes,
-    inspect_source,
-    sample_frame_hashes,
-    search_links,
-    validate_social_url,
-)
+from .presets import get_preset
+from .sources import SourceError, download_source, validate_social_url
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".m4v", ".webm", ".avi"}
 MAX_JSON_BODY = 20_000
-MAX_VIDEO_BODY = 8 * 1024**3
 REQUEST_TIMEOUT_SECONDS = 60
 API_TOKEN_HEADER = "x-video-enhancer-token"  # nosec B105
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -63,7 +52,7 @@ MODES = {
 
 
 HTML = """<!doctype html>
-<html lang="no">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -245,19 +234,11 @@ HTML = """<!doctype html>
       padding-top: 16px;
       border-top: 1px solid var(--line);
     }
-    .source-heading {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 14px;
-      margin-bottom: 14px;
-    }
-    .source-heading .meta { margin-top: 4px; }
     .quality-label {
+      display: block;
       color: var(--success);
       font-size: 12px;
       font-weight: 800;
-      text-align: right;
     }
     .media-meta {
       display: grid;
@@ -272,34 +253,6 @@ HTML = """<!doctype html>
     .media-meta div { min-width: 0; padding: 10px; background: #fff; }
     .media-meta dt { color: var(--muted); font-size: 11px; font-weight: 700; }
     .media-meta dd { margin-top: 3px; overflow-wrap: anywhere; font-size: 13px; font-weight: 800; }
-    .discovery {
-      margin-top: 18px;
-      padding-top: 18px;
-      border-top: 1px solid var(--line);
-    }
-    .search-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin-top: 12px;
-    }
-    .keyframe-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-      margin-top: 14px;
-    }
-    .keyframe-grid a { min-width: 0; }
-    .keyframe-grid img {
-      display: block;
-      width: 100%;
-      aspect-ratio: 16 / 9;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      object-fit: cover;
-      background: var(--log);
-    }
-    .comparison-copy { margin-top: 6px; }
     .video-stage {
       position: relative;
       width: 100%;
@@ -327,40 +280,31 @@ HTML = """<!doctype html>
       background: #101820;
     }
     .player-shell:fullscreen .video-stage {
-      width: min(100%, calc((100vh - 70px) * 16 / 9));
+      width: min(100%, calc((100vh - 140px) * 16 / 9));
       margin: 0 auto;
     }
-    .playback-controls {
-      display: grid;
-      grid-template-columns: 38px minmax(70px, 1fr) auto 38px minmax(62px, 80px) 38px;
-      gap: 6px;
-      align-items: center;
-      margin-top: 8px;
+    .player-shell:fullscreen .frame-controls {
+      width: min(100%, calc((100vh - 140px) * 16 / 9));
+      margin-left: auto;
+      margin-right: auto;
     }
-    .playback-controls button, .zoom-controls button {
+    .player-shell:fullscreen .frame-fps { color: #fff; }
+    .zoom-controls button {
       min-height: 38px;
       padding: 0;
       border: 1px solid var(--line);
       background: #fff;
       color: var(--ink);
     }
-    .playback-controls button:hover, .zoom-controls button:hover {
+    .zoom-controls button:hover {
       border-color: var(--accent);
       background: #fff;
     }
-    .playback-controls input, .zoom-controls input {
+    .zoom-controls input {
       min-width: 0;
       min-height: 38px;
       margin: 0;
       padding: 0;
-    }
-    .playback-time {
-      min-width: 70px;
-      color: var(--muted);
-      font-size: 11px;
-      font-variant-numeric: tabular-nums;
-      text-align: center;
-      white-space: nowrap;
     }
     .zoom-controls {
       display: grid;
@@ -371,7 +315,7 @@ HTML = """<!doctype html>
     }
     .frame-controls {
       display: grid;
-      grid-template-columns: 40px minmax(72px, 1fr) 40px minmax(84px, 104px);
+      grid-template-columns: 40px minmax(72px, 1fr) 40px minmax(84px, 104px) 40px;
       gap: 8px;
       align-items: center;
       margin-top: 8px;
@@ -478,219 +422,834 @@ HTML = """<!doctype html>
       header { padding: 16px; }
       .panel-inner { padding: 16px; }
       .media-meta { grid-template-columns: 1fr; }
-      .source-heading { display: block; }
-      .quality-label { margin-top: 5px; text-align: left; }
-      .playback-controls { grid-template-columns: 38px minmax(60px, 1fr) auto 38px 38px; }
-      .volume-slider { display: none; }
+      .quality-label { margin-top: 5px; }
       footer { display: block; }
       footer button { margin-top: 10px; }
+    }
+
+    /* Light creator-studio redesign. */
+    :root {
+      --bg: #ffffff;
+      --panel: #ffffff;
+      --ink: #0b0e16;
+      --muted: #56627a;
+      --line: #d8deea;
+      --line-strong: #bcc6d8;
+      --surface: #f6f8fc;
+      --accent: #2257f4;
+      --accent-dark: #1743c9;
+      --accent-soft: #eef2ff;
+      --success: #0bba75;
+      --danger: #dc2626;
+      --log: #f6f8fc;
+    }
+    html { background: #fff; }
+    body {
+      min-width: 320px;
+      background: #fff;
+      color: var(--ink);
+      font-size: 16px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    main {
+      display: block;
+      max-width: none;
+      margin: 0;
+      padding: 0;
+    }
+    .app-container {
+      width: min(calc(100% - 48px), 1260px);
+      margin-inline: auto;
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    button, input, summary, a { -webkit-tap-highlight-color: transparent; }
+    button:focus-visible,
+    input:focus-visible,
+    summary:focus-visible,
+    a:focus-visible,
+    .video-preview:focus-visible {
+      outline: 3px solid rgba(34, 87, 244, .28);
+      outline-offset: 3px;
+    }
+    button:disabled { opacity: .48; }
+    svg { flex: 0 0 auto; }
+
+    .site-header {
+      position: relative;
+      top: auto;
+      z-index: 4;
+      display: block;
+      padding: 0;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,.96);
+      backdrop-filter: blur(18px);
+    }
+    .header-inner {
+      display: flex;
+      min-height: 76px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--ink);
+      font-size: 23px;
+      font-weight: 760;
+      letter-spacing: -.04em;
+      white-space: nowrap;
+    }
+    .brand strong { color: var(--accent); font-weight: 760; }
+    .brand-mark { width: 38px; height: 38px; color: var(--accent); }
+    .header-actions, .legal-nav, .engine-status {
+      display: flex;
+      align-items: center;
+    }
+    .header-actions { gap: 28px; margin: 0; }
+    .legal-nav { gap: 24px; }
+    .header-actions .header-link,
+    .footer-actions button {
+      width: auto;
+      min-height: 44px;
+      padding: 0;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--ink);
+      font-size: 15px;
+      font-weight: 650;
+    }
+    .header-link:hover,
+    .footer-actions button:hover { background: transparent; color: var(--accent); }
+    .engine-status {
+      gap: 9px;
+      padding-left: 26px;
+      border-left: 1px solid var(--line);
+      color: var(--ink);
+      font-size: 15px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 0 4px rgba(11,186,117,.10);
+    }
+    [data-state="error"] .status-dot,
+    .engine-status[data-state="error"] .status-dot { background: var(--danger); box-shadow: 0 0 0 4px rgba(220,38,38,.10); }
+    .status-short { display: none; }
+
+    .hero { padding: 42px 0 20px; }
+    .hero h1 {
+      max-width: 800px;
+      color: var(--ink);
+      font-size: clamp(48px, 5.1vw, 72px);
+      font-weight: 790;
+      letter-spacing: -.065em;
+      line-height: 1.01;
+    }
+    .hero-copy {
+      margin-top: 20px;
+      color: var(--muted);
+      font-size: 19px;
+      line-height: 1.48;
+      letter-spacing: -.015em;
+    }
+    .source-form {
+      display: grid;
+      grid-template-columns: minmax(0, 680px) auto;
+      gap: 16px;
+      max-width: 1000px;
+      margin-top: 18px;
+    }
+    .url-control { position: relative; }
+    .url-control > svg {
+      position: absolute;
+      top: 50%;
+      left: 20px;
+      width: 25px;
+      height: 25px;
+      transform: translateY(-50%);
+      fill: none;
+      stroke: var(--muted);
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      pointer-events: none;
+    }
+    .url-control input {
+      width: 100%;
+      min-height: 64px;
+      margin: 0;
+      padding: 0 20px 0 58px;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      background: #fff;
+      color: var(--ink);
+      font-size: 17px;
+      box-shadow: 0 1px 2px rgba(10,20,40,.02);
+    }
+    .url-control input::placeholder { color: #7d889d; opacity: 1; }
+    .url-control input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(34,87,244,.11); }
+    .primary-button {
+      display: inline-flex;
+      width: auto;
+      min-height: 64px;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      border-radius: 10px;
+      padding: 0 28px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 16px;
+      font-weight: 760;
+      white-space: nowrap;
+      box-shadow: 0 10px 24px rgba(34,87,244,.18);
+      transition: background-color .18s ease, transform .18s ease, box-shadow .18s ease;
+    }
+    .primary-button:hover { background: var(--accent-dark); box-shadow: 0 12px 28px rgba(34,87,244,.24); }
+    .primary-button:active { transform: translateY(1px); }
+    .primary-button svg,
+    .download-link svg {
+      width: 21px;
+      height: 21px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .rights-note {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .trust-line {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 15px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .trust-line svg {
+      width: 24px;
+      height: 24px;
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .source-error {
+      min-height: 22px;
+      margin-top: 5px;
+      color: var(--danger);
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .workspace {
+      padding: 0 0 26px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .workspace-empty { min-height: 150px; padding: 27px 0 30px; }
+    .workspace h2,
+    .explainer h2 {
+      color: var(--ink);
+      font-size: 24px;
+      font-weight: 760;
+      letter-spacing: -.035em;
+    }
+    .workspace-empty p,
+    .workspace-heading p {
+      max-width: 620px;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+    .workspace-active { padding: 30px 0 6px; }
+    .workspace-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 22px;
+    }
+    .workspace-status {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-height: 44px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 650;
+    }
+    .preview-grid { grid-template-columns: 1fr 1fr; gap: 18px; }
+    .video-preview {
+      min-width: 0;
+      padding: 0;
+      border-radius: 14px;
+    }
+    .video-title {
+      margin-bottom: 9px;
+      color: var(--ink);
+      font-size: 16px;
+      font-weight: 760;
+    }
+    .meta { color: var(--muted); font-size: 13px; font-weight: 600; }
+    .video-stage {
+      border: 1px solid #202a3a;
+      border-radius: 14px;
+      background: #101724;
+      box-shadow: 0 16px 40px rgba(15,23,42,.08);
+    }
+    .video-empty {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      color: #c5cede;
+      font-size: 14px;
+      text-align: center;
+      pointer-events: none;
+    }
+    .advanced-controls { margin-top: 9px; }
+    .advanced-controls summary,
+    .activity-log summary {
+      min-height: 44px;
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      list-style-position: inside;
+    }
+    .advanced-controls summary { display: flex; align-items: center; }
+    .advanced-controls summary::before { content: "+"; margin-right: 8px; color: var(--accent); font-size: 18px; }
+    .advanced-controls[open] summary::before { content: "−"; }
+    .frame-controls,
+    .zoom-controls { margin-top: 8px; }
+    .frame-controls button,
+    .zoom-controls button {
+      min-height: 44px;
+      border-color: var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+    }
+    .frame-controls button:hover,
+    .zoom-controls button:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .frame-controls button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .frame-controls button svg {
+      width: 18px;
+      height: 18px;
+      margin: auto;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .frame-fps { font-size: 11px; color: var(--muted); }
+    .frame-fps input { min-height: 44px; border-radius: 8px; }
+    .zoom-controls input { accent-color: var(--accent); }
+
+    .source-summary {
+      margin-top: 24px;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+    }
+    .source-summary-heading,
+    .result {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+    .source-summary-heading strong,
+    .result strong {
+      display: block;
+      max-width: 720px;
+      margin-top: 3px;
+      overflow: hidden;
+      color: var(--ink);
+      font-size: 16px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .quality-label { color: var(--success); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+    .hint { color: var(--muted); font-size: 13px; }
+    .download-link {
+      display: inline-flex;
+      min-height: 46px;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      border: 1px solid var(--accent);
+      border-radius: 9px;
+      padding: 0 16px;
+      background: #fff;
+      color: var(--accent);
+      font-size: 14px;
+      font-weight: 760;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .download-link:hover { background: var(--accent-soft); }
+    .media-meta {
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      margin-top: 20px;
+      border-color: var(--line);
+      border-radius: 10px;
+      background: var(--line);
+    }
+    .media-meta div { background: #fff; }
+    .enhancement-actions { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
+    .enhancement-actions h3 { margin-bottom: 12px; color: var(--ink); font-size: 15px; }
+    .action-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 0; }
+    .choice-button {
+      display: grid;
+      min-height: 66px;
+      align-content: center;
+      justify-items: start;
+      gap: 2px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      color: var(--ink);
+      text-align: left;
+    }
+    .choice-button:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .choice-button strong { font-size: 14px; }
+    .choice-button span { color: var(--muted); font-size: 12px; font-weight: 600; }
+    .result {
+      min-height: 84px;
+      margin-top: 14px;
+      border: 1px solid #b8e8d3;
+      border-radius: 14px;
+      padding: 18px 20px;
+      background: #f4fcf8;
+    }
+    .activity-log { margin-top: 12px; }
+    .activity-log summary { display: inline-flex; align-items: center; }
+    pre {
+      min-height: 84px;
+      max-height: 220px;
+      margin-top: 4px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--log);
+      color: #314057;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .explainer {
+      max-width: 620px;
+      padding: 30px 0 42px;
+    }
+    .steps ol { margin: 12px 0 0; padding: 0; list-style: none; }
+    .steps li {
+      display: grid;
+      grid-template-columns: 46px minmax(0, 1fr);
+      gap: 15px;
+      align-items: start;
+      padding: 12px 0;
+    }
+    .steps li + li { border-top: 1px solid var(--line); }
+    .steps li > span {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      place-items: center;
+      border: 2px solid var(--accent);
+      border-radius: 50%;
+      color: var(--ink);
+      font-size: 15px;
+      font-weight: 760;
+    }
+    .steps strong { display: block; color: var(--ink); font-size: 15px; }
+    .steps p { margin-top: 2px; color: var(--muted); font-size: 14px; }
+    .site-footer {
+      display: block;
+      max-width: none;
+      margin: 0;
+      padding: 0;
+      border-top: 1px solid var(--line);
+      background: #fbfcff;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .footer-inner {
+      display: flex;
+      min-height: 94px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 28px;
+    }
+    .footer-inner > p { max-width: 760px; }
+    .footer-actions { display: flex; align-items: center; gap: 24px; }
+    .footer-actions .danger-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--danger);
+      white-space: nowrap;
+    }
+    .danger-button svg {
+      width: 20px;
+      height: 20px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    dialog {
+      width: min(720px, calc(100vw - 32px));
+      max-height: min(860px, calc(100vh - 32px));
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: 0 28px 90px rgba(15,23,42,.22);
+    }
+    dialog::backdrop { background: rgba(18,27,44,.44); backdrop-filter: blur(4px); }
+    .dialog-body { padding: 30px; }
+    .dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+    .dialog-kicker { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+    .policy-content h2 { margin-top: 3px; font-size: 30px; letter-spacing: -.04em; }
+    .policy-content section { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
+    .policy-content h3 { font-size: 16px; }
+    .policy-content section p { margin-top: 7px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+    .icon-button {
+      width: 44px;
+      min-height: 44px;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: #fff;
+      color: var(--ink);
+      font-size: 24px;
+      font-weight: 500;
+    }
+    .icon-button:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+    .dialog-actions { margin-top: 26px; }
+    .dialog-actions button {
+      min-height: 46px;
+      border-radius: 9px;
+      background: var(--accent);
+      color: #fff;
+    }
+    .dialog-actions button:hover { background: var(--accent-dark); }
+
+    @media (max-width: 980px) {
+      .site-header, main { display: block; padding: 0; }
+      .header-actions { margin: 0; }
+      .preview-grid { grid-template-columns: 1fr; }
+      .media-meta { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .footer-inner { align-items: flex-start; flex-direction: column; justify-content: center; padding-block: 24px; }
+    }
+    @media (max-width: 760px) {
+      .app-container { width: min(calc(100% - 40px), 1260px); }
+      .header-inner { min-height: 72px; }
+      .brand { gap: 7px; font-size: 20px; }
+      .brand-mark { width: 33px; height: 33px; }
+      .legal-nav { display: none; }
+      .engine-status { padding-left: 0; border-left: 0; }
+      .status-full { display: none; }
+      .status-short { display: inline; }
+      .hero { padding-top: 38px; }
+      .hero h1 { font-size: clamp(42px, 12vw, 56px); line-height: 1.03; }
+      .hero-copy { font-size: 17px; }
+      .hero-copy br { display: none; }
+      .source-form { grid-template-columns: 1fr; gap: 12px; }
+      .url-control input, .primary-button { min-height: 58px; }
+      .primary-button { width: 100%; }
+      .trust-line { align-items: flex-start; font-size: 15px; }
+      .workspace-empty { min-height: 184px; padding-block: 34px; }
+      .workspace-heading { display: block; }
+      .workspace-status { margin-top: 10px; }
+      .action-grid { grid-template-columns: 1fr; }
+      .media-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .source-summary-heading, .result { align-items: flex-start; flex-direction: column; }
+      .download-link { width: 100%; }
+      .explainer { padding-block: 34px 42px; }
+      .footer-actions { width: 100%; flex-wrap: wrap; justify-content: space-between; gap: 12px 20px; }
+      .site-footer button { margin-top: 0; }
+    }
+    @media (max-width: 430px) {
+      .app-container { width: calc(100% - 32px); }
+      .header-inner { min-height: 68px; }
+      .brand { font-size: 18px; }
+      .brand-mark { width: 31px; height: 31px; }
+      .engine-status { font-size: 14px; }
+      .hero h1 { font-size: 44px; }
+      .hero-copy { margin-top: 17px; font-size: 16px; }
+      .url-control input { padding-left: 52px; font-size: 15px; }
+      .url-control > svg { left: 17px; }
+      .primary-button { padding-inline: 18px; font-size: 15px; }
+      .rights-note { font-size: 12px; }
+      .workspace h2, .explainer h2 { font-size: 22px; }
+      .workspace-empty p { font-size: 16px; }
+      .steps li { grid-template-columns: 44px minmax(0,1fr); gap: 12px; }
+      .footer-actions { justify-content: flex-start; }
+      .footer-actions .danger-button { flex-basis: 100%; justify-content: flex-start; }
+      .dialog-body { padding: 22px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
     }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Video Enhancer</h1>
-    <div class="header-actions">
-      <div class="status-pill" id="ffmpeg-status">Kontrollerer FFmpeg...</div>
-      <button class="secondary-button" id="privacy-open" type="button">Personvern</button>
+  <header class="site-header">
+    <div class="header-inner app-container">
+      <div class="brand" aria-label="Video Enhancer home">
+        <svg class="brand-mark" viewBox="0 0 44 44" aria-hidden="true">
+          <path d="M9 5.5 36 22 9 38.5Z" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linejoin="round"/>
+          <path d="m16 15 12 7-12 7Z" fill="currentColor"/>
+        </svg>
+        <span>Video <strong>Enhancer</strong></span>
+      </div>
+      <div class="header-actions">
+        <nav class="legal-nav" aria-label="Legal information">
+          <button class="header-link" type="button" data-dialog="privacy-dialog">Privacy</button>
+          <button class="header-link" type="button" data-dialog="terms-dialog">Terms</button>
+        </nav>
+        <div class="engine-status" id="ffmpeg-status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="status-full">Checking local engine...</span>
+          <span class="status-short">Local</span>
+        </div>
+      </div>
     </div>
   </header>
 
   <main>
-    <section class="panel">
-      <div class="panel-inner">
-        <div class="segmented" role="tablist" aria-label="Videokilde">
-          <button id="input-link" type="button" role="tab" aria-selected="true">Link</button>
-          <button id="input-local" type="button" role="tab" aria-selected="false">Lokal fil</button>
+    <section class="hero app-container" aria-labelledby="hero-title">
+      <h1 id="hero-title">Paste a video link.<br>Keep the files.</h1>
+      <p class="hero-copy">Fetch the best available public source to this device.<br> Create optional 60 FPS, 90 FPS, or 2&times; versions locally.</p>
+      <form class="source-form" id="source-form">
+        <label class="sr-only" for="source-url">Video URL</label>
+        <div class="url-control">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.4 13.6a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.7 1.7M13.6 10.4a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.7-1.7"/></svg>
+          <input id="source-url" type="url" inputmode="url" autocomplete="url" placeholder="https://www.example.com/video" aria-describedby="url-help" required>
+        </div>
+        <button class="primary-button" id="download-original" type="submit">
+          Get best available source
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+        </button>
+      </form>
+      <p class="rights-note" id="url-help">Public TikTok and Instagram links only. Use content you own or are allowed to download.</p>
+      <p class="trust-line">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4.5 6v5.5c0 4.7 3.2 7.9 7.5 9.5 4.3-1.6 7.5-4.8 7.5-9.5V6L12 3Z"/><path d="m8.8 12 2 2 4.5-4.5"/></svg>
+        No account. No operator cloud. Temporary processing stays on this device.
+      </p>
+      <p class="source-error" id="source-error" role="alert" aria-live="assertive"></p>
+    </section>
+
+    <section class="workspace app-container" aria-labelledby="workspace-title">
+      <div class="workspace-empty" id="workspace-empty">
+        <h2 id="workspace-title">Your workspace</h2>
+        <p>Paste a link above to load the source, choose an enhancement, and download the result.</p>
+      </div>
+
+      <div class="workspace-active" id="workspace-active" hidden>
+        <div class="workspace-heading">
+          <div>
+            <h2>Preview &amp; enhance</h2>
+            <p>Compare the original with a locally generated copy.</p>
+          </div>
+          <div class="workspace-status"><span class="status-dot" aria-hidden="true"></span><span id="workspace-status" aria-live="polite">Ready</span></div>
         </div>
 
-        <div id="link-controls" role="tabpanel">
-          <h2>Kildevideo</h2>
-          <label>TikTok- eller Instagram-link
-            <input id="source-url" type="url" inputmode="url" autocomplete="url" placeholder="https://...">
-          </label>
-          <p class="hint mt-8">Bruk bare offentlige videoer du eier eller har tillatelse til å laste ned.</p>
-          <button class="mt-14" id="inspect-source" type="button">Inspiser kilde</button>
-          <p class="hint button-status" id="source-error" role="alert"></p>
-
-          <div class="source-summary" id="source-result" hidden>
-            <div class="source-heading">
-              <div>
-                <h3 id="source-title">Kilde</h3>
-                <p class="meta" id="source-byline"></p>
+        <div class="preview-grid">
+          <article class="video-preview" id="source-player" tabindex="0">
+            <div class="video-title">Original <span class="meta" id="input-meta">Not loaded</span></div>
+            <div class="player-shell" id="source-shell">
+              <div class="video-stage" id="source-stage" data-zoomed="false">
+                <video id="source-video" preload="metadata" playsinline controls></video>
+                <div class="video-empty" id="source-empty">Fetching the best available source...</div>
               </div>
-              <span class="quality-label" id="source-quality">Original platform stream</span>
-            </div>
-            <label>Kildevariant
-              <select id="source-format">
-                <option value="">Best tilgjengelig</option>
-              </select>
-            </label>
-            <button class="mt-14" id="download-original" type="button">Last ned original</button>
-            <div class="action-grid">
-              <button class="secondary-button" id="download-60" type="button" disabled>Lag 60 FPS-kopi</button>
-              <button class="secondary-button" id="download-90" type="button" disabled>Lag 90 FPS-kopi</button>
-              <button class="secondary-button" id="download-upscale" type="button" disabled>Lag 2x oppskalering</button>
-            </div>
-            <dl class="media-meta" id="source-media" hidden></dl>
-            <div class="discovery">
-              <h3>Finn alternative kilder</h3>
-              <div class="search-grid">
-                <a class="secondary" id="search-web" href="#" target="_blank" rel="noreferrer">Websøk</a>
-                <a class="secondary" id="search-tiktok" href="#" target="_blank" rel="noreferrer">TikTok-søk</a>
-                <a class="secondary" id="search-instagram" href="#" target="_blank" rel="noreferrer">Instagram-søk</a>
-                <a class="secondary" id="search-google-lens" href="#" target="_blank" rel="noreferrer">Google Lens</a>
-                <a class="secondary" id="search-tineye" href="#" target="_blank" rel="noreferrer">TinEye</a>
-              </div>
-              <div class="keyframe-grid" id="keyframes" hidden></div>
-              <label class="mt-14">Kandidat-link
-                <input id="candidate-url" type="url" inputmode="url" autocomplete="url" placeholder="https://..." disabled>
-              </label>
-              <button class="secondary-button mt-10" id="compare-candidate" type="button" disabled>Sammenlign kandidat</button>
-              <div class="result mt-10" id="comparison-result" hidden>
-                <div>
-                  <strong id="comparison-title"></strong>
-                  <p class="hint comparison-copy" id="comparison-detail"></p>
+              <details class="advanced-controls">
+                <summary>Advanced comparison controls</summary>
+                <div class="frame-controls" id="source-frame-controls" role="group" aria-label="Frame controls for original">
+                  <button id="source-previous-frame" type="button" aria-label="Previous frame" title="Previous frame" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg></button>
+                  <button id="source-one-fps" type="button" aria-label="Play one frame per second" title="Play one frame per second" aria-pressed="false" disabled>1 FPS</button>
+                  <button id="source-next-frame" type="button" aria-label="Next frame" title="Next frame" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 7 5 5-5 5"/></svg></button>
+                  <label class="frame-fps"><span>Step FPS</span><input id="source-frame-fps" type="number" min="1" max="240" step="0.001" value="30" aria-label="Frames per second for original" disabled></label>
+                  <button id="source-fullscreen" type="button" aria-label="Fullscreen with frame controls" title="Fullscreen" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M8 20H4v-4m12 4h4v-4"/></svg></button>
                 </div>
+                <div class="zoom-controls" role="group" aria-label="Zoom controls for original">
+                  <button id="source-zoom-out" type="button" aria-label="Zoom out" title="Zoom out" disabled>&minus;</button>
+                  <input id="source-zoom" type="range" min="1" max="8" step="0.1" value="1" aria-label="Zoom level for original" disabled>
+                  <button id="source-zoom-in" type="button" aria-label="Zoom in" title="Zoom in" disabled>+</button>
+                  <button id="source-zoom-reset" type="button" aria-label="Reset zoom" title="Reset zoom" disabled>1&times;</button>
+                </div>
+              </details>
+            </div>
+          </article>
+
+          <article class="video-preview" id="output-player" tabindex="0">
+            <div class="video-title">Enhanced <span class="meta" id="output-meta">Not started</span></div>
+            <div class="player-shell" id="output-shell">
+              <div class="video-stage" id="output-stage" data-zoomed="false">
+                <video id="output-video" preload="metadata" playsinline controls></video>
+                <div class="video-empty" id="output-empty">Choose an enhancement after the source is ready.</div>
               </div>
+              <details class="advanced-controls">
+                <summary>Advanced comparison controls</summary>
+                <div class="frame-controls" id="output-frame-controls" role="group" aria-label="Frame controls for enhanced copy">
+                  <button id="output-previous-frame" type="button" aria-label="Previous frame" title="Previous frame" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg></button>
+                  <button id="output-one-fps" type="button" aria-label="Play one frame per second" title="Play one frame per second" aria-pressed="false" disabled>1 FPS</button>
+                  <button id="output-next-frame" type="button" aria-label="Next frame" title="Next frame" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 7 5 5-5 5"/></svg></button>
+                  <label class="frame-fps"><span>Step FPS</span><input id="output-frame-fps" type="number" min="1" max="240" step="0.001" value="30" aria-label="Frames per second for enhanced copy" disabled></label>
+                  <button id="output-fullscreen" type="button" aria-label="Fullscreen with frame controls" title="Fullscreen" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M8 20H4v-4m12 4h4v-4"/></svg></button>
+                </div>
+                <div class="zoom-controls" role="group" aria-label="Zoom controls for enhanced copy">
+                  <button id="output-zoom-out" type="button" aria-label="Zoom out" title="Zoom out" disabled>&minus;</button>
+                  <input id="output-zoom" type="range" min="1" max="8" step="0.1" value="1" aria-label="Zoom level for enhanced copy" disabled>
+                  <button id="output-zoom-in" type="button" aria-label="Zoom in" title="Zoom in" disabled>+</button>
+                  <button id="output-zoom-reset" type="button" aria-label="Reset zoom" title="Reset zoom" disabled>1&times;</button>
+                </div>
+              </details>
+            </div>
+          </article>
+        </div>
+
+        <section class="source-summary" id="source-result" hidden aria-labelledby="source-ready-title">
+          <div class="source-summary-heading">
+            <div>
+              <span class="quality-label" id="source-ready-title">Source ready</span>
+              <strong id="source-result-name"></strong>
+              <p class="hint" id="source-quality">Original platform stream</p>
+            </div>
+            <a class="download-link" id="source-download" href="#" download>Download source <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 20h14"/></svg></a>
+          </div>
+          <dl class="media-meta" id="source-media" hidden></dl>
+          <div class="enhancement-actions">
+            <h3>Choose an enhancement</h3>
+            <div class="action-grid">
+              <button class="choice-button" id="download-60" type="button" disabled><strong>60 FPS</strong><span>Smoother motion</span></button>
+              <button class="choice-button" id="download-90" type="button" disabled><strong>90 FPS</strong><span>Ultra-smooth motion</span></button>
+              <button class="choice-button" id="download-upscale" type="button" disabled><strong>2&times; Upscale</strong><span>Higher resolution</span></button>
             </div>
           </div>
-        </div>
+        </section>
 
-        <div id="local-controls" role="tabpanel" hidden>
-          <h2>Lokal video</h2>
-          <div class="filebox">
-            <input id="file" type="file" accept="video/*">
-            <p class="hint" id="file-hint">Ingen fil valgt</p>
+        <section class="result" id="result" hidden aria-labelledby="result-name">
+          <div>
+            <span class="quality-label">Enhanced file ready</span>
+            <strong id="result-name"></strong>
+            <p class="hint" id="result-path">Enhanced synthetic copy</p>
           </div>
+          <a class="download-link" id="download" href="#" download>Download result <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 20h14"/></svg></a>
+        </section>
 
-          <div class="section">
-          <h2>Forbedring</h2>
-          <div class="grid">
-            <label>Profil
-              <select id="preset"></select>
-            </label>
-            <label>Videokodek
-              <select id="codec"></select>
-            </label>
-            <label>FPS
-              <input id="fps" type="number" min="1" step="1" placeholder="Preset default">
-            </label>
-            <label>Skalering
-              <input id="scale" type="number" min="0.1" step="0.1" placeholder="Preset default">
-            </label>
-            <label class="check"><input id="no-upscale" type="checkbox"> Ingen oppskalering</label>
-            <label class="check"><input id="no-interpolate" type="checkbox"> Ingen interpolering</label>
-          </div>
-
-          <label class="mt-14">Filnavn
-            <input id="output-name" type="text" placeholder="example-enhanced.mp4">
-          </label>
-
-          <button class="mt-14" id="start" type="button">Start eksport</button>
-          </div>
-        </div>
+        <details class="activity-log">
+          <summary>Activity details</summary>
+          <pre id="log" aria-live="polite">Ready.</pre>
+        </details>
       </div>
     </section>
 
-    <section class="panel">
-      <div class="panel-inner">
-        <div class="preview-grid">
-          <div class="video-preview" id="source-player" tabindex="0">
-            <div class="video-title">Original <span class="meta" id="input-meta">Ikke lastet</span></div>
-            <div class="player-shell" id="source-shell">
-              <div class="video-stage" id="source-stage" data-zoomed="false">
-                <video id="source-video" preload="metadata" playsinline></video>
-              </div>
-              <div class="playback-controls" role="group" aria-label="Avspillingskontroller for original">
-                <button id="source-play" type="button" aria-label="Spill av" title="Spill av" disabled>&#9654;</button>
-                <input id="source-seek" type="range" min="0" max="0" step="0.001" value="0" aria-label="Tidslinje for original" disabled>
-                <span class="playback-time" id="source-time">0:00 / 0:00</span>
-                <button id="source-mute" type="button" aria-label="Demp lyd" title="Demp lyd" disabled>&#128266;</button>
-                <input class="volume-slider" id="source-volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Lydstyrke for original" disabled>
-                <button id="source-fullscreen" type="button" aria-label="Fullskjerm" title="Fullskjerm" disabled>&#9974;</button>
-              </div>
-            </div>
-            <div class="zoom-controls" role="group" aria-label="Zoomkontroller for original">
-              <button id="source-zoom-out" type="button" aria-label="Zoom ut" title="Zoom ut" disabled>&minus;</button>
-              <input id="source-zoom" type="range" min="1" max="8" step="0.1" value="1" aria-label="Zoomnivå for original" disabled>
-              <button id="source-zoom-in" type="button" aria-label="Zoom inn" title="Zoom inn" disabled>+</button>
-              <button id="source-zoom-reset" type="button" aria-label="Nullstill zoom" title="Nullstill zoom" disabled>1&times;</button>
-            </div>
-            <div class="frame-controls" id="source-frame-controls" role="group" aria-label="Bildekontroller for original">
-              <button id="source-previous-frame" type="button" aria-label="Forrige bilde" title="Forrige bilde" disabled>&#9664;</button>
-              <button id="source-one-fps" type="button" aria-label="Spill av ett bilde per sekund" title="Spill av ett bilde per sekund" aria-pressed="false" disabled>1 FPS</button>
-              <button id="source-next-frame" type="button" aria-label="Neste bilde" title="Neste bilde" disabled>&#9654;</button>
-              <label class="frame-fps"><span>Steg-FPS</span><input id="source-frame-fps" type="number" min="1" max="240" step="0.001" value="30" aria-label="Bilder per sekund for original" disabled></label>
-            </div>
-          </div>
-          <div class="video-preview" id="output-player" tabindex="0">
-            <div class="video-title">Avledet kopi <span class="meta" id="output-meta">Ikke startet</span></div>
-            <div class="player-shell" id="output-shell">
-              <div class="video-stage" id="output-stage" data-zoomed="false">
-                <video id="output-video" preload="metadata" playsinline></video>
-              </div>
-              <div class="playback-controls" role="group" aria-label="Avspillingskontroller for avledet kopi">
-                <button id="output-play" type="button" aria-label="Spill av" title="Spill av" disabled>&#9654;</button>
-                <input id="output-seek" type="range" min="0" max="0" step="0.001" value="0" aria-label="Tidslinje for avledet kopi" disabled>
-                <span class="playback-time" id="output-time">0:00 / 0:00</span>
-                <button id="output-mute" type="button" aria-label="Demp lyd" title="Demp lyd" disabled>&#128266;</button>
-                <input class="volume-slider" id="output-volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Lydstyrke for avledet kopi" disabled>
-                <button id="output-fullscreen" type="button" aria-label="Fullskjerm" title="Fullskjerm" disabled>&#9974;</button>
-              </div>
-            </div>
-            <div class="zoom-controls" role="group" aria-label="Zoomkontroller for avledet kopi">
-              <button id="output-zoom-out" type="button" aria-label="Zoom ut" title="Zoom ut" disabled>&minus;</button>
-              <input id="output-zoom" type="range" min="1" max="8" step="0.1" value="1" aria-label="Zoomnivå for avledet kopi" disabled>
-              <button id="output-zoom-in" type="button" aria-label="Zoom inn" title="Zoom inn" disabled>+</button>
-              <button id="output-zoom-reset" type="button" aria-label="Nullstill zoom" title="Nullstill zoom" disabled>1&times;</button>
-            </div>
-            <div class="frame-controls" id="output-frame-controls" role="group" aria-label="Bildekontroller for avledet kopi">
-              <button id="output-previous-frame" type="button" aria-label="Forrige bilde" title="Forrige bilde" disabled>&#9664;</button>
-              <button id="output-one-fps" type="button" aria-label="Spill av ett bilde per sekund" title="Spill av ett bilde per sekund" aria-pressed="false" disabled>1 FPS</button>
-              <button id="output-next-frame" type="button" aria-label="Neste bilde" title="Neste bilde" disabled>&#9654;</button>
-              <label class="frame-fps"><span>Steg-FPS</span><input id="output-frame-fps" type="number" min="1" max="240" step="0.001" value="30" aria-label="Bilder per sekund for avledet kopi" disabled></label>
-            </div>
-          </div>
-        </div>
-
-        <div class="section">
-          <h2>Resultater</h2>
-          <div class="result" id="source-download-result" hidden>
-            <div>
-              <strong id="source-result-name"></strong>
-              <p class="hint" id="source-result-label">Original platform stream</p>
-            </div>
-            <a class="secondary" id="source-download" href="#" download>Last ned</a>
-          </div>
-          <div class="result" id="result" hidden>
-            <div>
-              <strong id="result-name"></strong>
-              <p class="hint" id="result-path">Enhanced synthetic copy</p>
-            </div>
-            <a class="secondary" id="download" href="#" download>Last ned</a>
-          </div>
-          <pre id="log">Klar.</pre>
-        </div>
+    <section class="explainer app-container" aria-labelledby="how-title">
+      <div class="steps">
+        <h2 id="how-title">How it works</h2>
+        <ol>
+          <li><span>1</span><div><strong>Load a public link</strong><p>Paste a link to a publicly available video.</p></div></li>
+          <li><span>2</span><div><strong>Choose an enhancement</strong><p>Select 60 FPS, 90 FPS, or 2&times; to process locally.</p></div></li>
+          <li><span>3</span><div><strong>Download your file</strong><p>Save the enhanced file to your device.</p></div></li>
+        </ol>
       </div>
     </section>
   </main>
 
-  <footer>
-    <span>Kun midlertidige filer på denne Macen</span>
-    <button class="secondary-button" id="clear-session" type="button">Slett lokale arbeidsfiler</button>
+  <footer class="site-footer">
+    <div class="footer-inner app-container">
+      <p>Processing runs through a local app on this device. Working files are temporary and can be cleared at any time.</p>
+      <div class="footer-actions">
+        <button type="button" data-dialog="privacy-dialog">Privacy</button>
+        <button type="button" data-dialog="terms-dialog">Terms</button>
+        <button class="danger-button" id="clear-session" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 4h6l1 3H8l1-3Zm-3 3 1 14h10l1-14"/></svg>
+          Clear local files
+        </button>
+      </div>
+    </div>
   </footer>
 
   <dialog id="privacy-dialog" aria-labelledby="privacy-title">
-    <div class="dialog-body">
-      <h2 id="privacy-title">Personvern</h2>
-      <p class="hint">Videoer og avledede filer behandles i en midlertidig mappe på denne Macen. Det finnes ingen konto, database, analyse, annonser, cookies eller annen nettleserlagring.</p>
-      <p class="hint">Når du bruker en TikTok- eller Instagram-link, kontakter denne Macen den valgte plattformen direkte. Eksterne søketjenester åpnes bare når du selv trykker på en søkelink. Ingenting lastes opp til en Video Enhancer-skytjeneste.</p>
-      <p class="hint">Arbeidsfilene slettes når appen stopper normalt, eller straks med sletteknappen. En fil du aktivt laster ned til en valgt mappe, beholdes av nettleseren.</p>
-      <p class="hint">Last bare ned innhold du eier eller har tillatelse til å bruke. Verktøyet omgår ikke privat innhold eller innlogging.</p>
-      <div class="dialog-actions">
-        <button id="privacy-close" type="button">Lukk</button>
+    <div class="dialog-body policy-content">
+      <div class="dialog-heading">
+        <div><p class="dialog-kicker">Last updated August 6, 2026</p><h2 id="privacy-title">Privacy at a glance</h2></div>
+        <button class="icon-button" type="button" data-close-dialog="privacy-dialog" aria-label="Close privacy information">&times;</button>
       </div>
+      <section>
+        <h3>Local processing, no account</h3>
+        <p>Video Enhancer runs through a local app on this device. There is no account, analytics, advertising, or operator-run cloud storage.</p>
+        <p>Submitted links are held in the local app's memory while it is running. Source videos and generated files are written to a temporary folder on this device so they can be processed and previewed.</p>
+      </section>
+      <section>
+        <h3>Deletion and downloads</h3>
+        <p>You can clear temporary files at any time. The app also removes them after a normal shutdown. A forced shutdown or system crash may leave temporary files until you or the operating system removes them. Files you download remain wherever you save them.</p>
+      </section>
+      <section>
+        <h3>Source platforms</h3>
+        <p>When you submit a TikTok or Instagram link, this device connects to that platform and its delivery providers. They receive technical request data such as your IP address and apply their own privacy terms. Video Enhancer does not send your link, video, or activity to an operator-run cloud service.</p>
+      </section>
+      <section>
+        <h3>Cookies and browser storage</h3>
+        <p>This app does not use cookies, localStorage, IndexedDB, analytics identifiers, or advertising identifiers. A one-time security token in the page URL protects the local session; it is not used for tracking and expires when the app stops.</p>
+      </section>
+      <div class="dialog-actions"><button type="button" data-close-dialog="privacy-dialog">Done</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="terms-dialog" aria-labelledby="terms-title">
+    <div class="dialog-body policy-content">
+      <div class="dialog-heading">
+        <div><p class="dialog-kicker">Last updated August 6, 2026</p><h2 id="terms-title">Terms of use</h2></div>
+        <button class="icon-button" type="button" data-close-dialog="terms-dialog" aria-label="Close terms of use">&times;</button>
+      </div>
+      <section>
+        <h3>About this tool</h3>
+        <p>Video Enhancer is a local tool for supported public video links. It does not host, index, publish, recommend, or redistribute videos, and it provides no account or platform access.</p>
+      </section>
+      <section>
+        <h3>Your responsibility</h3>
+        <p>Use Video Enhancer only for public content you own or are legally permitted to download and use. Follow applicable law, copyright and privacy rights, and the source platform's terms. Do not use it to access private content, bypass a login or access control, infringe rights, or distribute unlawful content.</p>
+      </section>
+      <section>
+        <h3>Third-party platforms</h3>
+        <p>TikTok and Instagram are independent services. Video Enhancer is not affiliated with, sponsored by, or approved by them. Platform changes may interrupt support without notice.</p>
+      </section>
+      <section>
+        <h3>Quality and availability</h3>
+        <p>The tool is provided as available. It does not guarantee a particular resolution, frame rate, codec, availability, or that a platform will expose a downloadable source. Synthetic enhancement can introduce artifacts.</p>
+      </section>
+      <div class="dialog-actions"><button type="button" data-close-dialog="terms-dialog">Done</button></div>
     </div>
   </dialog>
 
@@ -698,12 +1257,9 @@ HTML = """<!doctype html>
     const $ = (id) => document.getElementById(id);
     const sessionToken = new URLSearchParams(window.location.hash.slice(1)).get("token") || "";
     const state = {
-      file: null,
-      objectUrl: null,
       poll: null,
       sourceId: null,
       outputFps: 30,
-      presetFps: {},
     };
 
     function apiFetch(path, options = {}) {
@@ -719,31 +1275,11 @@ HTML = """<!doctype html>
       return `${url.pathname}${url.search}`;
     }
 
-    function replaceOptions(select, values) {
-      select.replaceChildren(...values.map((value) => {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = value;
-        return option;
-      }));
-    }
-
-    function clock(seconds) {
-      const value = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
-      const minutes = Math.floor(value / 60);
-      return `${minutes}:${String(Math.floor(value % 60)).padStart(2, "0")}`;
-    }
-
     function createPlayerController(name) {
       const player = $(`${name}-player`);
       const shell = $(`${name}-shell`);
       const stage = $(`${name}-stage`);
       const video = $(`${name}-video`);
-      const play = $(`${name}-play`);
-      const seek = $(`${name}-seek`);
-      const timeLabel = $(`${name}-time`);
-      const mute = $(`${name}-mute`);
-      const volume = $(`${name}-volume`);
       const fullscreen = $(`${name}-fullscreen`);
       const zoom = $(`${name}-zoom`);
       const zoomOut = $(`${name}-zoom-out`);
@@ -754,7 +1290,7 @@ HTML = """<!doctype html>
       const next = $(`${name}-next-frame`);
       const fpsInput = $(`${name}-frame-fps`);
       const controls = [
-        play, seek, mute, volume, fullscreen,
+        fullscreen,
         zoom, zoomOut, zoomIn, zoomReset,
         previous, oneFps, next, fpsInput,
       ];
@@ -787,26 +1323,6 @@ HTML = """<!doctype html>
       const setEnabled = (enabled) => {
         controls.forEach((control) => { control.disabled = !enabled; });
         fullscreen.disabled = !enabled || typeof shell.requestFullscreen !== "function";
-      };
-      const updatePlayback = () => {
-        const duration = Number.isFinite(video.duration) ? video.duration : 0;
-        const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-        seek.max = String(duration);
-        seek.value = String(Math.min(current, duration));
-        timeLabel.textContent = `${clock(current)} / ${clock(duration)}`;
-        const paused = video.paused;
-        play.textContent = paused ? "\u25b6" : "\u275a\u275a";
-        play.setAttribute("aria-label", paused ? "Spill av" : "Pause");
-        play.title = paused ? "Spill av" : "Pause";
-        const muted = video.muted || video.volume === 0;
-        mute.textContent = muted ? "\\ud83d\\udd07" : "\\ud83d\\udd0a";
-        mute.setAttribute("aria-label", muted ? "Sl\u00e5 p\u00e5 lyd" : "Demp lyd");
-        mute.title = muted ? "Sl\u00e5 p\u00e5 lyd" : "Demp lyd";
-      };
-      const togglePlayback = () => {
-        stopOneFps();
-        if (video.paused) video.play().catch(() => {});
-        else video.pause();
       };
       const clampPan = () => {
         const rect = stage.getBoundingClientRect();
@@ -845,19 +1361,6 @@ HTML = """<!doctype html>
         };
       };
 
-      play.addEventListener("click", togglePlayback);
-      seek.addEventListener("input", () => {
-        stopOneFps();
-        video.currentTime = Number(seek.value);
-      });
-      mute.addEventListener("click", () => {
-        video.muted = !video.muted;
-        updatePlayback();
-      });
-      volume.addEventListener("input", () => {
-        video.volume = Number(volume.value);
-        video.muted = false;
-      });
       fullscreen.addEventListener("click", () => {
         if (document.fullscreenElement === shell) document.exitFullscreen();
         else shell.requestFullscreen().catch(() => {});
@@ -880,7 +1383,7 @@ HTML = """<!doctype html>
       stage.addEventListener("pointerdown", (event) => {
         if (zoom.disabled) return;
         pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-        stage.setPointerCapture(event.pointerId);
+        if (scale > 1 || pointers.size > 1) stage.setPointerCapture(event.pointerId);
         if (pointers.size === 1) lastPoint = { x: event.clientX, y: event.clientY };
         if (pointers.size === 2) lastPinch = gesture();
         if (scale > 1 || pointers.size > 1) stage.classList.add("dragging");
@@ -936,9 +1439,6 @@ HTML = """<!doctype html>
         if (["ArrowLeft", "ArrowRight"].includes(event.key)) {
           event.preventDefault();
           step(event.key === "ArrowRight" ? 1 : -1);
-        } else if (event.code === "Space") {
-          event.preventDefault();
-          togglePlayback();
         } else if (["+", "="].includes(event.key)) {
           event.preventDefault();
           zoomAt(scale + 0.5);
@@ -953,22 +1453,13 @@ HTML = """<!doctype html>
       video.addEventListener("loadedmetadata", () => {
         setEnabled(true);
         resetZoom();
-        updatePlayback();
       });
       video.addEventListener("emptied", () => {
         stopOneFps();
         resetZoom();
         setEnabled(false);
-        updatePlayback();
       });
-      video.addEventListener("play", () => {
-        stopOneFps();
-        updatePlayback();
-      });
-      video.addEventListener("pause", updatePlayback);
-      video.addEventListener("timeupdate", updatePlayback);
-      video.addEventListener("durationchange", updatePlayback);
-      video.addEventListener("volumechange", updatePlayback);
+      video.addEventListener("play", stopOneFps);
       video.addEventListener("ended", stopOneFps);
       new ResizeObserver(renderZoom).observe(stage);
 
@@ -984,7 +1475,6 @@ HTML = """<!doctype html>
           resetZoom();
           fpsInput.value = "30";
           setEnabled(false);
-          updatePlayback();
         },
       };
     }
@@ -992,50 +1482,34 @@ HTML = """<!doctype html>
     const sourceFrames = createPlayerController("source");
     const outputFrames = createPlayerController("output");
 
-    function setLog(lines) {
-      $("log").textContent = lines && lines.length ? lines.join("\\n") : "Klar.";
-      $("log").scrollTop = $("log").scrollHeight;
+   function setLog(lines) {
+      const entries = lines && lines.length ? lines : ["Ready."];
+      $("log").textContent = entries.join("\\n");
+     $("log").scrollTop = $("log").scrollHeight;
+      $("workspace-status").textContent = entries[entries.length - 1];
+   }
+
+    function showWorkspace(active) {
+      $("workspace-empty").hidden = active;
+      $("workspace-active").hidden = !active;
     }
 
-    function safeOutputName(name) {
-      const base = name.replace(/\\.[^.]+$/, "").replace(/[^a-z0-9._-]+/gi, "_").replace(/^_+|_+$/g, "");
-      return `${base || "video"}-enhanced.mp4`;
-    }
+    function setEngineStatus(ready, message) {
+      const status = $("ffmpeg-status");
+      status.dataset.state = ready ? "ready" : "error";
+      status.querySelector(".status-full").textContent = message;
+      status.querySelector(".status-short").textContent = ready ? "Local" : "Unavailable";
+   }
 
-    async function loadConfig() {
-      const response = await apiFetch("/api/config");
-      const config = await response.json();
-      if (!response.ok) throw new Error(config.error || "Ugyldig lokal sesjon");
-      $("ffmpeg-status").textContent = config.ffmpeg ? `FFmpeg: ${config.ffmpeg}` : "FFmpeg: ikke funnet";
-      replaceOptions($("preset"), config.presets);
-      $("preset").value = "balanced";
-      state.presetFps = config.preset_fps || {};
-      replaceOptions($("codec"), config.codecs);
-      $("codec").value = "libx264";
-    }
-
-    function setMode(mode) {
-      const link = mode === "link";
-      $("input-link").setAttribute("aria-selected", String(link));
-      $("input-local").setAttribute("aria-selected", String(!link));
-      $("link-controls").hidden = !link;
-      $("local-controls").hidden = link;
-    }
-
-    $("input-link").addEventListener("click", () => setMode("link"));
-    $("input-local").addEventListener("click", () => setMode("local"));
-
-    function isSupportedSourceUrl(raw) {
-      try {
-        const url = new URL(raw);
-        const host = url.hostname.toLowerCase();
-        return url.protocol === "https:" && ["tiktok.com", "instagram.com"].some(
-          (domain) => host === domain || host.endsWith(`.${domain}`)
-        );
-      } catch (_) {
-        return false;
-      }
-    }
+   async function loadConfig() {
+     const response = await apiFetch("/api/config");
+     const config = await response.json();
+      if (!response.ok) throw new Error(config.error || "Invalid local session.");
+      setEngineStatus(
+        config.ffmpeg === "found",
+        config.ffmpeg === "found" ? "Local engine ready" : "FFmpeg unavailable",
+      );
+   }
 
     async function postJSON(path, body) {
       const response = await apiFetch(path, {
@@ -1044,17 +1518,8 @@ HTML = """<!doctype html>
         body: JSON.stringify(body),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Forespørselen mislyktes");
+      if (!response.ok) throw new Error(payload.error || "Request failed.");
       return payload;
-    }
-
-    function formatVariant(format) {
-      const size = format.width && format.height ? `${format.width}x${format.height}` : "Ukjent størrelse";
-      const fps = format.fps ? `${format.fps} FPS` : "ukjent FPS";
-      const codec = format.vcodec || "ukjent kodek";
-      const bitrate = format.tbr ? `${Math.round(format.tbr)} kbps` : "ukjent bitrate";
-      const mirrors = format.mirrors > 1 ? `, ${format.mirrors} speil` : "";
-      return `${size}, ${fps}, ${codec}, ${bitrate}${mirrors}`;
     }
 
     function setDerivedDisabled(disabled) {
@@ -1063,82 +1528,55 @@ HTML = """<!doctype html>
       });
     }
 
-    function showSourceInfo(source) {
-      state.sourceId = source.id;
-      $("source-result").hidden = false;
-      $("source-title").textContent = source.info.title || `${source.info.platform || "Video"} ${source.info.id || ""}`;
-      $("source-byline").textContent = [source.info.uploader, source.info.duration ? `${source.info.duration}s` : ""].filter(Boolean).join(" · ");
-      const select = $("source-format");
-      select.replaceChildren(new Option("Best tilgjengelig", ""));
-      source.info.formats.forEach((format) => {
-        const id = (format.format_ids || [])[0];
-        if (id) select.add(new Option(formatVariant(format), id));
-      });
-      $("download-original").disabled = false;
-      setDerivedDisabled(true);
-      $("source-media").hidden = true;
-      $("source-download-result").hidden = true;
-      $("keyframes").hidden = true;
-      $("candidate-url").disabled = true;
-      $("compare-candidate").disabled = true;
-      $("comparison-result").hidden = true;
-      Object.entries(source.searches).forEach(([name, url]) => {
-        $(`search-${name.replace("google_lens", "google-lens")}`).href = url;
-      });
-      setLog([`${source.info.formats.length} kildevarianter funnet.`]);
-    }
-
-    $("inspect-source").addEventListener("click", async () => {
+    $("source-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!$("source-form").reportValidity()) return;
       const url = $("source-url").value.trim();
-      $("source-error").textContent = "";
-      if (!isSupportedSourceUrl(url)) {
-        $("source-error").textContent = "Bruk en gyldig HTTPS-link fra TikTok eller Instagram.";
-        return;
-      }
-      $("inspect-source").disabled = true;
-      setLog(["Inspiserer tilgjengelige kildevarianter..."]);
-      try {
-        showSourceInfo(await postJSON("/api/sources/inspect", {
-          url,
-        }));
-      } catch (error) {
-        $("source-error").textContent = error.message;
-        setLog([error.message]);
-      } finally {
-        $("inspect-source").disabled = false;
-      }
-    });
-
-    $("download-original").addEventListener("click", async () => {
-      if (!state.sourceId) return;
+      state.sourceId = null;
       $("download-original").disabled = true;
-      setDerivedDisabled(true);
-      setLog(["Starter originalnedlasting..."]);
-      try {
-        const source = await postJSON(`/api/sources/${state.sourceId}/download`, {
-          format_id: $("source-format").value,
-        });
-        watchSource(source.id).catch(showPollingError);
+     $("source-error").textContent = "";
+     $("source-result").hidden = true;
+      $("result").hidden = true;
+      $("source-media").hidden = true;
+      $("source-empty").hidden = false;
+      $("source-empty").textContent = "Fetching the best available source...";
+      $("output-empty").hidden = false;
+      $("output-empty").textContent = "Choose an enhancement after the source is ready.";
+      for (const name of ["source", "output"]) {
+        const video = $(`${name}-video`);
+        video.removeAttribute("src");
+        video.load();
+      }
+      sourceFrames.reset();
+      outputFrames.reset();
+      showWorkspace(true);
+     setDerivedDisabled(true);
+      setLog(["Starting source download..."]);
+     try {
+       const source = await postJSON("/api/sources/download", { url });
+       state.sourceId = source.id;
+       watchSource(source.id).catch(showPollingError);
       } catch (error) {
         $("source-error").textContent = error.message;
         $("download-original").disabled = false;
+        showWorkspace(false);
         setLog([error.message]);
       }
-    });
+   });
 
-    function mediaValue(value, suffix = "") {
-      return value === null || value === undefined ? "Ukjent" : `${value}${suffix}`;
-    }
+   function mediaValue(value, suffix = "") {
+      return value === null || value === undefined ? "Unknown" : `${value}${suffix}`;
+   }
 
-    function renderMedia(media) {
-      const values = [
-        ["Oppløsning", media.width && media.height ? `${media.width}x${media.height}` : "Ukjent"],
-        ["Bildefrekvens", mediaValue(media.fps, " FPS")],
-        ["Video", mediaValue(media.video_codec)],
-        ["Lyd", mediaValue(media.audio_codec)],
-        ["Bitrate", media.bitrate ? `${Math.round(media.bitrate / 1000)} kbps` : "Ukjent"],
-        ["Størrelse", media.size ? `${(media.size / 1024 / 1024).toFixed(1)} MB` : "Ukjent"],
-      ];
+   function renderMedia(media) {
+     const values = [
+        ["Resolution", media.width && media.height ? `${media.width}x${media.height}` : "Unknown"],
+        ["Frame rate", mediaValue(media.fps, " FPS")],
+       ["Video", mediaValue(media.video_codec)],
+        ["Audio", mediaValue(media.audio_codec)],
+        ["Bitrate", media.bitrate ? `${Math.round(media.bitrate / 1000)} kbps` : "Unknown"],
+        ["Size", media.size ? `${(media.size / 1024 / 1024).toFixed(1)} MB` : "Unknown"],
+     ];
       $("source-media").replaceChildren(...values.map(([name, value]) => {
         const box = document.createElement("div");
         const term = document.createElement("dt");
@@ -1151,73 +1589,61 @@ HTML = """<!doctype html>
       $("source-media").hidden = false;
     }
 
-    function renderKeyframes(urls) {
-      $("keyframes").replaceChildren(...urls.map((url, index) => {
-        const link = document.createElement("a");
-        const image = document.createElement("img");
-        link.href = localFileUrl(url, true);
-        link.download = `keyframe-${index + 1}.jpg`;
-        image.src = localFileUrl(url);
-        image.alt = `Nøkkelbilde ${index + 1}`;
-        link.append(image);
-        return link;
-      }));
-      $("keyframes").hidden = urls.length === 0;
-    }
-
     async function watchSource(id) {
       clearInterval(state.poll);
       const tick = async () => {
-        const response = await apiFetch(`/api/sources/${id}`);
-        const source = await response.json();
-        if (!response.ok) throw new Error(source.error || "Kildejobben ble ikke funnet");
-        setLog(source.logs);
-        if (source.status === "done") {
-          clearInterval(state.poll);
-          const label = source.operation === "remuxed" ? "Remuxed without video re-encoding" : "Original platform stream";
-          $("source-quality").textContent = label;
-          $("source-result-label").textContent = label;
-          $("source-result-name").textContent = source.original_name;
-          $("source-download").href = localFileUrl(source.original_url, true);
-          $("source-download-result").hidden = false;
-          sourceFrames.setFps(source.media.fps);
-          releaseObjectUrl();
-          $("source-video").src = localFileUrl(source.original_url);
-          $("source-video").load();
-          $("input-meta").textContent = `${mediaValue(source.media.width)}x${mediaValue(source.media.height)} · ${mediaValue(source.media.fps, " FPS")}`;
-          renderMedia(source.media);
-          renderKeyframes(source.keyframes);
-          $("download-original").disabled = false;
-          setDerivedDisabled(false);
-          $("candidate-url").disabled = false;
-          $("compare-candidate").disabled = false;
-        } else if (source.status === "error") {
-          clearInterval(state.poll);
-          $("source-error").textContent = source.error;
-          $("download-original").disabled = false;
-        }
+       const response = await apiFetch(`/api/sources/${id}`);
+       const source = await response.json();
+        if (!response.ok) throw new Error(source.error || "Source job not found.");
+       setLog(source.logs);
+       if (source.status === "done") {
+         clearInterval(state.poll);
+         const label = source.operation === "remuxed" ? "Remuxed without video re-encoding" : "Original platform stream";
+         $("source-quality").textContent = label;
+         $("source-result-name").textContent = source.original_name;
+         $("source-download").href = localFileUrl(source.original_url, true);
+         $("source-result").hidden = false;
+         sourceFrames.setFps(source.media.fps);
+         $("source-video").src = localFileUrl(source.original_url);
+         $("source-video").load();
+          $("source-empty").hidden = true;
+         $("input-meta").textContent = `${mediaValue(source.media.width)}x${mediaValue(source.media.height)} · ${mediaValue(source.media.fps, " FPS")}`;
+         renderMedia(source.media);
+         $("download-original").disabled = false;
+         setDerivedDisabled(false);
+          $("workspace-status").textContent = "Source ready. Choose an enhancement or download the original.";
+       } else if (source.status === "error") {
+         clearInterval(state.poll);
+         state.sourceId = null;
+         $("source-error").textContent = source.error;
+         showWorkspace(false);
+         $("download-original").disabled = false;
+       }
       };
       state.poll = setInterval(() => tick().catch(showPollingError), 1000);
       await tick();
     }
 
-    function showPollingError(error) {
-      clearInterval(state.poll);
-      setLog([error.message]);
-      $("start").disabled = false;
-      $("download-original").disabled = false;
-      if (!$("candidate-url").disabled) $("compare-candidate").disabled = false;
-    }
+   function showPollingError(error) {
+     clearInterval(state.poll);
+     setLog([error.message]);
+      $("source-error").textContent = error.message;
+     $("download-original").disabled = false;
+   }
 
-    async function startSourceEnhancement(mode) {
-      if (!state.sourceId) return;
-      state.outputFps = mode === "upscale" ? sourceFrames.fps() : Number(mode);
-      setDerivedDisabled(true);
-      $("result").hidden = true;
-      $("output-meta").textContent = "Starter";
-      try {
+   async function startSourceEnhancement(mode) {
+     if (!state.sourceId) return;
+     state.outputFps = mode === "upscale" ? sourceFrames.fps() : Number(mode);
+     setDerivedDisabled(true);
+     $("result").hidden = true;
+      $("output-meta").textContent = "Starting";
+      $("output-empty").hidden = false;
+      $("output-empty").textContent = "Creating the enhanced copy on this device...";
+      $("output-video").removeAttribute("src");
+      $("output-video").load();
+     try {
         const job = await postJSON(`/api/sources/${state.sourceId}/enhance`, { mode });
-        watchJob(job.id, true).catch(showPollingError);
+        watchJob(job.id).catch(showPollingError);
       } catch (error) {
         setDerivedDisabled(false);
         setLog([error.message]);
@@ -1225,194 +1651,69 @@ HTML = """<!doctype html>
     }
 
     $("download-60").addEventListener("click", () => startSourceEnhancement("60"));
-    $("download-90").addEventListener("click", () => startSourceEnhancement("90"));
-    $("download-upscale").addEventListener("click", () => startSourceEnhancement("upscale"));
+   $("download-90").addEventListener("click", () => startSourceEnhancement("90"));
+   $("download-upscale").addEventListener("click", () => startSourceEnhancement("upscale"));
 
-    $("compare-candidate").addEventListener("click", async () => {
-      const url = $("candidate-url").value.trim();
-      $("source-error").textContent = "";
-      if (!isSupportedSourceUrl(url)) {
-        $("source-error").textContent = "Bruk en gyldig HTTPS-link fra TikTok eller Instagram.";
-        return;
-      }
-      $("compare-candidate").disabled = true;
-      $("comparison-result").hidden = true;
-      setLog(["Starter lokal kandidat-sammenligning..."]);
-      try {
-        const source = await postJSON(`/api/sources/${state.sourceId}/compare`, {
-          url,
-        });
-        watchComparison(source.id).catch(showPollingError);
-      } catch (error) {
-        $("compare-candidate").disabled = false;
-        setLog([error.message]);
-      }
-    });
-
-    function resolutionLabel(value) {
-      return value && value[0] && value[1] ? `${value[0]}x${value[1]}` : "ukjent";
-    }
-
-    function renderComparison(comparison) {
-      const labels = {
-        likely_match: "Sannsynlig samme video",
-        uncertain: "Usikkert treff",
-        different: "Trolig forskjellig video",
-      };
-      $("comparison-title").textContent = `${labels[comparison.result] || "Ukjent"} · ${Math.round(comparison.score * 100)}%`;
-      const duration = comparison.duration_difference === null ? "ukjent" : `${comparison.duration_difference}s`;
-      $("comparison-detail").textContent = `Rådgivende resultat · varighetsforskjell ${duration} · original ${resolutionLabel(comparison.source_resolution)} · kandidat ${resolutionLabel(comparison.candidate_resolution)}`;
-      $("comparison-result").hidden = false;
-    }
-
-    async function watchComparison(id) {
-      clearInterval(state.poll);
-      const tick = async () => {
-        const response = await apiFetch(`/api/sources/${id}`);
-        const source = await response.json();
-        if (!response.ok) throw new Error(source.error || "Kildejobben ble ikke funnet");
-        setLog(source.logs);
-        if (source.comparison_status === "done") {
-          clearInterval(state.poll);
-          renderComparison(source.comparison);
-          $("compare-candidate").disabled = false;
-        } else if (source.comparison_status === "error") {
-          clearInterval(state.poll);
-          $("source-error").textContent = source.comparison_error;
-          $("compare-candidate").disabled = false;
-        }
-      };
-      state.poll = setInterval(() => tick().catch(showPollingError), 1000);
+    async function watchJob(id) {
+     clearInterval(state.poll);
+     const tick = async () => {
+       const response = await apiFetch(`/api/jobs/${id}`);
+       const job = await response.json();
+       if (!response.ok) throw new Error(job.error || "Job not found");
+        $("output-meta").textContent = job.status.charAt(0).toUpperCase() + job.status.slice(1);
+       setLog(job.logs);
+       if (job.status === "done") {
+         clearInterval(state.poll);
+          setDerivedDisabled(false);
+         $("result").hidden = false;
+         $("result-name").textContent = job.output_name;
+         $("result-path").textContent = "Enhanced synthetic copy";
+         $("download").href = localFileUrl(job.output_url, true);
+         outputFrames.setFps(state.outputFps);
+         $("output-video").src = localFileUrl(job.output_url);
+         $("output-video").load();
+          $("output-empty").hidden = true;
+          $("workspace-status").textContent = "Enhanced file ready to download.";
+       }
+       if (job.status === "error") {
+         clearInterval(state.poll);
+          setDerivedDisabled(false);
+          $("output-empty").textContent = job.error || "The enhanced copy could not be created.";
+       }
+     };
+     state.poll = setInterval(() => tick().catch((error) => {
+       showPollingError(error);
+        setDerivedDisabled(false);
+     }), 1000);
       await tick();
     }
 
-    function releaseObjectUrl() {
-      if (!state.objectUrl) return;
-      URL.revokeObjectURL(state.objectUrl);
-      state.objectUrl = null;
-    }
-
-    $("file").addEventListener("change", () => {
-      const file = $("file").files[0];
-      releaseObjectUrl();
-      state.file = file || null;
-      if (!file) return;
-      $("file-hint").textContent = `${file.name} • ${(file.size / 1024 / 1024).toFixed(1)} MB`;
-      $("output-name").value = safeOutputName(file.name);
-      sourceFrames.setFps(30);
-      state.objectUrl = URL.createObjectURL(file);
-      $("source-video").src = state.objectUrl;
-      $("source-video").load();
-      $("input-meta").textContent = file.type || "local file";
-    });
-
-    $("start").addEventListener("click", async () => {
-      if (!state.file) {
-        setLog(["Choose a video first."]);
-        return;
-      }
-
-      $("start").disabled = true;
-      $("result").hidden = true;
-      $("output-video").removeAttribute("src");
-      $("output-video").load();
-      setLog(["Uploading local file to the local enhancer..."]);
-
-      const params = new URLSearchParams({
-        preset: $("preset").value,
-        codec: $("codec").value,
-        output: $("output-name").value || safeOutputName(state.file.name),
-      });
-      if ($("fps").value) params.set("fps", $("fps").value);
-      if ($("scale").value) params.set("scale", $("scale").value);
-      if ($("no-upscale").checked) params.set("no_upscale", "1");
-      if ($("no-interpolate").checked) params.set("no_interpolate", "1");
-      state.outputFps = $("no-interpolate").checked
-        ? sourceFrames.fps()
-        : Number($("fps").value) || state.presetFps[$("preset").value] || 30;
-
-      try {
-        const response = await apiFetch(`/api/jobs?${params}`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/octet-stream",
-            "x-file-name": state.file.name,
-          },
-          body: state.file,
-        });
-        const job = await response.json();
-        if (!response.ok) throw new Error(job.error || "Export failed to start");
-        watchJob(job.id, false).catch(showPollingError);
-      } catch (error) {
-        setLog([error.message]);
-        $("start").disabled = false;
-      }
-    });
-
-    async function watchJob(id, fromSource) {
-      clearInterval(state.poll);
-      const tick = async () => {
-        const response = await apiFetch(`/api/jobs/${id}`);
-        const job = await response.json();
-        if (!response.ok) throw new Error(job.error || "Job not found");
-        $("output-meta").textContent = job.status;
-        setLog(job.logs);
-        if (job.status === "done") {
-          clearInterval(state.poll);
-          $("start").disabled = false;
-          if (fromSource) setDerivedDisabled(false);
-          $("result").hidden = false;
-          $("result-name").textContent = job.output_name;
-          $("result-path").textContent = "Enhanced synthetic copy";
-          $("download").href = localFileUrl(job.output_url, true);
-          outputFrames.setFps(state.outputFps);
-          $("output-video").src = localFileUrl(job.output_url);
-          $("output-video").load();
-        }
-        if (job.status === "error") {
-          clearInterval(state.poll);
-          $("start").disabled = false;
-          if (fromSource) setDerivedDisabled(false);
-        }
-      };
-      state.poll = setInterval(() => tick().catch((error) => {
-        showPollingError(error);
-        if (fromSource) setDerivedDisabled(false);
-      }), 1000);
-      await tick();
-    }
-
-    function resetInterface() {
-      clearInterval(state.poll);
-      state.poll = null;
-      state.file = null;
-      state.sourceId = null;
-      releaseObjectUrl();
-      $("file").value = "";
-      $("file-hint").textContent = "Ingen fil valgt";
-      $("source-url").value = "";
-      $("candidate-url").value = "";
-      $("candidate-url").disabled = true;
-      $("compare-candidate").disabled = true;
-      $("source-result").hidden = true;
-      $("source-download-result").hidden = true;
-      $("result").hidden = true;
-      $("source-media").hidden = true;
-      $("keyframes").hidden = true;
-      $("comparison-result").hidden = true;
-      $("source-error").textContent = "";
-      $("input-meta").textContent = "Ikke lastet";
-      $("output-meta").textContent = "Ikke startet";
-      for (const name of ["source", "output"]) {
-        const video = $(`${name}-video`);
-        video.removeAttribute("src");
+   function resetInterface() {
+     clearInterval(state.poll);
+     state.poll = null;
+     state.sourceId = null;
+     $("source-url").value = "";
+     $("source-result").hidden = true;
+     $("result").hidden = true;
+     $("source-media").hidden = true;
+     $("source-error").textContent = "";
+      $("input-meta").textContent = "Not loaded";
+      $("output-meta").textContent = "Not started";
+      $("source-empty").hidden = false;
+      $("source-empty").textContent = "Fetching the best available source...";
+      $("output-empty").hidden = false;
+      $("output-empty").textContent = "Choose an enhancement after the source is ready.";
+     for (const name of ["source", "output"]) {
+       const video = $(`${name}-video`);
+       video.removeAttribute("src");
         video.load();
       }
-      sourceFrames.reset();
-      outputFrames.reset();
-      setDerivedDisabled(true);
-      setLog(["Lokale arbeidsfiler er slettet."]);
-    }
+     sourceFrames.reset();
+     outputFrames.reset();
+     setDerivedDisabled(true);
+      showWorkspace(false);
+      setLog(["Temporary local files cleared."]);
+   }
 
     $("clear-session").addEventListener("click", async () => {
       $("clear-session").disabled = true;
@@ -1426,10 +1727,18 @@ HTML = """<!doctype html>
       }
     });
 
-    $("privacy-open").addEventListener("click", () => $("privacy-dialog").showModal());
-    $("privacy-close").addEventListener("click", () => $("privacy-dialog").close());
+    document.querySelectorAll("[data-dialog]").forEach((button) => {
+      button.addEventListener("click", () => $(button.dataset.dialog).showModal());
+    });
+    document.querySelectorAll("[data-close-dialog]").forEach((button) => {
+      button.addEventListener("click", () => $(button.dataset.closeDialog).close());
+    });
 
-    loadConfig().catch((error) => setLog([error.message]));
+    loadConfig().catch((error) => {
+      setEngineStatus(false, "Local session unavailable");
+      $("source-error").textContent = error.message;
+      setLog([error.message]);
+    });
   </script>
 </body>
 </html>
@@ -1451,19 +1760,14 @@ class Job:
 class SourceJob:
     id: str
     url: str
-    info: dict[str, Any]
     directory: Path
-    status: str = "inspected"
+    status: str = "queued"
     original_path: Path | None = None
     media: dict[str, Any] = field(default_factory=dict)
     format_id: str = ""
     operation: str = ""
     error: str = ""
     logs: list[str] = field(default_factory=list)
-    keyframes: list[Path] = field(default_factory=list)
-    comparison_status: str = "idle"
-    comparison: dict[str, Any] = field(default_factory=dict)
-    comparison_error: str = ""
 
 
 JOBS: dict[str, Job] = {}
@@ -1478,11 +1782,10 @@ def clear_session(work_dir: Path, *, force: bool = False) -> None:
         busy = any(job.status in {"queued", "running"} for job in JOBS.values())
         busy = busy or any(
             source.status in {"queued", "downloading"}
-            or source.comparison_status in {"queued", "running"}
             for source in SOURCES.values()
         )
         if busy and not force:
-            raise ValueError("Vent til aktive jobber er ferdige f\u00f8r du sletter.")
+            raise ValueError("Wait for active jobs to finish before clearing files.")
         JOBS.clear()
         SOURCES.clear()
 
@@ -1520,7 +1823,7 @@ def build_options(params: dict[str, list[str]]) -> EnhancementOptions:
     """Build core enhancement options from web query parameters."""
 
     codec = params.get("codec", ["libx264"])[0]
-    if codec not in supported_video_codecs():
+    if codec not in SUPPORTED_VIDEO_CODECS:
         raise ValueError(f"Unknown codec: {codec}")
     return EnhancementOptions(
         preset=get_preset(params.get("preset", ["balanced"])[0]),
@@ -1551,14 +1854,14 @@ def run_job(job: Job) -> None:
         job.output_path.unlink(missing_ok=True)
         with LOCK:
             job.status = "error"
-            job.error = "Eksporten overskred tidsgrensen på seks timer."
+            job.error = "Export exceeded the six-hour time limit."
             job.logs.append(job.error)
         return
     except OSError:
         job.output_path.unlink(missing_ok=True)
         with LOCK:
             job.status = "error"
-            job.error = "FFmpeg kunne ikke starte."
+            job.error = "FFmpeg could not start."
             job.logs.append(job.error)
         return
 
@@ -1594,49 +1897,15 @@ def job_payload(job: Job) -> dict[str, Any]:
     }
 
 
-def _safe_source_info(info: dict[str, Any]) -> dict[str, Any]:
-    formats = []
-    for source_format in info.get("formats", []):
-        formats.append(
-            {
-                key: source_format.get(key)
-                for key in (
-                    "width",
-                    "height",
-                    "fps",
-                    "tbr",
-                    "vcodec",
-                    "acodec",
-                    "ext",
-                    "format_ids",
-                    "mirrors",
-                )
-            }
-        )
-    return {
-        key: info.get(key)
-        for key in ("id", "platform", "title", "uploader", "duration")
-    } | {"formats": formats}
-
-
 def source_payload(job: SourceJob) -> dict[str, Any]:
     payload = {
         "id": job.id,
         "status": job.status,
         "error": job.error,
         "logs": job.logs,
-        "info": _safe_source_info(job.info),
         "media": job.media,
         "format_id": job.format_id,
         "operation": job.operation,
-        "searches": search_links(job.info),
-        "keyframes": [
-            f"/files/sources/{job.id}/frames/{index}"
-            for index, _ in enumerate(job.keyframes, start=1)
-        ],
-        "comparison_status": job.comparison_status,
-        "comparison": job.comparison,
-        "comparison_error": job.comparison_error,
     }
     if job.original_path:
         payload.update(
@@ -1656,7 +1925,7 @@ def create_enhancement_job(
 ) -> Job:
     with LOCK:
         if any(job.status in {"queued", "running"} for job in JOBS.values()):
-            raise ValueError("Vent til den aktive eksporten er ferdig.")
+            raise ValueError("Wait for the active export to finish.")
         original = safe_filename(original_name)
         job_id = uuid.uuid4().hex[:12]
         job_dir = work_dir / job_id
@@ -1688,12 +1957,12 @@ def create_enhancement_job(
     return job
 
 
-def run_source_download(job: SourceJob, format_id: str) -> None:
+def run_source_download(job: SourceJob) -> None:
     with LOCK:
         job.status = "downloading"
         job.logs.append("Original source download started.")
     try:
-        result = download_source(job.url, job.directory, format_id)
+        result = download_source(job.url, job.directory)
     except (OSError, SourceError) as exc:
         shutil.rmtree(job.directory, ignore_errors=True)
         with LOCK:
@@ -1701,102 +1970,13 @@ def run_source_download(job: SourceJob, format_id: str) -> None:
             job.error = str(exc)
             job.logs.append(str(exc))
         return
-    keyframes: list[Path] = []
-    if result["media"].get("duration"):
-        try:
-            keyframes = extract_keyframes(result["path"], job.directory / "frames")
-        except SourceError as exc:
-            with LOCK:
-                job.logs.append(f"Keyframes unavailable: {exc}")
     with LOCK:
         job.original_path = result["path"]
         job.media = result["media"]
         job.format_id = result["format_id"]
         job.operation = result["operation"]
-        job.keyframes = keyframes
         job.status = "done"
         job.logs.append("Original source download finished.")
-
-
-def _lowest_candidate_format(info: dict[str, Any]) -> str:
-    eligible = [
-        source_format
-        for source_format in info.get("formats", [])
-        if isinstance(source_format.get("height"), (int, float))
-        and source_format["height"] >= 360
-        and source_format.get("format_ids")
-    ]
-    if not eligible:
-        raise SourceError(
-            "The candidate has no comparable video variant at 360p or higher."
-        )
-    selected = min(
-        eligible,
-        key=lambda source_format: (
-            (source_format.get("width") or 0) * (source_format.get("height") or 0),
-            source_format.get("tbr") or 0,
-        ),
-    )
-    return str(selected["format_ids"][0])
-
-
-def _difference(left: Any, right: Any) -> float | None:
-    if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
-        return None
-    return round(abs(float(left) - float(right)), 3)
-
-
-def compare_candidate(job: SourceJob, url: str) -> dict[str, Any]:
-    if not job.original_path:
-        raise SourceError("Download the original source before comparing it.")
-    info = inspect_source(url)
-    format_id = _lowest_candidate_format(info)
-    job.directory.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix="candidate-", dir=job.directory
-    ) as temporary:
-        candidate = download_source(url, Path(temporary), format_id)
-        comparison = compare_hashes(
-            sample_frame_hashes(job.original_path),
-            sample_frame_hashes(candidate["path"]),
-        )
-    candidate_media = candidate["media"]
-    comparison.update(
-        {
-            "duration_difference": _difference(
-                job.media.get("duration"), candidate_media.get("duration")
-            ),
-            "source_resolution": [job.media.get("width"), job.media.get("height")],
-            "candidate_resolution": [
-                candidate_media.get("width"),
-                candidate_media.get("height"),
-            ],
-            "candidate": {
-                key: info.get(key) for key in ("id", "platform", "title", "uploader")
-            },
-            "candidate_format_id": format_id,
-        }
-    )
-    return comparison
-
-
-def run_source_comparison(job: SourceJob, url: str) -> None:
-    with LOCK:
-        job.comparison_status = "running"
-        job.comparison_error = ""
-        job.logs.append("Candidate comparison started.")
-    try:
-        comparison = compare_candidate(job, url)
-    except (OSError, SourceError) as exc:
-        with LOCK:
-            job.comparison_status = "error"
-            job.comparison_error = str(exc)
-            job.logs.append(str(exc))
-        return
-    with LOCK:
-        job.comparison = comparison
-        job.comparison_status = "done"
-        job.logs.append("Candidate comparison finished.")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1880,13 +2060,17 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as exc:
             raise ValueError("Invalid JSON request body.") from exc
         if not isinstance(payload, dict):
-            raise ValueError("JSON request body must be an object.")
+            raise ValueError("JSON request body must be an object.")  # noqa: TRY004
         return payload
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         token_required = parsed.path.startswith(("/api/", "/files/"))
         if not self.allow_request(parsed, token_required=token_required):
+            return
+        if parsed.path == "/favicon.ico":
+            self.send_response(HTTPStatus.NO_CONTENT.value)
+            self.end_headers()
             return
         if parsed.path == "/":
             self.response_nonce = secrets.token_urlsafe(18)
@@ -1905,15 +2089,7 @@ class Handler(BaseHTTPRequestHandler):
                 ffmpeg = "not found"
             self.send_json(
                 HTTPStatus.OK,
-                {
-                    "presets": available_presets(),
-                    "preset_fps": {
-                        name: get_preset(name).target_fps
-                        for name in available_presets()
-                    },
-                    "codecs": supported_video_codecs(),
-                    "ffmpeg": ffmpeg,
-                },
+                {"ffmpeg": ffmpeg},
             )
             return
         if parsed.path.startswith("/api/sources/"):
@@ -1960,31 +2136,37 @@ class Handler(BaseHTTPRequestHandler):
                 clear_session(self.work_dir)
                 self.send_json(HTTPStatus.OK, {"cleared": True})
                 return
-            if parsed.path == "/api/sources/inspect":
-                self.send_json(HTTPStatus.OK, self.inspect_source_job(self.read_json()))
+            if parsed.path == "/api/sources/download":
+                self.send_json(
+                    HTTPStatus.ACCEPTED, self.create_source_job(self.read_json())
+                )
                 return
             if parsed.path.startswith("/api/sources/"):
                 self.handle_source_action(parsed.path, self.read_json())
                 return
-            if parsed.path == "/api/jobs":
-                payload = self.create_job(parse_qs(parsed.query))
-                self.send_json(HTTPStatus.OK, payload)
-                return
         except (OSError, SourceError, ValueError, VideoEnhancerError) as exc:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
-        if parsed.path != "/api/jobs":
-            self.send_error(HTTPStatus.NOT_FOUND.value)
-            return
+        self.send_error(HTTPStatus.NOT_FOUND.value)
 
-    def inspect_source_job(self, body: dict[str, Any]) -> dict[str, Any]:
+    def create_source_job(self, body: dict[str, Any]) -> dict[str, Any]:
         url = str(body.get("url", "")).strip()
-        info = inspect_source(url)
+        validate_social_url(url)
         source_id = uuid.uuid4().hex[:12]
         directory = self.work_dir / f"source-{source_id}"
-        source = SourceJob(source_id, url, info, directory)
+        source = SourceJob(source_id, url, directory)
         with LOCK:
             SOURCES[source_id] = source
+        try:
+            threading.Thread(
+                target=run_source_download,
+                args=(source,),
+                daemon=True,
+            ).start()
+        except Exception:
+            with LOCK:
+                SOURCES.pop(source_id, None)
+            raise
         return source_payload(source)
 
     def handle_source_action(self, request_path: str, body: dict[str, Any]) -> None:
@@ -1997,20 +2179,6 @@ class Handler(BaseHTTPRequestHandler):
             source = SOURCES.get(source_id)
         if not source:
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Source job not found"})
-            return
-        if action == "download":
-            if source.status in {"queued", "downloading"}:
-                raise ValueError("Source download is already running.")
-            format_id = str(body.get("format_id", "")).strip()
-            with LOCK:
-                source.status = "queued"
-                source.error = ""
-            threading.Thread(
-                target=run_source_download,
-                args=(source, format_id),
-                daemon=True,
-            ).start()
-            self.send_json(HTTPStatus.ACCEPTED, source_payload(source))
             return
         if action == "enhance":
             if source.status != "done" or not source.original_path:
@@ -2029,63 +2197,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             self.send_json(HTTPStatus.ACCEPTED, job_payload(job))
             return
-        if action == "compare":
-            if source.status != "done" or not source.original_path:
-                raise ValueError("Download the original source before comparing it.")
-            if source.comparison_status in {"queued", "running"}:
-                raise ValueError("A candidate comparison is already running.")
-            url = str(body.get("url", "")).strip()
-            validate_social_url(url)
-            with LOCK:
-                source.comparison_status = "queued"
-                source.comparison = {}
-                source.comparison_error = ""
-            threading.Thread(
-                target=run_source_comparison,
-                args=(source, url),
-                daemon=True,
-            ).start()
-            self.send_json(HTTPStatus.ACCEPTED, source_payload(source))
-            return
         self.send_error(HTTPStatus.NOT_FOUND.value)
-
-    def create_job(self, params: dict[str, list[str]]) -> dict[str, Any]:
-        content_type = self.headers.get("content-type", "").split(";", 1)[0].lower()
-        if content_type != "application/octet-stream":
-            raise ValueError("Video uploads require application/octet-stream.")
-        length = int(self.headers.get("content-length", "0"))
-        if length <= 0:
-            raise ValueError("No input video received.")
-        if length > MAX_VIDEO_BODY:
-            self.close_connection = True
-            raise ValueError("Videoen er st\u00f8rre enn grensen p\u00e5 8 GiB.")
-
-        original = safe_filename(self.headers.get("x-file-name", "input.mp4"))
-        suffix = Path(original).suffix.lower()
-        if suffix not in VIDEO_SUFFIXES:
-            suffix = ".mp4"
-
-        job_id = uuid.uuid4().hex[:12]
-        job_dir = self.work_dir / job_id
-        job_dir.mkdir(parents=True, exist_ok=False)
-        input_path = job_dir / f"input{suffix}"
-        try:
-            remaining = length
-            with input_path.open("wb") as file:
-                while remaining:
-                    chunk = self.rfile.read(min(1024 * 1024, remaining))
-                    if not chunk:
-                        raise ValueError(
-                            "Upload ended before the full video was received."
-                        )
-                    file.write(chunk)
-                    remaining -= len(chunk)
-            return job_payload(
-                create_enhancement_job(input_path, original, params, self.work_dir)
-            )
-        except Exception:
-            shutil.rmtree(job_dir, ignore_errors=True)
-            raise
 
     def serve_source_file(self, request_path: str, *, attachment: bool = False) -> None:
         parts = request_path.strip("/").split("/")
@@ -2101,14 +2213,6 @@ class Handler(BaseHTTPRequestHandler):
                     if file and file.suffix.lower() in {".mp4", ".m4v"}
                     else "application/octet-stream"
                 )
-            elif len(parts) == 5 and parts[3] == "frames" and parts[4].isdigit():
-                index = int(parts[4]) - 1
-                file = (
-                    source.keyframes[index]
-                    if source and 0 <= index < len(source.keyframes)
-                    else None
-                )
-                content_type = "image/jpeg"
             else:
                 file = None
                 content_type = "application/octet-stream"
@@ -2212,7 +2316,7 @@ def _serve(host: str, port: int, work_dir: Path, *, open_browser: bool = False) 
     work_dir.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((host, port), Handler)
     server.daemon_threads = True
-    url = f"http://{host}:{port}/#token={Handler.session_token}"
+    url = f"http://{host}:{server.server_port}/#token={Handler.session_token}"
     print(f"Video Enhancer Web running at {url}")
     if open_browser:
         webbrowser.open(url)
@@ -2232,7 +2336,7 @@ def run_server(
     open_browser: bool = False,
 ) -> None:
     if host.lower().rstrip(".") not in BIND_HOSTS:
-        raise ValueError("Video Enhancer kan bare bindes til denne maskinen.")
+        raise ValueError("Video Enhancer can only bind to this device.")
     with tempfile.TemporaryDirectory(prefix="video-enhancer-") as temporary:
         _serve(host, port, Path(temporary), open_browser=open_browser)
 

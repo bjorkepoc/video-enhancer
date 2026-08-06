@@ -13,7 +13,8 @@ The product is a local Mac application with a browser UI on `127.0.0.1`.
 | Application cloud backend | None |
 | Operator database or media storage | None |
 | Browser cookies, localStorage, or IndexedDB | None |
-| Analytics, ads, pixels, or remote scripts | None |
+| Advertising | Static bundled project notice seeking a direct sponsor |
+| Analytics, ad-network code, pixels, or remote scripts | None |
 | Platform authentication | None; public anonymous links only |
 | Working files | Process-specific temporary directory on the user's Mac |
 | User export | Explicit browser attachment download |
@@ -49,10 +50,15 @@ model requires a fresh privacy and legal review before release.
 
 ## Advertising And Funding
 
-The localhost application is intentionally ad-free. Do not embed AdSense or
-another remote ad network in it: doing so would distribute advertising through
-desktop software, weaken the current CSP, and make the no-tracking disclosure
-false.
+The localhost application includes a static, clearly labelled house
+advertisement seeking a direct sponsor. It is bundled with the application and
+has no remote creative, impression request, cookie, identifier, pixel, or click
+tracking. Its contact button opens the in-app contact information; the external
+inquiry begins only after the visitor chooses a GitHub link.
+
+Do not embed AdSense or another remote ad network in the app: doing so would
+distribute advertising through desktop software, weaken the current CSP, and
+make the no-tracking disclosure false.
 
 AdSense is not a launch option for this product until platform permission and
 publisher-policy review are complete. Google's publisher policies restrict ads
@@ -67,10 +73,11 @@ TCF v2.3. Accept and reject must be equally prominent on the same layer,
 withdrawal must be easy, and no non-essential storage or ad request may happen
 before valid consent. See Google's European consent requirements below.
 
-A direct sponsor inside the app is the only technically local-first option:
-fixed bundled text or artwork plus a normal HTTPS link, clearly labelled, with
-no remote creative, pixel, identifier, or click beacon. Add it only when an
-actual sponsor, licensed creative, destination, and campaign period exist.
+A direct sponsor inside the app is the only technically local-first paid
+option: fixed bundled text or artwork plus a normal HTTPS link, clearly
+labelled, with no remote creative, pixel, identifier, or click beacon. Replace
+the current house advertisement only when an actual sponsor, licensed creative,
+destination, and campaign period exist.
 
 ## Content Rights And Platform Terms
 
@@ -167,8 +174,9 @@ Local application release:
 - downloaded media resolution/FPS/codec are verified from the saved file;
 - attachment download, byte ranges, 1 FPS, frame stepping, zoom, pan, reset,
   clear-session, desktop, and mobile layouts pass browser QA;
-- no cookies, browser storage, remote scripts, ads, analytics, or
-  non-loopback listeners are present;
+- no cookies, browser storage, remote scripts, ad-network code, analytics, or
+  non-loopback listeners are present; the bundled house advertisement has no
+  remote request or tracking;
 - security report path and dependency-update automation are enabled.
 
 Public distribution release:
@@ -176,10 +184,13 @@ Public distribution release:
 - the exact tagged commit passes CI and produces verified release artifacts;
 - authorized TikTok and Instagram flows pass end to end;
 - platform permission or targeted legal advice covers the chosen release;
-- operator identity and privacy, copyright, and security contacts are public;
+- verified legal operator identity, public email and business address are
+  published; the current advertising and security GitHub routes are not a
+  substitute for these;
 - a consumer Mac build is Developer ID signed and notarized, or the release is
   clearly limited to a technical Python-package audience;
-- any advertising remains disabled until its separate gates above pass.
+- programmatic or personalized advertising remains disabled until its separate
+  gates above pass; a static tracking-free house or direct sponsor ad is allowed.
 
 ## Primary Sources
 

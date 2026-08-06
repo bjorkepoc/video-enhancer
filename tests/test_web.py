@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from html.parser import HTMLParser
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
@@ -95,6 +96,7 @@ def test_web_ui_contains_source_first_controls() -> None:
         'id="source-zoom"',
         'id="output-zoom"',
         'id="clear-session"',
+        'id="contact-dialog"',
         'id="privacy-dialog"',
         'id="terms-dialog"',
     ):
@@ -115,7 +117,66 @@ def test_web_ui_contains_source_first_controls() -> None:
         assert label in HTML
     for label in ("Privacy at a glance", "Terms of use"):
         assert label in HTML
-    assert "Advertisement" not in HTML
+    for label in (
+        'aria-label="Advertisement"',
+        "Sponsor Video Enhancer",
+        "Advertise here",
+        "Open advertising inquiry",
+        "public advertising inquiry",
+        "A private privacy and copyright contact is not published yet",
+        "Report security privately",
+        "static project notice",
+    ):
+        assert label in HTML
+    class ResourceAuditParser(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.remote_resources: list[tuple[str, str, str]] = []
+            self.external_links: list[dict[str, str | None]] = []
+            self.ping_tags: list[str] = []
+
+        def handle_starttag(
+            self, tag: str, attrs: list[tuple[str, str | None]]
+        ) -> None:
+            values = dict(attrs)
+            if "ping" in values:
+                self.ping_tags.append(tag)
+            for name in (
+                "src",
+                "srcset",
+                "href",
+                "xlink:href",
+                "poster",
+                "data",
+                "action",
+                "formaction",
+            ):
+                value = values.get(name) or ""
+                remote = value.lstrip().lower().startswith(
+                    ("http://", "https://", "//")
+                )
+                if not remote:
+                    continue
+                if tag == "a" and name == "href":
+                    self.external_links.append(values)
+                else:
+                    self.remote_resources.append((tag, name, value))
+
+    audit = ResourceAuditParser()
+    audit.feed(HTML)
+    assert not audit.remote_resources
+    assert not audit.ping_tags
+    assert audit.external_links
+    for link in audit.external_links:
+        assert (link["href"] or "").lower().startswith("https://")
+        assert (link.get("target") or "").lower() == "_blank"
+        rel = set((link.get("rel") or "").lower().split())
+        assert {"noopener", "noreferrer"} <= rel
+    assert not re.findall(
+        r'''(?:url\(\s*|@import\s+(?:url\(\s*)?)["']?(?:https?:)?//''',
+        HTML,
+        re.IGNORECASE,
+    )
     assert 'postJSON("/api/sources/download", { url })' in HTML
     assert "inspect-source" not in HTML
     assert "compare-candidate" not in HTML

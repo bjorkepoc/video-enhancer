@@ -60,13 +60,18 @@ Paste a TikTok or Instagram link to download the best available source. Source
 access is anonymous: the app never reads browser cookies or handles platform
 login sessions.
 
-The local UI loads no ads, analytics, cookies, or third-party code. TikTok or
+The local UI loads no ad-network code, analytics, cookies, pixels, or remote
+creative. It includes one static **Advertise here** project notice that opens a
+public GitHub contact request. Video Enhancer does not track the impression or
+click; GitHub receives the request after the visitor chooses its link. TikTok or
 Instagram is contacted only after a link action. See
 [the launch/privacy/security checklist](docs/launch-privacy-security.md).
 
-Advertising networks do not belong inside this localhost app. Any future
-ad-network advertising must live on a separate public site and pass the platform,
-publisher-policy, privacy, and consent gates in that checklist first.
+Advertising networks do not belong inside this localhost app. A paid direct
+sponsor may later replace the project notice with clearly labelled, bundled
+text or licensed artwork and a normal HTTPS link. Any ad-network advertising
+must live on a separate public site and pass the platform, publisher-policy,
+privacy, and consent gates in that checklist first.
 
 ## macOS App Build
 

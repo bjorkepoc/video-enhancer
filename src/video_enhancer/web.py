@@ -665,6 +665,36 @@ HTML = """<!doctype html>
       font-weight: 650;
     }
 
+    .house-ad {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 28px;
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+    .ad-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .house-ad strong { display: block; margin-top: 2px; font-size: 16px; }
+    .house-ad p { margin-top: 2px; color: var(--muted); font-size: 14px; }
+    .house-ad button {
+      width: auto;
+      min-height: 44px;
+      border: 1px solid var(--line-strong);
+      background: #fff;
+      color: var(--accent);
+      white-space: nowrap;
+    }
+    .house-ad button:hover { border-color: var(--accent); background: var(--accent-soft); }
+
     .workspace {
       padding: 0 0 26px;
       border-top: 1px solid var(--line);
@@ -962,6 +992,20 @@ HTML = """<!doctype html>
       color: #fff;
     }
     .dialog-actions button:hover { background: var(--accent-dark); }
+    .contact-link {
+      display: inline-flex;
+      min-height: 44px;
+      align-items: center;
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 0 14px;
+      color: var(--accent);
+      font-size: 14px;
+      font-weight: 760;
+      text-decoration: none;
+    }
+    .contact-link:hover { border-color: var(--accent); background: var(--accent-soft); }
 
     @media (max-width: 980px) {
       .site-header, main { display: block; padding: 0; }
@@ -987,6 +1031,8 @@ HTML = """<!doctype html>
       .url-control input, .primary-button { min-height: 58px; }
       .primary-button { width: 100%; }
       .trust-line { align-items: flex-start; font-size: 15px; }
+      .house-ad { align-items: flex-start; flex-direction: column; gap: 14px; }
+      .house-ad button { width: 100%; }
       .workspace-empty { min-height: 184px; padding-block: 34px; }
       .workspace-heading { display: block; }
       .workspace-status { margin-top: 10px; }
@@ -1034,6 +1080,7 @@ HTML = """<!doctype html>
       </div>
       <div class="header-actions">
         <nav class="legal-nav" aria-label="Legal information">
+          <button class="header-link" type="button" data-dialog="contact-dialog">Contact</button>
           <button class="header-link" type="button" data-dialog="privacy-dialog">Privacy</button>
           <button class="header-link" type="button" data-dialog="terms-dialog">Terms</button>
         </nav>
@@ -1068,6 +1115,15 @@ HTML = """<!doctype html>
       </p>
       <p class="source-error" id="source-error" role="alert" aria-live="assertive"></p>
     </section>
+
+    <aside class="house-ad app-container" aria-label="Advertisement">
+      <div>
+        <span class="ad-label">Advertisement</span>
+        <strong>Sponsor Video Enhancer</strong>
+        <p>Reach creators who work with social video through a direct, tracking-free placement.</p>
+      </div>
+      <button type="button" data-dialog="contact-dialog">Advertise here</button>
+    </aside>
 
     <section class="workspace app-container" aria-labelledby="workspace-title">
       <div class="workspace-empty" id="workspace-empty">
@@ -1190,6 +1246,7 @@ HTML = """<!doctype html>
     <div class="footer-inner app-container">
       <p>Processing runs through a local app on this device. Working files are temporary and can be cleared at any time.</p>
       <div class="footer-actions">
+        <button type="button" data-dialog="contact-dialog">Contact</button>
         <button type="button" data-dialog="privacy-dialog">Privacy</button>
         <button type="button" data-dialog="terms-dialog">Terms</button>
         <button class="danger-button" id="clear-session" type="button">
@@ -1200,6 +1257,34 @@ HTML = """<!doctype html>
     </div>
   </footer>
 
+  <dialog id="contact-dialog" aria-labelledby="contact-title">
+    <div class="dialog-body policy-content">
+      <div class="dialog-heading">
+        <div><p class="dialog-kicker">Public project contact</p><h2 id="contact-title">Contact Video Enhancer</h2></div>
+        <button class="icon-button" type="button" data-close-dialog="contact-dialog" aria-label="Close contact information">&times;</button>
+      </div>
+      <section>
+        <h3>Advertising</h3>
+        <p>Interested in a clearly labelled, direct sponsor placement with no tracking pixel or ad network? Open a public advertising inquiry on GitHub. Do not include personal data or confidential campaign information.</p>
+        <a class="contact-link" href="https://github.com/bjorkepoc/video-enhancer/issues/new?title=Advertising%20inquiry" target="_blank" rel="noopener noreferrer">Open advertising inquiry</a>
+      </section>
+      <section>
+        <h3>Privacy and copyright</h3>
+        <p>A private privacy and copyright contact is not published yet. Do not put personal data, private links, access tokens, or media in a public GitHub issue.</p>
+      </section>
+      <section>
+        <h3>Security</h3>
+        <p>Potential vulnerabilities should be reported privately through GitHub's security advisory form.</p>
+        <a class="contact-link" href="https://github.com/bjorkepoc/video-enhancer/security/advisories/new" target="_blank" rel="noopener noreferrer">Report security privately</a>
+      </section>
+      <section>
+        <h3>Maintainer</h3>
+        <p>Video Enhancer is maintained publicly by <a href="https://github.com/bjorkepoc" target="_blank" rel="noopener noreferrer">bjorkepoc</a>.</p>
+      </section>
+      <div class="dialog-actions"><button type="button" data-close-dialog="contact-dialog">Done</button></div>
+    </div>
+  </dialog>
+
   <dialog id="privacy-dialog" aria-labelledby="privacy-title">
     <div class="dialog-body policy-content">
       <div class="dialog-heading">
@@ -1208,8 +1293,12 @@ HTML = """<!doctype html>
       </div>
       <section>
         <h3>Local processing, no account</h3>
-        <p>Video Enhancer runs through a local app on this device. There is no account, analytics, advertising, or operator-run cloud storage.</p>
+        <p>Video Enhancer runs through a local app on this device. There is no account, analytics, ad network, or operator-run cloud storage.</p>
         <p>Submitted links are held in the local app's memory while it is running. Source videos and generated files are written to a temporary folder on this device so they can be processed and previewed.</p>
+      </section>
+      <section>
+        <h3>House advertisement</h3>
+        <p>The app includes a static project notice seeking a direct sponsor. It is bundled with the app and uses no remote creative, cookie, identifier, impression pixel, or click tracking. Opening its contact link takes you to GitHub, which applies its own terms and privacy policy.</p>
       </section>
       <section>
         <h3>Deletion and downloads</h3>

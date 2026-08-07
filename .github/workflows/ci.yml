@@ -15,8 +15,8 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package
@@ -34,20 +34,24 @@ jobs:
           python -m twine check dist/*.whl dist/*.tar.gz
 
   security:
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install package and audit tools
-        run: python -m pip install -e ".[macos]" bandit pip-audit
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.21"
       - name: Audit Python dependencies
         run: |
-          python -m pip freeze --exclude-editable > audit-requirements.txt
-          python -m pip_audit -r audit-requirements.txt --strict --progress-spinner off
+          uv export --locked --no-dev --extra macos --group release \
+            --no-emit-project --format requirements-txt \
+            --output-file audit-requirements.txt
+          uvx --from pip-audit==2.10.1 pip-audit \
+            -r audit-requirements.txt --strict --progress-spinner off
       - name: Scan Python source
-        run: bandit -q -r src --skip B404,B603
+        run: uvx --from bandit==1.9.4 bandit -q -r src --skip B404,B603
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -56,12 +60,19 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.21"
       - name: Verify tag matches package version
         run: python -c 'import os, pathlib, tomllib; version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]; assert os.environ["GITHUB_REF_NAME"] == f"v{version}"'
+      - name: Install locked release dependencies
+        run: |
+          uv sync --locked --no-dev --extra macos --group release --no-install-project
+          uv sync --locked --no-dev --extra macos --group release --no-build-isolation
       - name: Import Developer ID certificate
         env:
           MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
@@ -101,10 +112,9 @@ jobs:
           CODESIGN_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
           NOTARY_PROFILE: video-enhancer-ci
         run: |
-          python -m pip install ".[macos]" build twine
-          python -m build
-          python -m twine check dist/*.whl dist/*.tar.gz
-          bash scripts/build_macos.sh
+          .venv/bin/python -m build --no-isolation
+          .venv/bin/python -m twine check dist/*.whl dist/*.tar.gz
+          PYTHON_BIN="$PWD/.venv/bin/python" bash scripts/build_macos.sh
           cd dist
           shasum -a 256 *.whl *.tar.gz Video-Enhancer-*.zip > SHA256SUMS
       - name: Publish GitHub release
@@ -114,7 +124,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME"
           dist/*.whl dist/*.tar.gz dist/Video-Enhancer-*.zip
           dist/Video-Enhancer-*.zip.sha256 dist/SHA256SUMS
-          --generate-notes --verify-tag
+          --generate-notes --verify-tag --prerelease
       - name: Remove temporary signing keychain
         if: always()
         run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true

@@ -7,6 +7,11 @@ The original download path never filters or video-encodes the source. Upscaling
 and generated 60/90 FPS output are always separate files. Everything runs on
 your Mac; the app has no cloud backend.
 
+Release status: `v0.1.0` is an unpublished Apple Silicon beta candidate. Public
+distribution remains blocked until Developer ID signing/notarization,
+authorized real-source acceptance tests, and verified operator details are in
+place.
+
 ## Features
 
 - TikTok and Instagram HTTPS links
@@ -34,7 +39,7 @@ brew install ffmpeg
 
 ## Install
 
-Install the tagged `0.1.0` release in a virtual environment:
+After the `v0.1.0` beta is published, install it in a virtual environment:
 
 ```bash
 python -m venv .venv
@@ -51,7 +56,9 @@ video-enhancer-web --open
 The server binds to `127.0.0.1`, accepts public TikTok or Instagram links,
 previews original and derived files in the browser, and keeps working files in
 a process-specific temporary directory. Use **Clear local files** to remove
-them immediately; normal app shutdown also removes them.
+them immediately; normal app shutdown also removes them. Starting a new source
+replaces the previous working set, and starting a new enhancement replaces the
+previous enhanced copy.
 
 The printed local URL contains a random session key. Open it directly and do
 not share it; the key expires when the process stops.
@@ -67,6 +74,10 @@ click; GitHub receives the request after the visitor chooses its link. TikTok or
 Instagram is contacted only after a link action. See
 [the launch/privacy/security checklist](docs/launch-privacy-security.md).
 
+Privacy and copyright contact: `bjorke.poc@gmail.com`. A verified legal
+operator name and business address have not yet been published, so this contact
+address alone does not clear the public consumer-release gate.
+
 Advertising networks do not belong inside this localhost app. A paid direct
 sponsor may later replace the project notice with clearly labelled, bundled
 text or licensed artwork and a normal HTTPS link. Any ad-network advertising
@@ -75,9 +86,10 @@ privacy, and consent gates in that checklist first.
 
 ## macOS App Build
 
-The consumer artifact is a self-contained Apple Silicon `.app` distributed as
-a ZIP. It bundles pinned arm64 builds of yt-dlp and FFmpeg, so recipients do not
-need Python, Homebrew, or a separate FFmpeg install.
+The planned `v0.1.0` beta artifact is a self-contained Apple Silicon (arm64)
+`.app` distributed as a ZIP. It bundles pinned arm64 builds of yt-dlp and
+FFmpeg, so recipients do not need Python, Homebrew, or a separate FFmpeg
+install. Intel Macs are not supported by this release.
 
 Local ad-hoc build:
 
@@ -86,7 +98,9 @@ uv run --extra macos scripts/build_macos.sh
 ```
 
 Developer ID signing and notarization use the same command after the signing
-identity and notary credentials are installed:
+identity and notary credentials are installed. Public distribution requires an
+Apple Developer Program account, a Developer ID Application certificate, and
+successful Apple notarization; an ad-hoc local build is only for development:
 
 ```bash
 xcrun notarytool store-credentials video-enhancer-notary --apple-id APPLE_ID --team-id TEAM_ID

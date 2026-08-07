@@ -1,7 +1,8 @@
 # Launch, Privacy, And Security
 
-Status: implementation baseline reviewed 2026-08-06. This is an engineering
-launch gate, not legal advice or a promise of worldwide legal compliance.
+Status: Apple Silicon `v0.1.0` beta candidate reviewed 2026-08-07. It is not
+approved for public distribution yet. This is an engineering launch gate, not
+legal advice or a promise of worldwide legal compliance.
 
 ## Product Boundary
 
@@ -18,6 +19,8 @@ The product is a local Mac application with a browser UI on `127.0.0.1`.
 | Platform authentication | None; public anonymous links only |
 | Working files | Process-specific temporary directory on the user's Mac |
 | User export | Explicit browser attachment download |
+| Privacy and copyright contact | `bjorke.poc@gmail.com` |
+| Verified legal operator and business address | Not yet published |
 
 The operator never receives the submitted URL or video through this
 architecture. The local process sends a user-initiated request directly from
@@ -25,7 +28,9 @@ the user's IP address to TikTok or Instagram and their media CDNs. A file
 explicitly downloaded through the browser persists wherever the user saves it.
 
 Temporary source videos and enhanced copies are deleted by **Clear local
-files** and on normal process shutdown.
+files** and on normal process shutdown. A new source replaces the previous
+working set, and a new enhancement replaces the previous enhanced copy, so the
+temporary session retains at most one source and one output.
 An operating-system crash, power loss, or `SIGKILL` can prevent normal cleanup;
 the process directory is still inside the Mac's temporary-file area and never
 becomes operator storage.
@@ -129,9 +134,11 @@ advice rather than representing the anonymous extractor as approved.
   process is running, rather than checked only after completion.
 - Subprocesses use argument arrays with `shell=False`; filenames are sanitized.
 - Local HTTP clients have an idle timeout. Web-triggered FFmpeg exports discard
-  raw diagnostics, enforce a six-hour ceiling, and remove failed partial files.
+  raw diagnostics, enforce an 8 GiB output and six-hour ceiling, and remove
+  failed partial files. Probe diagnostics are capped at 4 MiB.
 - Enhancement inputs are limited to 2x scale and 240 FPS, and only one encoder
-  job can be active at a time.
+  job can be active at a time. Only one completed source and enhanced copy are
+  retained, bounding normal temporary media use to roughly 16 GiB.
 - Only registered files contained by the process work directory are served;
   final file opens reject symbolic links.
 - Jobs and source records live in memory and are cleared with their files.
@@ -148,8 +155,9 @@ advice rather than representing the anonymous extractor as approved.
 - The platform controls redirects and CDN destinations after the initial strict
   hostname validation. This is acceptable for a user-run local tool but would
   require stronger egress isolation in a hosted backend.
-- The 8 GiB bound limits normal operations but cannot guarantee free disk space
-  or cleanup after a forced process or system termination.
+- The 8 GiB source/export bounds and one-source/one-output working set limit normal
+  operations but cannot guarantee free disk space or cleanup after `SIGKILL`,
+  an operating-system crash, or power loss.
 - Synthetic interpolation can create misleading frames and visual artifacts;
   generated output is explicitly labeled and never presented as native FPS.
 - Platform changes can break extraction or change the best variant. No Full HD,
@@ -170,7 +178,8 @@ Local application release:
 - full tests pass on Python 3.10-3.12;
 - dependency audit reports no known vulnerabilities;
 - static and deep security scans have no unresolved high-impact finding;
-- real TikTok and Instagram public-link flows are checked without login;
+- authorized real TikTok and Instagram public-link flows are checked without
+  login;
 - downloaded media resolution/FPS/codec are verified from the saved file;
 - attachment download, byte ranges, 1 FPS, frame stepping, zoom, pan, reset,
   clear-session, desktop, and mobile layouts pass browser QA;
@@ -182,7 +191,8 @@ Local application release:
 Public distribution release:
 
 - the exact tagged commit passes CI and produces verified release artifacts;
-- authorized TikTok and Instagram flows pass end to end;
+- authorized TikTok and Instagram flows owned by the tester or used with the
+  rights holder's permission pass end to end;
 - platform permission or targeted legal advice covers the chosen release;
 - verified legal operator identity, public email and business address are
   published; the current advertising and security GitHub routes are not a

@@ -45,6 +45,7 @@ pyinstaller_args=(
   --windowed
   --target-architecture arm64
   --name "Video Enhancer"
+  --icon "$project_dir/assets/VideoEnhancer.icns"
   --osx-bundle-identifier com.bjorkepoc.videoenhancer
   --paths "$project_dir/src"
   --add-binary "$yt_dlp:bin"

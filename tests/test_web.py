@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import signal
 import threading
 import time
 from collections.abc import Iterator
@@ -123,7 +124,8 @@ def test_web_ui_contains_source_first_controls() -> None:
         "Advertise here",
         "Open advertising inquiry",
         "public advertising inquiry",
-        "A private privacy and copyright contact is not published yet",
+        'href="mailto:bjorke.poc@gmail.com"',
+        "Last updated August 7, 2026",
         "Report security privately",
         "static project notice",
     ):
@@ -297,6 +299,107 @@ def test_serve_opens_token_in_a_url_fragment(
     url = f"http://127.0.0.1:54321/#token={TOKEN}"
     assert opened == [url]
     assert url in capsys.readouterr().out
+
+
+def test_serve_treats_sigterm_as_a_clean_shutdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    signal_calls: list[tuple[int, object]] = []
+    events: list[str] = []
+    previous = object()
+
+    class FakeServer:
+        server_port = 54321
+
+        def __init__(self, address: tuple[str, int], handler: type[Handler]) -> None:
+            pass
+
+        def serve_forever(self) -> None:
+            handler = next(
+                handler
+                for signum, handler in signal_calls
+                if signum == signal.SIGTERM
+            )
+            assert callable(handler)
+            handler(signal.SIGTERM, None)
+
+        def server_close(self) -> None:
+            events.append("server closed")
+
+    monkeypatch.setattr(web, "ThreadingHTTPServer", FakeServer)
+    monkeypatch.setattr(web.signal, "getsignal", lambda signum: previous)
+    monkeypatch.setattr(
+        web.signal,
+        "signal",
+        lambda signum, handler: signal_calls.append((signum, handler)),
+    )
+    monkeypatch.setattr(
+        web,
+        "clear_session",
+        lambda work_dir, *, force=False: events.append(f"cleared {force}"),
+    )
+
+    web._serve("127.0.0.1", 0, tmp_path)
+
+    assert events == ["server closed", "cleared True"]
+    term_handlers = [
+        handler for signum, handler in signal_calls if signum == signal.SIGTERM
+    ]
+    assert callable(term_handlers[0])
+    assert term_handlers[-2:] == [signal.SIG_IGN, previous]
+
+
+def test_serve_waits_for_in_flight_requests_before_job_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    request_started = threading.Event()
+    finish_request = threading.Event()
+
+    class FakeServer:
+        daemon_threads = True
+        server_port = 54321
+
+        def __init__(self, address: tuple[str, int], handler: type[Handler]) -> None:
+            self.request_thread: threading.Thread | None = None
+
+        def serve_forever(self) -> None:
+            def handle_request() -> None:
+                events.append("request started")
+                request_started.set()
+                finish_request.wait()
+                events.append("request finished")
+
+            self.request_thread = threading.Thread(
+                target=handle_request,
+                daemon=self.daemon_threads,
+            )
+            self.request_thread.start()
+            request_started.wait()
+            raise KeyboardInterrupt
+
+        def server_close(self) -> None:
+            assert self.daemon_threads is False
+            assert self.request_thread is not None
+            finish_request.set()
+            self.request_thread.join()
+            events.append("server closed")
+
+    monkeypatch.setattr(web, "ThreadingHTTPServer", FakeServer)
+    monkeypatch.setattr(
+        web,
+        "clear_session",
+        lambda work_dir, *, force=False: events.append(f"cleared {force}"),
+    )
+
+    web._serve("127.0.0.1", 0, tmp_path)
+
+    assert events == [
+        "request started",
+        "request finished",
+        "server closed",
+        "cleared True",
+    ]
 
 
 def test_serve_file_ignores_client_disconnect(tmp_path: Path) -> None:
@@ -475,6 +578,28 @@ def test_only_one_enhancement_can_be_active(
         create_enhancement_job(source, source.name, {}, tmp_path)
 
 
+def test_completed_enhancement_is_replaced_to_bound_session_disk_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source" / "video.mp4"
+    source.parent.mkdir()
+    source.write_bytes(b"video")
+    old_output = tmp_path / "old-job" / "output.mp4"
+    old_output.parent.mkdir()
+    old_output.write_bytes(b"old")
+    old_job = Job("old", source, old_output, ["ffmpeg"])
+    old_job.status = "done"
+    JOBS[old_job.id] = old_job
+    monkeypatch.setattr(web, "build_ffmpeg_command", lambda *args, **kwargs: ["ffmpeg"])
+    monkeypatch.setattr(web, "run_job", lambda job: None)
+
+    new_job = create_enhancement_job(source, source.name, {}, tmp_path)
+    assert new_job.id in JOBS
+    assert list(JOBS) == [new_job.id]
+    assert not old_output.parent.exists()
+    assert source.exists()
+
+
 def test_source_payload_does_not_expose_url_or_local_path(tmp_path: Path) -> None:
     job = SourceJob(
         id="source1",
@@ -509,24 +634,30 @@ def test_run_job_discards_ffmpeg_output_and_has_a_timeout(
     output = tmp_path / "output.mp4"
     calls = []
 
+    process = object()
+
     def run(command: list[str], **kwargs: object) -> object:
         calls.append((command, kwargs))
+        callback = kwargs["process_callback"]
+        callback(process)
+        assert job.process is process
         output.write_bytes(b"video")
+        callback(None)
         return web.subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(web.subprocess, "run", run)
     job = Job("job1", tmp_path / "input.mp4", output, ["ffmpeg", "input"])
+    monkeypatch.setattr(web, "run_bounded_process", run)
 
     web.run_job(job)
 
     assert job.status == "done"
     assert job.logs == ["Export started.", "Export finished."]
-    assert calls[0][1] == {
-        "stdout": web.subprocess.DEVNULL,
-        "stderr": web.subprocess.DEVNULL,
-        "check": False,
-        "timeout": web.ENHANCEMENT_TIMEOUT_SECONDS,
-    }
+    options = calls[0][1]
+    assert options["timeout"] == web.ENHANCEMENT_TIMEOUT_SECONDS
+    assert options["max_output_bytes"] == web.MAX_PROCESS_OUTPUT_BYTES
+    assert options["destination"] == tmp_path
+    assert options["max_directory_growth_bytes"] == web.MAX_SOURCE_BYTES
+    assert options["capture_output"] is False
 
 
 def test_run_job_removes_partial_output_after_timeout(
@@ -538,7 +669,7 @@ def test_run_job_removes_partial_output_after_timeout(
         output.write_bytes(b"partial")
         raise web.subprocess.TimeoutExpired(command, kwargs["timeout"])
 
-    monkeypatch.setattr(web.subprocess, "run", time_out)
+    monkeypatch.setattr(web, "run_bounded_process", time_out)
     job = Job("job1", tmp_path / "input.mp4", output, ["ffmpeg", "input"])
 
     web.run_job(job)
@@ -612,11 +743,93 @@ def test_clear_session_removes_completed_local_files(tmp_path: Path) -> None:
         assert SOURCES == {}
 
 
+def test_clear_session_finishes_deleting_before_a_new_job_can_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_directory = tmp_path / "old-source"
+    old_directory.mkdir()
+    (old_directory / "video.mp4").write_bytes(b"video")
+    old_source = SourceJob("old", "https://tiktok.com/x", old_directory)
+    old_source.status = "done"
+    SOURCES[old_source.id] = old_source
+    deletion_started = threading.Event()
+    finish_deletion = threading.Event()
+    job_created = threading.Event()
+    original_rmtree = web.shutil.rmtree
+
+    def blocked_rmtree(path: Path, **kwargs: object) -> None:
+        deletion_started.set()
+        finish_deletion.wait()
+        original_rmtree(path, **kwargs)
+
+    monkeypatch.setattr(web.shutil, "rmtree", blocked_rmtree)
+    monkeypatch.setattr(web, "build_ffmpeg_command", lambda *args, **kwargs: ["ffmpeg"])
+    monkeypatch.setattr(web, "run_job", lambda job: None)
+    clear_thread = threading.Thread(target=web.clear_session, args=(tmp_path,))
+    clear_thread.start()
+    assert deletion_started.wait(1)
+
+    def create_job() -> None:
+        create_enhancement_job(tmp_path / "input.mp4", "input.mp4", {}, tmp_path)
+        job_created.set()
+
+    create_thread = threading.Thread(target=create_job)
+    create_thread.start()
+    assert not job_created.wait(0.05)
+    finish_deletion.set()
+    clear_thread.join()
+    create_thread.join()
+
+    assert job_created.is_set()
+    assert not old_directory.exists()
+
+
+def test_forced_clear_stops_owned_process_before_removing_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    directory = tmp_path / "job1"
+    directory.mkdir()
+    output = directory / "output.mp4"
+    output.write_bytes(b"partial")
+    job = Job("job1", tmp_path / "input.mp4", output, ["ffmpeg"])
+    job.status = "running"
+    job.process = object()
+
+    class Worker:
+        def join(self) -> None:
+            events.append("joined")
+
+    job.thread = Worker()
+    JOBS[job.id] = job
+    remove = web.shutil.rmtree
+    monkeypatch.setattr(web, "stop_process", lambda process: events.append("stopped"))
+
+    def remove_after_stop(path: Path, **kwargs: object) -> None:
+        events.append("removed")
+        remove(path, **kwargs)
+
+    monkeypatch.setattr(web.shutil, "rmtree", remove_after_stop)
+
+    web.clear_session(tmp_path, force=True)
+
+    assert events == ["stopped", "joined", "removed"]
+    assert job.cancelled is True
+    assert JOBS == {}
+
+
 def test_source_download_route_runs_async_and_reports_saved_media(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fake_download(url: str, destination: Path) -> dict[str, object]:
+    def fake_download(
+        url: str, destination: Path, **kwargs: object
+    ) -> dict[str, object]:
         assert url == "https://tiktok.com/@a/video/123"
+        callback = kwargs["process_callback"]
+        process = object()
+        callback(process)
+        assert any(source.process is process for source in SOURCES.values())
+        callback(None)
         destination.mkdir(parents=True)
         path = destination / "source.mp4"
         path.write_bytes(b"video")
@@ -649,6 +862,45 @@ def test_source_download_route_runs_async_and_reports_saved_media(
     assert payload["status"] == "done"
     assert payload["media"]["width"] == 1080
     assert payload["original_url"] == f"/files/sources/{source_id}/original"
+
+
+def test_completed_source_is_replaced_to_bound_session_disk_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_directory = tmp_path / "source-old"
+    old_directory.mkdir()
+    (old_directory / "old.mp4").write_bytes(b"old")
+    old_source = SourceJob("old", "https://tiktok.com/old", old_directory)
+    old_source.status = "done"
+    SOURCES[old_source.id] = old_source
+    monkeypatch.setattr(web, "run_source_download", lambda source: None)
+    handler = object.__new__(Handler)
+    handler.work_dir = tmp_path
+
+    payload = handler.create_source_job(
+        {"url": "https://instagram.com/reel/ABC123/"}
+    )
+
+    assert list(SOURCES) == [payload["id"]]
+    assert not old_directory.exists()
+
+
+def test_source_download_route_rejects_parallel_downloads(tmp_path: Path) -> None:
+    with running_server(tmp_path) as base:
+        SOURCES["active"] = SourceJob(
+            "active", "https://tiktok.com/@a/video/123", tmp_path / "active"
+        )
+        with pytest.raises(HTTPError) as error:
+            post_json(
+                base,
+                "/api/sources/download",
+                {"url": "https://instagram.com/reel/ABC123/"},
+            )
+
+    assert error.value.code == 400
+    assert json.load(error.value) == {
+        "error": "Wait for the active source download to finish."
+    }
 
 
 def test_source_file_route_serves_only_files_inside_work_dir(tmp_path: Path) -> None:

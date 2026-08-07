@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
@@ -31,7 +32,15 @@ from .ffmpeg import (
     resolve_ffmpeg,
 )
 from .presets import get_preset
-from .sources import SourceError, download_source, validate_social_url
+from .sources import (
+    MAX_PROCESS_OUTPUT_BYTES,
+    MAX_SOURCE_BYTES,
+    SourceError,
+    download_source,
+    run_bounded_process,
+    stop_process,
+    validate_social_url,
+)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -1270,7 +1279,7 @@ HTML = """<!doctype html>
       </section>
       <section>
         <h3>Privacy and copyright</h3>
-        <p>A private privacy and copyright contact is not published yet. Do not put personal data, private links, access tokens, or media in a public GitHub issue.</p>
+        <p>For private privacy and copyright inquiries, email <a href="mailto:bjorke.poc@gmail.com">bjorke.poc@gmail.com</a>. Do not put personal data, private links, access tokens, or media in a public GitHub issue.</p>
       </section>
       <section>
         <h3>Security</h3>
@@ -1288,7 +1297,7 @@ HTML = """<!doctype html>
   <dialog id="privacy-dialog" aria-labelledby="privacy-title">
     <div class="dialog-body policy-content">
       <div class="dialog-heading">
-        <div><p class="dialog-kicker">Last updated August 6, 2026</p><h2 id="privacy-title">Privacy at a glance</h2></div>
+        <div><p class="dialog-kicker">Last updated August 7, 2026</p><h2 id="privacy-title">Privacy at a glance</h2></div>
         <button class="icon-button" type="button" data-close-dialog="privacy-dialog" aria-label="Close privacy information">&times;</button>
       </div>
       <section>
@@ -1843,6 +1852,9 @@ class Job:
     status: str = "queued"
     logs: list[str] = field(default_factory=list)
     error: str = ""
+    process: subprocess.Popen[bytes] | None = field(default=None, repr=False)
+    thread: threading.Thread | None = field(default=None, repr=False)
+    cancelled: bool = False
 
 
 @dataclass
@@ -1857,11 +1869,24 @@ class SourceJob:
     operation: str = ""
     error: str = ""
     logs: list[str] = field(default_factory=list)
+    process: subprocess.Popen[bytes] | None = field(default=None, repr=False)
+    thread: threading.Thread | None = field(default=None, repr=False)
+    cancelled: bool = False
 
 
 JOBS: dict[str, Job] = {}
 SOURCES: dict[str, SourceJob] = {}
 LOCK = threading.Lock()
+
+
+def _remove_work_files(work_dir: Path) -> None:
+    if not work_dir.is_dir():
+        return
+    for path in work_dir.iterdir():
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+        else:
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def clear_session(work_dir: Path, *, force: bool = False) -> None:
@@ -1875,16 +1900,29 @@ def clear_session(work_dir: Path, *, force: bool = False) -> None:
         )
         if busy and not force:
             raise ValueError("Wait for active jobs to finish before clearing files.")
-        JOBS.clear()
-        SOURCES.clear()
-
-    if not work_dir.is_dir():
-        return
-    for path in work_dir.iterdir():
-        if path.is_symlink() or path.is_file():
-            path.unlink(missing_ok=True)
+        if force:
+            owned_jobs = [*JOBS.values(), *SOURCES.values()]
+            for job in owned_jobs:
+                job.cancelled = True
+            processes = [job.process for job in owned_jobs if job.process]
+            threads = [job.thread for job in owned_jobs if job.thread]
         else:
-            shutil.rmtree(path, ignore_errors=True)
+            JOBS.clear()
+            SOURCES.clear()
+            _remove_work_files(work_dir)
+            return
+
+    if force:
+        for process in processes:
+            stop_process(process)
+        current_thread = threading.current_thread()
+        for thread in threads:
+            if thread is not current_thread:
+                thread.join()
+        with LOCK:
+            JOBS.clear()
+            SOURCES.clear()
+            _remove_work_files(work_dir)
 
 
 def safe_filename(name: str, *, default: str = "video.mp4") -> str:
@@ -1932,12 +1970,15 @@ def run_job(job: Job) -> None:
         job.status = "running"
         job.logs.append("Export started.")
     try:
-        completed = subprocess.run(
+        completed = run_bounded_process(
             job.command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
             timeout=ENHANCEMENT_TIMEOUT_SECONDS,
+            max_output_bytes=MAX_PROCESS_OUTPUT_BYTES,
+            destination=job.output_path.parent,
+            max_directory_growth_bytes=MAX_SOURCE_BYTES,
+            directory_limit_error="Export exceeds the 8 GiB limit.",
+            process_callback=lambda process: own_process(job, process),
+            capture_output=False,
         )
     except subprocess.TimeoutExpired:
         job.output_path.unlink(missing_ok=True)
@@ -1951,6 +1992,13 @@ def run_job(job: Job) -> None:
         with LOCK:
             job.status = "error"
             job.error = "FFmpeg could not start."
+            job.logs.append(job.error)
+        return
+    except SourceError as exc:
+        job.output_path.unlink(missing_ok=True)
+        with LOCK:
+            job.status = "error"
+            job.error = str(exc)
             job.logs.append(job.error)
         return
 
@@ -2006,6 +2054,19 @@ def source_payload(job: SourceJob) -> dict[str, Any]:
     return payload
 
 
+def own_process(
+    job: Job | SourceJob, process: subprocess.Popen[bytes] | None
+) -> None:
+    should_stop = False
+    with LOCK:
+        if process is not None and job.cancelled:
+            should_stop = True
+        else:
+            job.process = process
+    if should_stop:
+        stop_process(process)
+
+
 def create_enhancement_job(
     input_path: Path,
     original_name: str,
@@ -2015,6 +2076,11 @@ def create_enhancement_job(
     with LOCK:
         if any(job.status in {"queued", "running"} for job in JOBS.values()):
             raise ValueError("Wait for the active export to finish.")
+        if any(
+            source.status in {"queued", "downloading"}
+            for source in SOURCES.values()
+        ):
+            raise ValueError("Wait for the active source download to finish.")
         original = safe_filename(original_name)
         job_id = uuid.uuid4().hex[:12]
         job_dir = work_dir / job_id
@@ -2033,16 +2099,20 @@ def create_enhancement_job(
         except Exception:
             shutil.rmtree(job_dir, ignore_errors=True)
             raise
+        for previous in JOBS.values():
+            shutil.rmtree(previous.output_path.parent, ignore_errors=True)
+        JOBS.clear()
         job = Job(job_id, input_path, output_path, command)
         job.logs.append(f"Loaded {original}.")
+        thread = threading.Thread(target=run_job, args=(job,), daemon=True)
+        job.thread = thread
         JOBS[job_id] = job
-    try:
-        threading.Thread(target=run_job, args=(job,), daemon=True).start()
-    except Exception:
-        with LOCK:
+        try:
+            thread.start()
+        except Exception:
             JOBS.pop(job_id, None)
-        shutil.rmtree(job_dir, ignore_errors=True)
-        raise
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
     return job
 
 
@@ -2051,7 +2121,11 @@ def run_source_download(job: SourceJob) -> None:
         job.status = "downloading"
         job.logs.append("Original source download started.")
     try:
-        result = download_source(job.url, job.directory)
+        result = download_source(
+            job.url,
+            job.directory,
+            process_callback=lambda process: own_process(job, process),
+        )
     except (OSError, SourceError) as exc:
         shutil.rmtree(job.directory, ignore_errors=True)
         with LOCK:
@@ -2245,17 +2319,28 @@ class Handler(BaseHTTPRequestHandler):
         directory = self.work_dir / f"source-{source_id}"
         source = SourceJob(source_id, url, directory)
         with LOCK:
-            SOURCES[source_id] = source
-        try:
-            threading.Thread(
+            if any(job.status in {"queued", "running"} for job in JOBS.values()):
+                raise ValueError("Wait for the active export to finish.")
+            if any(
+                job.status in {"queued", "downloading"}
+                for job in SOURCES.values()
+            ):
+                raise ValueError("Wait for the active source download to finish.")
+            JOBS.clear()
+            SOURCES.clear()
+            _remove_work_files(self.work_dir)
+            thread = threading.Thread(
                 target=run_source_download,
                 args=(source,),
                 daemon=True,
-            ).start()
-        except Exception:
-            with LOCK:
+            )
+            source.thread = thread
+            SOURCES[source_id] = source
+            try:
+                thread.start()
+            except Exception:
                 SOURCES.pop(source_id, None)
-            raise
+                raise
         return source_payload(source)
 
     def handle_source_action(self, request_path: str, body: dict[str, Any]) -> None:
@@ -2399,23 +2484,39 @@ class Handler(BaseHTTPRequestHandler):
             source.close()
 
 
+def _interrupt_server(_signum: int, _frame: Any) -> None:
+    raise KeyboardInterrupt
+
+
 def _serve(host: str, port: int, work_dir: Path, *, open_browser: bool = False) -> None:
     Handler.work_dir = work_dir
     Handler.session_token = secrets.token_hex(32)
     work_dir.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((host, port), Handler)
-    server.daemon_threads = True
+    server.daemon_threads = False
     url = f"http://{host}:{server.server_port}/#token={Handler.session_token}"
     print(f"Video Enhancer Web running at {url}")
     if open_browser:
         webbrowser.open(url)
+    previous_handlers: dict[int, Any] = {}
+    if threading.current_thread() is threading.main_thread():
+        for name in ("SIGTERM", "SIGHUP"):
+            if signum := getattr(signal, name, None):
+                previous_handlers[signum] = signal.getsignal(signum)
+                signal.signal(signum, _interrupt_server)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
-        server.server_close()
-        clear_session(work_dir, force=True)
+        for signum in previous_handlers:
+            signal.signal(signum, signal.SIG_IGN)
+        try:
+            server.server_close()
+            clear_session(work_dir, force=True)
+        finally:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
 
 
 def run_server(

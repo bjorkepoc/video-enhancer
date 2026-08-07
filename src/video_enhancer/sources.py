@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -23,10 +24,14 @@ SOCKET_TIMEOUT_SECONDS = 30
 NETWORK_RETRIES = 3
 MAX_SOURCE_SIZE = "8G"
 MAX_SOURCE_BYTES = 8 * 1024**3
-MAX_YT_DLP_OUTPUT_BYTES = 16 * 1024**2
+MAX_PROCESS_OUTPUT_BYTES = 16 * 1024**2
+MAX_YT_DLP_OUTPUT_BYTES = MAX_PROCESS_OUTPUT_BYTES
+MAX_PROBE_OUTPUT_BYTES = 4 * 1024**2
 PROBE_TIMEOUT_SECONDS = 120
 PROCESS_POLL_SECONDS = 0.05
 PROCESS_STOP_SECONDS = 2
+
+ProcessCallback = Callable[[subprocess.Popen[bytes] | None], None]
 
 
 class SourceError(ValueError):
@@ -54,7 +59,7 @@ def _directory_size(directory: Path) -> int:
     return total
 
 
-def _stop_process(process: subprocess.Popen[bytes]) -> None:
+def stop_process(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
     try:
@@ -75,27 +80,35 @@ def _stop_process(process: subprocess.Popen[bytes]) -> None:
         process.wait()
 
 
-def _run_yt_dlp(
+def run_bounded_process(
     command: list[str],
     *,
     timeout: float,
+    max_output_bytes: int,
     destination: Path | None = None,
-    max_output_bytes: int = MAX_YT_DLP_OUTPUT_BYTES,
-    max_download_bytes: int | None = None,
+    max_directory_growth_bytes: int | None = None,
+    output_limit_error: str = "Process produced too much output.",
+    directory_limit_error: str = "Process created too much data.",
+    process_callback: ProcessCallback | None = None,
+    capture_output: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Run yt-dlp with bounded output, time, and optional download growth."""
+    """Run a process group with bounded output, time, and directory growth."""
 
     baseline_size = _directory_size(destination) if destination else 0
     process = subprocess.Popen(
         command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+        stderr=subprocess.PIPE if capture_output else subprocess.DEVNULL,
         start_new_session=os.name == "posix",
     )
+    if process_callback:
+        process_callback(process)
     stdout, stderr = process.stdout, process.stderr
-    if stdout is None or stderr is None:
-        _stop_process(process)
-        raise SourceError("yt-dlp output pipes could not be created.")
+    if capture_output and (stdout is None or stderr is None):
+        stop_process(process)
+        if process_callback:
+            process_callback(None)
+        raise SourceError("Process output pipes could not be created.")
     buffers = [bytearray(), bytearray()]
     output_size = 0
     output_limit_reached = threading.Event()
@@ -114,10 +127,14 @@ def _run_yt_dlp(
         finally:
             stream.close()
 
-    readers = [
-        threading.Thread(target=drain, args=(0, stdout), daemon=True),
-        threading.Thread(target=drain, args=(1, stderr), daemon=True),
-    ]
+    readers = (
+        [
+            threading.Thread(target=drain, args=(0, stdout), daemon=True),
+            threading.Thread(target=drain, args=(1, stderr), daemon=True),
+        ]
+        if stdout is not None and stderr is not None
+        else []
+    )
     for reader in readers:
         reader.start()
 
@@ -125,38 +142,65 @@ def _run_yt_dlp(
     failure: BaseException | None = None
     while process.poll() is None:
         if output_limit_reached.is_set():
-            failure = SourceError("yt-dlp produced too much output.")
+            failure = SourceError(output_limit_error)
         elif (
             destination
-            and max_download_bytes is not None
-            and _directory_size(destination) - baseline_size > max_download_bytes
+            and max_directory_growth_bytes is not None
+            and _directory_size(destination) - baseline_size
+            > max_directory_growth_bytes
         ):
-            failure = SourceError("The source download exceeds the 8 GiB limit.")
+            failure = SourceError(directory_limit_error)
         elif time.monotonic() >= deadline:
             failure = subprocess.TimeoutExpired(command, timeout)
         if failure:
-            _stop_process(process)
+            stop_process(process)
             break
         time.sleep(PROCESS_POLL_SECONDS)
 
     return_code = process.wait()
     for reader in readers:
         reader.join()
+    if process_callback:
+        process_callback(None)
     if failure:
         raise failure
     if output_limit_reached.is_set():
-        raise SourceError("yt-dlp produced too much output.")
+        raise SourceError(output_limit_error)
     if (
         destination
-        and max_download_bytes is not None
-        and _directory_size(destination) - baseline_size > max_download_bytes
+        and max_directory_growth_bytes is not None
+        and _directory_size(destination) - baseline_size
+        > max_directory_growth_bytes
     ):
-        raise SourceError("The source download exceeds the 8 GiB limit.")
+        raise SourceError(directory_limit_error)
     return subprocess.CompletedProcess(
         command,
         return_code,
         buffers[0].decode("utf-8", "replace"),
         buffers[1].decode("utf-8", "replace"),
+    )
+
+
+def _run_yt_dlp(
+    command: list[str],
+    *,
+    timeout: float,
+    destination: Path | None = None,
+    max_output_bytes: int = MAX_YT_DLP_OUTPUT_BYTES,
+    max_download_bytes: int | None = None,
+    process_callback: ProcessCallback | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run yt-dlp with bounded output, time, and optional download growth."""
+
+    return run_bounded_process(
+        command,
+        timeout=timeout,
+        max_output_bytes=max_output_bytes,
+        destination=destination,
+        max_directory_growth_bytes=max_download_bytes,
+        output_limit_error="yt-dlp produced too much output.",
+        directory_limit_error="The source download exceeds the 8 GiB limit.",
+        process_callback=process_callback,
     )
 
 
@@ -322,14 +366,18 @@ def _parse_ffmpeg_probe(stderr: str) -> dict[str, Any]:
 
 
 def probe_media(
-    path: Path, *, ffprobe: str = "ffprobe", ffmpeg: str = "ffmpeg"
+    path: Path,
+    *,
+    ffprobe: str = "ffprobe",
+    ffmpeg: str = "ffmpeg",
+    process_callback: ProcessCallback | None = None,
 ) -> dict[str, Any]:
     if not path.is_file():
         raise SourceError(f"Downloaded file does not exist: {path}")
     ffprobe_path = shutil.which(ffprobe)
     if ffprobe_path:
         try:
-            completed = subprocess.run(
+            completed = run_bounded_process(
                 [
                     ffprobe_path,
                     "-v",
@@ -340,10 +388,10 @@ def probe_media(
                     "json",
                     str(path),
                 ],
-                capture_output=True,
-                text=True,
-                check=False,
                 timeout=PROBE_TIMEOUT_SECONDS,
+                max_output_bytes=MAX_PROBE_OUTPUT_BYTES,
+                output_limit_error="Media verification produced too much output.",
+                process_callback=process_callback,
             )
         except subprocess.TimeoutExpired as exc:
             raise SourceError("Media verification timed out.") from exc
@@ -368,7 +416,7 @@ def probe_media(
     if not ffmpeg_path:
         raise SourceError("FFmpeg or ffprobe is required to verify the downloaded file.")
     try:
-        completed = subprocess.run(
+        completed = run_bounded_process(
             [
                 ffmpeg_path,
                 "-hide_banner",
@@ -382,10 +430,10 @@ def probe_media(
                 "null",
                 "-",
             ],
-            capture_output=True,
-            text=True,
-            check=False,
             timeout=PROBE_TIMEOUT_SECONDS,
+            max_output_bytes=MAX_PROBE_OUTPUT_BYTES,
+            output_limit_error="Media verification produced too much output.",
+            process_callback=process_callback,
         )
     except subprocess.TimeoutExpired as exc:
         raise SourceError("Media verification timed out.") from exc
@@ -411,6 +459,7 @@ def download_source(
     destination: Path,
     *,
     yt_dlp: str = "yt-dlp",
+    process_callback: ProcessCallback | None = None,
 ) -> dict[str, Any]:
     destination.mkdir(parents=True, exist_ok=True)
     command = build_download_command(url, destination, yt_dlp=yt_dlp)
@@ -421,6 +470,7 @@ def download_source(
             timeout=DOWNLOAD_TIMEOUT_SECONDS,
             destination=destination,
             max_download_bytes=MAX_SOURCE_BYTES,
+            process_callback=process_callback,
         )
     except subprocess.TimeoutExpired as exc:
         _remove_new_entries(destination, existing)
@@ -457,7 +507,7 @@ def download_source(
             "filename": file_path.name,
             "format_id": selected,
             "operation": "remuxed" if "+" in selected else "direct",
-            "media": probe_media(file_path),
+            "media": probe_media(file_path, process_callback=process_callback),
         }
     except (OSError, SourceError):
         _remove_new_entries(destination, existing)

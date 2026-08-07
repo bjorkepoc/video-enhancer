@@ -137,11 +137,12 @@ def test_probe_media_uses_ffprobe_json(
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
     monkeypatch.setattr(sources.shutil, "which", lambda name: "/usr/bin/ffprobe")
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(sources, "run_bounded_process", run)
 
     assert probe_media(video)["fps"] == 30.0
     assert calls[0][0][:2] == ["/usr/bin/ffprobe", "-v"]
     assert calls[0][1]["timeout"] == sources.PROBE_TIMEOUT_SECONDS
+    assert calls[0][1]["max_output_bytes"] == sources.MAX_PROBE_OUTPUT_BYTES
 
 
 def test_probe_media_falls_back_to_ffmpeg(
@@ -162,8 +163,8 @@ Stream #0:1: Audio: aac, 48000 Hz, stereo
         lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None,
     )
     monkeypatch.setattr(
-        subprocess,
-        "run",
+        sources,
+        "run_bounded_process",
         lambda command, **kwargs: (
             calls.append(command)
             or subprocess.CompletedProcess(command, 0, "", stderr)
@@ -181,8 +182,8 @@ def test_probe_media_reports_timeout(
     video.write_bytes(b"video")
     monkeypatch.setattr(sources.shutil, "which", lambda name: name)
     monkeypatch.setattr(
-        subprocess,
-        "run",
+        sources,
+        "run_bounded_process",
         lambda command, **kwargs: (_ for _ in ()).throw(
             subprocess.TimeoutExpired(command, kwargs["timeout"])
         ),
@@ -205,7 +206,9 @@ def test_download_source_returns_contained_file_and_probe(
         ),
     )
     monkeypatch.setattr(
-        sources, "probe_media", lambda path: {"width": 1080, "height": 1920}
+        sources,
+        "probe_media",
+        lambda path, **kwargs: {"width": 1080, "height": 1920},
     )
 
     result = download_source("https://tiktok.com/x", tmp_path)

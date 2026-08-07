@@ -1,22 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
-  echo "This build currently targets Apple Silicon macOS only." >&2
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "This build requires macOS." >&2
   exit 1
 fi
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 project_dir="$(dirname -- "$script_dir")"
 python_bin="$(command -v "${PYTHON_BIN:-python3}")"
+python_arch="$("$python_bin" -c 'import platform; print(platform.machine())')"
+build_arch="${TARGET_ARCH:-$python_arch}"
+case "$build_arch" in
+  arm64)
+    ffmpeg_sha256="6d175a4743ca50256e89a8cdd731100f9cee33bd79aeea46894d209410dc6617"
+    ;;
+  x86_64)
+    ffmpeg_sha256="4a4a968b98859588e98500ae25973d80a5ca5eed0724222b9f76360dcb72a001"
+    ;;
+  *)
+    echo "Unsupported macOS architecture: $build_arch" >&2
+    exit 1
+    ;;
+esac
+if [[ "$python_arch" != "$build_arch" ]]; then
+  echo "TARGET_ARCH=$build_arch requires a native $build_arch Python (found $python_arch)." >&2
+  exit 1
+fi
 yt_dlp_version="2026.07.04"
 yt_dlp_sha256="498bd0dae17855c599d371d68ec5bafc439a9d8640e838be25c765a9792f261b"
-ffmpeg_sha256="6d175a4743ca50256e89a8cdd731100f9cee33bd79aeea46894d209410dc6617"
 vendor_dir="$project_dir/build/vendor"
 yt_dlp="$vendor_dir/yt-dlp"
 ffmpeg="$vendor_dir/ffmpeg"
 dist_dir="$project_dir/dist/macos"
 app="$dist_dir/Video Enhancer.app"
+
+verify_arch() {
+  if ! lipo "$2" -verify_arch "$build_arch" >/dev/null 2>&1; then
+    echo "$1 does not contain the required $build_arch architecture: $2" >&2
+    exit 1
+  fi
+}
 
 "$python_bin" -c "import imageio_ffmpeg, PyInstaller" 2>/dev/null || {
   echo "Install the macOS build extra first: python -m pip install -e '.[macos]'" >&2
@@ -28,6 +52,7 @@ ffmpeg_source="$($python_bin -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get
 printf '%s  %s\n' "$ffmpeg_sha256" "$ffmpeg_source" | shasum -a 256 -c -
 cp "$ffmpeg_source" "$ffmpeg"
 chmod 755 "$ffmpeg"
+verify_arch "FFmpeg" "$ffmpeg"
 if [[ ! -f "$yt_dlp" ]] || ! printf '%s  %s\n' "$yt_dlp_sha256" "$yt_dlp" | shasum -a 256 -c - >/dev/null 2>&1; then
   download="$yt_dlp.download"
   curl --fail --location --silent --show-error \
@@ -37,13 +62,13 @@ if [[ ! -f "$yt_dlp" ]] || ! printf '%s  %s\n' "$yt_dlp_sha256" "$yt_dlp" | shas
   mv "$download" "$yt_dlp"
 fi
 chmod 755 "$yt_dlp"
+verify_arch "yt-dlp" "$yt_dlp"
 
 pyinstaller_args=(
   --clean
   --noconfirm
   --onedir
   --windowed
-  --target-architecture arm64
   --name "Video Enhancer"
   --icon "$project_dir/assets/VideoEnhancer.icns"
   --osx-bundle-identifier com.bjorkepoc.videoenhancer
@@ -62,6 +87,9 @@ fi
 pyinstaller_args+=("$project_dir/src/video_enhancer/macos_app.py")
 
 "$python_bin" -m PyInstaller "${pyinstaller_args[@]}"
+verify_arch "App executable" "$app/Contents/MacOS/Video Enhancer"
+verify_arch "Bundled FFmpeg" "$app/Contents/Frameworks/bin/ffmpeg"
+verify_arch "Bundled yt-dlp" "$app/Contents/Frameworks/bin/yt-dlp"
 
 plist="$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$plist"
@@ -89,7 +117,7 @@ if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   spctl -a -vv -t exec "$app"
 fi
 
-archive="Video-Enhancer-$version-macos-arm64.zip"
+archive="Video-Enhancer-$version-macos-$build_arch.zip"
 (
   cd "$project_dir/dist"
   ditto -c -k --keepParent "macos/Video Enhancer.app" "$archive"

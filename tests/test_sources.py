@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -76,6 +77,35 @@ def test_download_command_uses_packaged_yt_dlp(
     assert command[0] == str(packaged)
     assert "-m" not in command[:3]
     assert command[command.index("--ffmpeg-location") + 1] == str(ffmpeg)
+
+
+def test_stop_process_terminates_windows_process_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Windows:
+        name = "nt"
+
+    process = Mock(pid=123)
+    process.poll.return_value = None
+    run = Mock()
+    monkeypatch.setattr(sources, "os", Windows)
+    monkeypatch.setattr(
+        sources.shutil,
+        "which",
+        lambda name: r"C:\Windows\System32\taskkill.exe",
+    )
+    monkeypatch.setattr(sources.subprocess, "run", run)
+
+    sources.stop_process(process)
+
+    run.assert_called_once_with(
+        [r"C:\Windows\System32\taskkill.exe", "/PID", "123", "/T", "/F"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    process.wait.assert_called_once_with(timeout=sources.PROCESS_STOP_SECONDS)
+    process.terminate.assert_not_called()
 
 
 def test_parse_ffprobe_reports_saved_stream() -> None:

@@ -9,10 +9,21 @@ permissions:
 
 jobs:
   python-test:
-    runs-on: ubuntu-latest
+    name: Python ${{ matrix.python-version }} on ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        include:
+          - runner: ubuntu-latest
+            python-version: "3.10"
+          - runner: ubuntu-latest
+            python-version: "3.11"
+          - runner: ubuntu-latest
+            python-version: "3.12"
+          - runner: windows-2025
+            python-version: "3.12"
+          - runner: macos-15
+            python-version: "3.12"
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -24,10 +35,10 @@ jobs:
       - name: Run tests
         run: python -m pytest
       - name: Lint
-        if: matrix.python-version == '3.12'
+        if: matrix.runner == 'ubuntu-latest' && matrix.python-version == '3.12'
         run: python -m ruff check src tests
       - name: Verify release artifacts
-        if: matrix.python-version == '3.12'
+        if: matrix.runner == 'ubuntu-latest' && matrix.python-version == '3.12'
         run: |
           python -m pip install build twine
           python -m build
@@ -53,12 +64,49 @@ jobs:
       - name: Scan Python source
         run: uvx --from bandit==1.9.4 bandit -q -r src --skip B404,B603
 
-  release:
+  macos-package-test:
+    name: Package macOS ${{ matrix.arch }}
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.21"
+      - name: Install locked macOS dependencies
+        run: uv sync --locked --no-dev --extra macos
+      - name: Build and verify ad-hoc package
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          PYTHON_BIN="$PWD/.venv/bin/python" bash scripts/build_macos.sh
+          cd dist
+          shasum -a 256 -c Video-Enhancer-*-macos-${TARGET_ARCH}.zip.sha256
+
+  release-build:
+    name: Build macOS ${{ matrix.arch }}
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [python-test, security]
-    runs-on: macos-15
-    permissions:
-      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -107,16 +155,63 @@ jobs:
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD"
-      - name: Build release artifacts
+      - name: Build signed and notarized macOS artifact
         env:
           CODESIGN_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
           NOTARY_PROFILE: video-enhancer-ci
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: PYTHON_BIN="$PWD/.venv/bin/python" bash scripts/build_macos.sh
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-${{ matrix.arch }}
+          path: |
+            dist/Video-Enhancer-*-macos-${{ matrix.arch }}.zip
+            dist/Video-Enhancer-*-macos-${{ matrix.arch }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 1
+      - name: Remove temporary signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true
+
+  release-publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.21"
+      - name: Verify tag matches package version
+        run: python -c 'import os, pathlib, tomllib; version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]; assert os.environ["GITHUB_REF_NAME"] == f"v{version}"'
+      - name: Install locked publication dependencies
+        run: |
+          uv sync --locked --no-dev --group release --no-install-project
+          uv sync --locked --no-dev --group release --no-build-isolation
+      - name: Build Python artifacts
         run: |
           .venv/bin/python -m build --no-isolation
           .venv/bin/python -m twine check dist/*.whl dist/*.tar.gz
-          PYTHON_BIN="$PWD/.venv/bin/python" bash scripts/build_macos.sh
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: macos-*
+          path: dist
+          merge-multiple: true
+      - name: Verify and checksum release artifacts
+        run: |
+          test -f dist/Video-Enhancer-*-macos-arm64.zip
+          test -f dist/Video-Enhancer-*-macos-x86_64.zip
           cd dist
-          shasum -a 256 *.whl *.tar.gz Video-Enhancer-*.zip > SHA256SUMS
+          sha256sum -c Video-Enhancer-*-macos-arm64.zip.sha256
+          sha256sum -c Video-Enhancer-*-macos-x86_64.zip.sha256
+          sha256sum *.whl *.tar.gz Video-Enhancer-*.zip > SHA256SUMS
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -125,6 +220,3 @@ jobs:
           dist/*.whl dist/*.tar.gz dist/Video-Enhancer-*.zip
           dist/Video-Enhancer-*.zip.sha256 dist/SHA256SUMS
           --generate-notes --verify-tag --prerelease
-      - name: Remove temporary signing keychain
-        if: always()
-        run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true

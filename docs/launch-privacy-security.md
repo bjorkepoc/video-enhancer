@@ -1,12 +1,16 @@
 # Launch, Privacy, And Security
 
-Status: Apple Silicon `v0.1.0` beta candidate reviewed 2026-08-07. It is not
-approved for public distribution yet. This is an engineering launch gate, not
-legal advice or a promise of worldwide legal compliance.
+Status: cross-platform Python `v0.1.0` beta candidate with native macOS packages
+for Apple Silicon and Intel Macs, reviewed 2026-08-08. It is not approved for
+public distribution yet. This is an engineering launch gate, not legal advice
+or a promise of worldwide legal compliance.
 
 ## Product Boundary
 
-The product is a local Mac application with a browser UI on `127.0.0.1`.
+The product is a local Python application with a browser UI on `127.0.0.1`.
+Its core runs on macOS, Windows, and Linux with local Python and FFmpeg. The
+self-contained desktop ZIPs are currently macOS-specific and cover Apple
+Silicon and Intel with separate native artifacts.
 
 | Property | Local application |
 | --- | --- |
@@ -17,7 +21,7 @@ The product is a local Mac application with a browser UI on `127.0.0.1`.
 | Advertising | Static bundled project notice seeking a direct sponsor |
 | Analytics, ad-network code, pixels, or remote scripts | None |
 | Platform authentication | None; public anonymous links only |
-| Working files | Process-specific temporary directory on the user's Mac |
+| Working files | Process-specific operating-system temporary directory |
 | User export | Explicit browser attachment download |
 | Privacy and copyright contact | `bjorke.poc@gmail.com` |
 | Verified legal operator and business address | Not yet published |
@@ -31,9 +35,9 @@ Temporary source videos and enhanced copies are deleted by **Clear local
 files** and on normal process shutdown. A new source replaces the previous
 working set, and a new enhancement replaces the previous enhanced copy, so the
 temporary session retains at most one source and one output.
-An operating-system crash, power loss, or `SIGKILL` can prevent normal cleanup;
-the process directory is still inside the Mac's temporary-file area and never
-becomes operator storage.
+An operating-system crash, power loss, or forced termination can prevent normal
+cleanup; the process directory is still inside the operating system's
+temporary-file area and never becomes operator storage.
 
 ## Cookies And Privacy Notice
 
@@ -147,8 +151,9 @@ advice rather than representing the anonymous extractor as approved.
 
 ### Residual Risks
 
-- A malicious process already running as the same macOS user is inside this
-  tool's trust boundary and can access loopback or local temporary files.
+- A malicious process already running as the same operating-system user is
+  inside this tool's trust boundary and can access loopback or local temporary
+  files.
 - `yt-dlp`, FFmpeg, and optional ffprobe parse untrusted platform responses and
   media.
   Keep release pins current and verify bundled artifact digests.
@@ -156,12 +161,15 @@ advice rather than representing the anonymous extractor as approved.
   hostname validation. This is acceptable for a user-run local tool but would
   require stronger egress isolation in a hosted backend.
 - The 8 GiB source/export bounds and one-source/one-output working set limit normal
-  operations but cannot guarantee free disk space or cleanup after `SIGKILL`,
-  an operating-system crash, or power loss.
+  operations but cannot guarantee free disk space or cleanup after forced
+  termination, an operating-system crash, or power loss.
 - Synthetic interpolation can create misleading frames and visual artifacts;
   generated output is explicitly labeled and never presented as native FPS.
 - Platform changes can break extraction or change the best variant. No Full HD,
   bitrate, codec, or native frame-rate guarantee is possible.
+- Browser preview depends on codec support in the user's browser and operating
+  system. Download and FFmpeg processing can work even when an original HEVC or
+  WebM stream cannot be previewed in the browser.
 - The API token defends against browser-origin attacks, not a hostile local
   account. TLS adds no useful protection to this loopback-only deployment.
 
@@ -175,7 +183,9 @@ response, and a new privacy assessment.
 
 Local application release:
 
-- full tests pass on Python 3.10-3.12;
+- full tests pass on Python 3.12 across Linux, Windows, and macOS, with Python
+  3.10-3.12 covered on Linux;
+- native ad-hoc macOS package builds pass on both arm64 and x86_64;
 - dependency audit reports no known vulnerabilities;
 - static and deep security scans have no unresolved high-impact finding;
 - authorized real TikTok and Instagram public-link flows are checked without
@@ -197,8 +207,10 @@ Public distribution release:
 - verified legal operator identity, public email and business address are
   published; the current advertising and security GitHub routes are not a
   substitute for these;
-- a consumer Mac build is Developer ID signed and notarized, or the release is
-  clearly limited to a technical Python-package audience;
+- the separate Apple Silicon (`arm64`) and Intel (`x86_64`) consumer Mac builds
+  are Developer ID signed, notarized, and verified on their matching native
+  runners, or the release is clearly limited to a technical Python-package
+  audience;
 - programmatic or personalized advertising remains disabled until its separate
   gates above pass; a static tracking-free house or direct sponsor ad is allowed.
 

@@ -65,6 +65,16 @@ def stop_process(process: subprocess.Popen[bytes]) -> None:
     try:
         if os.name == "posix":
             os.killpg(process.pid, signal.SIGTERM)
+        elif os.name == "nt":
+            if taskkill := shutil.which("taskkill.exe"):
+                subprocess.run(
+                    [taskkill, "/PID", str(process.pid), "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                process.kill()
         else:
             process.terminate()
         process.wait(timeout=PROCESS_STOP_SECONDS)

@@ -1,2 +1,4 @@
 include THIRD_PARTY_NOTICES.md
+include assets/VideoEnhancer.icns
+include docs/launch-privacy-security.md
 include scripts/build_macos.sh

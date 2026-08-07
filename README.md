@@ -4,13 +4,14 @@ Download the best stream exposed by TikTok or Instagram, verify the saved
 media, and optionally create enhanced copies with a local Python/FFmpeg app.
 
 The original download path never filters or video-encodes the source. Upscaling
-and generated 60/90 FPS output are always separate files. Everything runs on
-your Mac; the app has no cloud backend.
+and generated 60/90 FPS output are always separate files. Everything runs
+locally on your computer; the app has no cloud backend.
 
-Release status: `v0.1.0` is an unpublished Apple Silicon beta candidate. Public
-distribution remains blocked until Developer ID signing/notarization,
-authorized real-source acceptance tests, and verified operator details are in
-place.
+Release status: `v0.1.0` is an unpublished cross-platform Python beta candidate,
+with self-contained macOS packages planned for both Apple Silicon and Intel
+Macs. Public distribution remains blocked until Developer ID
+signing/notarization, authorized real-source acceptance tests, and verified
+operator details are in place.
 
 ## Features
 
@@ -31,7 +32,8 @@ place.
 - The CLI also accepts a custom FFmpeg executable through `--ffmpeg`
 - `yt-dlp` (installed automatically with this package)
 
-On macOS:
+Install FFmpeg with the package manager for your operating system and verify it
+is available with `ffmpeg -version`. For example, on macOS:
 
 ```bash
 brew install ffmpeg
@@ -39,11 +41,23 @@ brew install ffmpeg
 
 ## Install
 
-After the `v0.1.0` beta is published, install it in a virtual environment:
+After the `v0.1.0` beta is published, install the same portable wheel on macOS,
+Windows, or Linux in a virtual environment:
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
+```
+
+On Windows PowerShell, activate it with:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Then install the wheel:
+
+```bash
 python -m pip install "https://github.com/bjorkepoc/video-enhancer/releases/download/v0.1.0/video_enhancer-0.1.0-py3-none-any.whl"
 ```
 
@@ -86,15 +100,16 @@ privacy, and consent gates in that checklist first.
 
 ## macOS App Build
 
-The planned `v0.1.0` beta artifact is a self-contained Apple Silicon (arm64)
-`.app` distributed as a ZIP. It bundles pinned arm64 builds of yt-dlp and
-FFmpeg, so recipients do not need Python, Homebrew, or a separate FFmpeg
-install. Intel Macs are not supported by this release.
+The planned `v0.1.0` beta provides two self-contained native `.app` ZIPs: one
+for Apple Silicon (`arm64`) and one for Intel (`x86_64`). Each bundles matching
+builds of yt-dlp and FFmpeg, so recipients do not need Python, Homebrew, or a
+separate FFmpeg install. Choose the ZIP matching the Mac's processor; these are
+separate native artifacts rather than one universal binary.
 
 Local ad-hoc build:
 
 ```bash
-uv run --extra macos scripts/build_macos.sh
+TARGET_ARCH="$(uname -m)" uv run --extra macos scripts/build_macos.sh
 ```
 
 Developer ID signing and notarization use the same command after the signing
@@ -112,10 +127,19 @@ uv run --extra macos scripts/build_macos.sh
 The output ZIP and SHA-256 file are written to `dist/`. See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before distributing it.
 
-Tagged GitHub releases also require repository secrets for the Developer ID
-certificate (`MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, and
-`MACOS_SIGNING_IDENTITY`) and notarization (`APPLE_ID`, `APPLE_TEAM_ID`, and
-`APPLE_APP_PASSWORD`). A tag is not published if signing or notarization fails.
+Tagged GitHub releases build, sign, notarize, and verify both native Mac
+artifacts on matching GitHub-hosted runners. They also require repository
+secrets for the Developer ID certificate (`MACOS_CERTIFICATE_BASE64`,
+`MACOS_CERTIFICATE_PASSWORD`, and `MACOS_SIGNING_IDENTITY`) and notarization
+(`APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD`). A tag is not published
+if signing or notarization fails.
+
+The Python wheel and source archive remain the portable installation path for
+other operating systems. On Windows or Linux, install the Python package,
+provide FFmpeg in `PATH`, and run the same local web UI; the release workflow
+does not currently publish self-contained Windows or Linux desktop bundles.
+Source download and FFmpeg processing can still work when the operating
+system's browser cannot preview the source video's codec.
 
 Result labels are literal:
 
@@ -197,8 +221,9 @@ python -m pytest
 ```
 
 Pushing a tag that exactly matches the project version, such as `v0.1.0`, runs
-tests, lint, security checks, builds the wheel and source archive, and creates
-the GitHub release with SHA-256 checksums.
+tests, lint, and security checks; builds signed and notarized `arm64` and
+`x86_64` Mac ZIPs plus the wheel and source archive; and creates the GitHub
+release with SHA-256 checksums.
 
 Run `video-enhancer --help` for every CLI option.
 

@@ -215,6 +215,11 @@ def test_web_ui_contains_source_first_controls() -> None:
     assert "terms_accepted: true" in HTML
     assert 'quality: $("source-quality-select").value' in HTML
     assert "local_processing_accepted: true" in HTML
+    assert "Video source quality" in HTML
+    assert "Images stay at the original resolution" in HTML
+    assert '$("output-meta").textContent = "Error";' in HTML
+    assert '$("output-empty").textContent = error.message;' in HTML
+    assert HTML.count("showPollingError(error);") >= 3
     assert '`/api/sources/${state.sourceId}/export`' in HTML
     assert "inspect-source" not in HTML
     assert "compare-candidate" not in HTML

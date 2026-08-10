@@ -20,6 +20,8 @@ from urllib.error import URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+from gallery_dl import extractor as gallery_extractor
+
 SUPPORTED_HOSTS = {
     "tiktok.com": "tiktok",
     "instagram.com": "instagram",
@@ -622,6 +624,37 @@ def _looks_like_image_post(platform: str, url: str) -> bool:
     )
 
 
+def _is_single_post_url(platform: str, url: str) -> bool:
+    try:
+        match = gallery_extractor.find(url)
+    except Exception as exc:
+        raise SourceError("Could not inspect the source URL.") from exc
+    category = getattr(match, "category", "")
+    subcategory = getattr(match, "subcategory", "")
+    if (category, subcategory) in {
+        ("vsco", "image"),
+        ("instagram", "post"),
+        ("instagram", "reel"),
+        ("tiktok", "post"),
+        ("tiktok", "vmpost"),
+        ("facebook", "photo"),
+        ("facebook", "video"),
+    }:
+        return True
+    parsed = urlsplit(url)
+    path = parsed.path.lower()
+    if (category, subcategory) == ("facebook", "set"):
+        return (
+            "/media/set" not in path
+            and any(marker in path for marker in ("/posts/", "/permalink", "/events/"))
+        )
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return platform == "facebook" and (
+        host == "fb.watch"
+        or bool(re.match(r"/(?:reels?|share/[rvp])/[^/]+", path))
+    )
+
+
 def _remux_companion_audio(
     destination: Path,
     video: Path,
@@ -993,6 +1026,10 @@ def download_source(
     destination.mkdir(parents=True, exist_ok=True)
     normalized_url = url.strip()
     platform = validate_social_url(normalized_url)
+    if not _is_single_post_url(platform, normalized_url):
+        raise SourceError(
+            "Use a public single-post URL, not a profile, feed, or gallery."
+        )
     quality = validate_download_quality(quality)
     image_attempted = _looks_like_image_post(platform, normalized_url)
     if image_attempted:

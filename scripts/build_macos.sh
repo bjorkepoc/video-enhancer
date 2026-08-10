@@ -66,18 +66,25 @@ chmod 755 "$yt_dlp"
 verify_arch "yt-dlp" "$yt_dlp"
 
 gallery_dl_entry="$($python_bin -c 'import gallery_dl.__main__; print(gallery_dl.__main__.__file__)')"
-"$python_bin" -m PyInstaller \
-  --clean \
-  --noconfirm \
-  --onefile \
-  --console \
-  --name gallery-dl \
-  --collect-all gallery_dl \
-  --collect-all yt_dlp \
-  --distpath "$vendor_dir" \
-  --workpath "$project_dir/build/gallery-dl" \
-  --specpath "$project_dir/build/gallery-dl" \
+gallery_dl_args=(
+  --clean
+  --noconfirm
+  --onefile
+  --console
+  --name gallery-dl
+  --collect-all gallery_dl
+  --collect-all yt_dlp
+)
+if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+  gallery_dl_args+=(--codesign-identity "$CODESIGN_IDENTITY")
+fi
+gallery_dl_args+=(
+  --distpath "$vendor_dir"
+  --workpath "$project_dir/build/gallery-dl"
+  --specpath "$project_dir/build/gallery-dl"
   "$gallery_dl_entry"
+)
+"$python_bin" -m PyInstaller "${gallery_dl_args[@]}"
 chmod 755 "$gallery_dl"
 verify_arch "gallery-dl" "$gallery_dl"
 
@@ -122,6 +129,7 @@ if [[ "$signing_identity" != "-" ]]; then
 fi
 codesign "${codesign_args[@]}" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
+"$app/Contents/Frameworks/bin/gallery-dl" --version >/dev/null
 
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then

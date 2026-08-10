@@ -32,8 +32,8 @@ operator details are in place.
 
 - VSCO, Instagram, TikTok, and Facebook HTTPS links
 - Original image, multi-image ZIP, and best-available video downloads
-- Source quality choices from best available through 8K, 4K, 1440p, 1080p,
-  720p, and 480p without upscaling the original download
+- Video source quality choices from best available through 8K, 4K, 1440p,
+  1080p, 720p, and 480p; original images remain unchanged
 - Original TikTok photo-post audio when exposed, plus consent-gated local audio export
 - Local MP4, MOV, AVI, MP3, AAC, M4A, WAV, AIFF, FLAC, WMA, and GIF exports
 - Local start/end trimming while keeping the original unchanged

@@ -371,7 +371,7 @@ Det separate `/Users/po/dev/media-downloader-lite`-prosjektet er rent på branch
 
 ## Verifisering 10. august 2026
 
-- Python: 136 tester bestått.
+- Python: 137 tester bestått.
 - Ruff: alle kontroller bestått.
 - Bandit: ingen funn etter eksplisitt HTTPS-/redirect-validering av tillatt
   Instagram-CDN.

@@ -41,6 +41,41 @@ def test_validate_social_url_allows_only_supported_https_hosts() -> None:
             validate_social_url(url)
 
 
+def test_download_source_rejects_profiles_and_galleries_before_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        sources,
+        "_run_yt_dlp",
+        lambda *args, **kwargs: pytest.fail("profile reached yt-dlp"),
+    )
+    monkeypatch.setattr(
+        sources,
+        "_run_gallery_dl",
+        lambda *args, **kwargs: pytest.fail("profile reached gallery-dl"),
+    )
+    for index, url in enumerate(
+        (
+            "https://vsco.co/example/gallery",
+            "https://instagram.com/example/",
+            "https://tiktok.com/@example",
+            "https://facebook.com/example",
+        )
+    ):
+        with pytest.raises(SourceError, match="single-post URL"):
+            download_source(url, tmp_path / str(index))
+
+    for url in (
+        "https://vsco.co/example/media/abc",
+        "https://instagram.com/p/abc/",
+        "https://vm.tiktok.com/abc",
+        "https://facebook.com/reel/123",
+        "https://facebook.com/example/posts/123",
+        "https://fb.watch/abc",
+    ):
+        assert sources._is_single_post_url(validate_social_url(url), url)
+
+
 def test_download_command_uses_best_source_without_recode(tmp_path: Path) -> None:
     command = build_download_command("https://tiktok.com/x", tmp_path)
 
@@ -307,7 +342,7 @@ def test_download_source_returns_contained_file_and_probe(
         lambda path, **kwargs: {"width": 1080, "height": 1920},
     )
 
-    result = download_source("https://tiktok.com/x", tmp_path)
+    result = download_source("https://tiktok.com/@creator/video/123", tmp_path)
 
     assert result == {
         "path": output,
@@ -773,7 +808,7 @@ def test_download_source_does_not_extract_tiktok_video_audio_without_consent(
         lambda *args, **kwargs: {"audio_codec": "aac"},
     )
 
-    assert download_source("https://tiktok.com/video/123", tmp_path)[
+    assert download_source("https://tiktok.com/@creator/video/123", tmp_path)[
         "audio_path"
     ] is None
 
@@ -795,7 +830,7 @@ def test_download_source_hides_raw_yt_dlp_errors(
     )
 
     with pytest.raises(SourceError) as error:
-        download_source("https://tiktok.com/x", tmp_path)
+        download_source("https://tiktok.com/@creator/video/123", tmp_path)
 
     assert str(error.value) == (
         "The source platform did not provide public media for this link. "
@@ -819,7 +854,7 @@ def test_download_source_rejects_file_outside_destination(
     )
 
     with pytest.raises(SourceError, match="saved file was not found"):
-        download_source("https://tiktok.com/x", destination)
+        download_source("https://tiktok.com/@creator/video/123", destination)
 
 
 def test_download_source_removes_file_over_size_limit(
@@ -837,7 +872,7 @@ def test_download_source_removes_file_over_size_limit(
     )
 
     with pytest.raises(SourceError, match="8 GiB"):
-        download_source("https://tiktok.com/x", tmp_path)
+        download_source("https://tiktok.com/@creator/video/123", tmp_path)
 
     assert not output.exists()
 
@@ -885,6 +920,6 @@ def test_download_source_removes_new_files_after_runner_failure(
     monkeypatch.setattr(sources, "_run_yt_dlp", fail)
 
     with pytest.raises(SourceError, match="download limit"):
-        download_source("https://tiktok.com/x", tmp_path)
+        download_source("https://tiktok.com/@creator/video/123", tmp_path)
 
     assert [path.name for path in tmp_path.iterdir()] == ["keep.txt"]

@@ -126,6 +126,8 @@ def test_macos_build_script_rejects_architecture_mismatches() -> None:
     assert 'verify_arch "gallery-dl" "$gallery_dl"' in script
     assert "--collect-all gallery_dl" in script
     assert "--collect-all yt_dlp" in script
+    assert 'gallery_dl_args+=(--codesign-identity "$CODESIGN_IDENTITY")' in script
+    assert '"$app/Contents/Frameworks/bin/gallery-dl" --version' in script
     assert 'verify_arch "Bundled gallery-dl"' in script
     assert 'verify_arch "App executable"' in script
     assert 'archive="Video-Enhancer-$version-macos-$build_arch.zip"' in script

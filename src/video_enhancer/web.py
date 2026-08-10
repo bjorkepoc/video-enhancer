@@ -1555,7 +1555,7 @@ HTML = """<!doctype html>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
         </button>
         <div class="download-settings">
-          <label for="source-quality-select">Source quality
+          <label for="source-quality-select">Video source quality
             <select id="source-quality-select">
               <option value="best">Best available</option>
               <option value="8k">Up to 8K (4320p)</option>
@@ -1566,7 +1566,7 @@ HTML = """<!doctype html>
               <option value="480p">Up to 480p</option>
             </select>
           </label>
-          <p class="hint">Uses the best source at or below your limit. It never upscales the original download.</p>
+          <p class="hint">For videos, uses the best source at or below your limit. Images stay at the original resolution exposed by the platform.</p>
         </div>
         <label class="terms-acceptance" for="terms-accepted">
           <input id="terms-accepted" type="checkbox" required>
@@ -2324,6 +2324,9 @@ HTML = """<!doctype html>
      clearInterval(state.poll);
      setLog([error.message]);
       $("source-error").textContent = error.message;
+      $("output-meta").textContent = "Error";
+      $("output-empty").hidden = false;
+      $("output-empty").textContent = error.message;
      $("download-original").disabled = false;
    }
 
@@ -2356,7 +2359,7 @@ HTML = """<!doctype html>
       } catch (error) {
         setLocalJobActive(false);
         setDerivedDisabled(false);
-        setLog([error.message]);
+        showPollingError(error);
       }
     }
 
@@ -2394,8 +2397,7 @@ HTML = """<!doctype html>
       } catch (error) {
         setLocalJobActive(false);
         setDerivedDisabled(false);
-        $("source-error").textContent = error.message;
-        setLog([error.message]);
+        showPollingError(error);
       }
     }
 

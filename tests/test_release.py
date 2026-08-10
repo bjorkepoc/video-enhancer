@@ -125,6 +125,7 @@ def test_macos_build_script_rejects_architecture_mismatches() -> None:
     assert 'verify_arch "yt-dlp" "$yt_dlp"' in script
     assert 'verify_arch "gallery-dl" "$gallery_dl"' in script
     assert "--collect-all gallery_dl" in script
+    assert "--collect-all yt_dlp" in script
     assert 'verify_arch "Bundled gallery-dl"' in script
     assert 'verify_arch "App executable"' in script
     assert 'archive="Video-Enhancer-$version-macos-$build_arch.zip"' in script
@@ -136,4 +137,5 @@ def test_source_archive_manifest_contains_linked_release_files() -> None:
     assert "include THIRD_PARTY_NOTICES.md" in manifest
     assert "include assets/VideoEnhancer.icns" in manifest
     assert "include docs/launch-privacy-security.md" in manifest
+    assert "include docs/snapdownloader-parity.md" in manifest
     assert "include scripts/build_macos.sh" in manifest

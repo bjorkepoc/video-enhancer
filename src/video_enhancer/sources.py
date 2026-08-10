@@ -39,6 +39,7 @@ DOWNLOAD_QUALITIES = {
 }
 IMAGE_EXTENSIONS = {".avif", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".webp"}
 AUDIO_EXTENSIONS = {".aac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
+VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
 INSTAGRAM_IMAGE_HOSTS = {"fbcdn.net", "cdninstagram.com"}
 INSTAGRAM_IMAGE_TYPES = {
     "image/avif": ".avif",
@@ -52,7 +53,6 @@ SOCKET_TIMEOUT_SECONDS = 30
 NETWORK_RETRIES = 3
 MAX_SOURCE_SIZE = "8G"
 MAX_SOURCE_BYTES = 8 * 1024**3
-MAX_AUDIO_BYTES = 1024**3
 MAX_PROCESS_OUTPUT_BYTES = 16 * 1024**2
 MAX_YT_DLP_OUTPUT_BYTES = MAX_PROCESS_OUTPUT_BYTES
 MAX_PROBE_OUTPUT_BYTES = 4 * 1024**2
@@ -61,6 +61,7 @@ PROCESS_POLL_SECONDS = 0.05
 PROCESS_STOP_SECONDS = 2
 
 ProcessCallback = Callable[[subprocess.Popen[bytes] | None], None]
+CancelCallback = Callable[[], bool]
 
 
 class SourceError(ValueError):
@@ -347,11 +348,17 @@ def build_download_command(
     normalized_url = url.strip()
     validate_social_url(normalized_url)
     max_height = DOWNLOAD_QUALITIES[validate_download_quality(quality)]
-    selected_format = (
-        BEST_FORMAT
-        if max_height is None
-        else f"bv*[height<={max_height}]+ba/b[height<={max_height}]"
-    )
+    selected_format = BEST_FORMAT
+    if max_height is not None:
+        video = (
+            f"(bv*[aspect_ratio>=1][height<={max_height}]/"
+            f"bv*[aspect_ratio<1][width<={max_height}])"
+        )
+        combined = (
+            f"(b[aspect_ratio>=1][height<={max_height}]/"
+            f"b[aspect_ratio<1][width<={max_height}])"
+        )
+        selected_format = f"{video}+ba/{combined}"
     return [
         *_yt_dlp_command(yt_dlp),
         "--no-overwrites",
@@ -387,9 +394,12 @@ def build_image_download_command(
 ) -> list[str]:
     normalized_url = url.strip()
     validate_social_url(normalized_url)
-    extensions = tuple(sorted(extension.removeprefix(".") for extension in (
-        IMAGE_EXTENSIONS | AUDIO_EXTENSIONS
-    )))
+    extensions = tuple(
+        sorted(
+            extension.removeprefix(".")
+            for extension in IMAGE_EXTENSIONS | AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
+        )
+    )
     return [
         *_gallery_dl_command(gallery_dl),
         "--config-ignore",
@@ -594,59 +604,6 @@ def _find_ffmpeg(ffmpeg: str = "ffmpeg") -> str | None:
     return shutil.which(name) or (name if Path(name).is_file() else None)
 
 
-def extract_audio(
-    source: Path,
-    output: Path,
-    *,
-    ffmpeg: str = "ffmpeg",
-    process_callback: ProcessCallback | None = None,
-) -> Path:
-    ffmpeg_path = _find_ffmpeg(ffmpeg)
-    if not ffmpeg_path:
-        raise SourceError("FFmpeg is required to create the TikTok audio file.")
-    try:
-        completed = run_bounded_process(
-            [
-                ffmpeg_path,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-nostdin",
-                "-y",
-                "-i",
-                str(source),
-                "-map",
-                "0:a:0",
-                "-vn",
-                "-c:a",
-                "libmp3lame",
-                "-q:a",
-                "2",
-                str(output),
-            ],
-            timeout=DOWNLOAD_TIMEOUT_SECONDS,
-            max_output_bytes=MAX_PROBE_OUTPUT_BYTES,
-            destination=output.parent,
-            max_directory_growth_bytes=MAX_AUDIO_BYTES,
-            output_limit_error="Audio extraction produced too much output.",
-            directory_limit_error="The audio file exceeds the 1 GiB limit.",
-            process_callback=process_callback,
-        )
-    except subprocess.TimeoutExpired as exc:
-        output.unlink(missing_ok=True)
-        raise SourceError("TikTok audio extraction timed out.") from exc
-    except OSError as exc:
-        output.unlink(missing_ok=True)
-        raise SourceError(f"Could not start FFmpeg: {exc}") from exc
-    except SourceError:
-        output.unlink(missing_ok=True)
-        raise
-    if completed.returncode or not output.is_file() or not output.stat().st_size:
-        output.unlink(missing_ok=True)
-        raise SourceError("The TikTok post did not provide a usable audio stream.")
-    return output
-
-
 def _looks_like_image_post(platform: str, url: str) -> bool:
     path = urlsplit(url).path.lower()
     return (
@@ -657,48 +614,61 @@ def _looks_like_image_post(platform: str, url: str) -> bool:
     )
 
 
-def _package_images(
+def _package_media(
     destination: Path,
     platform: str,
     images: list[Path],
+    videos: list[Path],
     audio: list[Path],
     *,
-    format_id: str = "images",
+    format_id: str = "",
+    process_callback: ProcessCallback | None = None,
 ) -> dict[str, Any]:
-    total_size = sum(path.stat().st_size for path in [*images, *audio])
+    media_files = [*images, *videos]
+    total_size = sum(path.stat().st_size for path in [*media_files, *audio])
     if total_size > MAX_SOURCE_BYTES:
         raise SourceError("The downloaded source exceeds the 8 GiB limit.")
 
-    item_count = len(images)
-    preview = images[0]
+    item_count = len(media_files)
+    preview = images[0] if images else videos[0]
+    preview_type = "image" if images else "video"
     if item_count == 1:
         path = preview
         operation = "direct"
+        media_type = preview_type
     else:
         if total_size > MAX_SOURCE_BYTES // 2:
-            raise SourceError("The image set is too large to archive safely.")
-        path = destination / "images.zip"
+            raise SourceError("The media set is too large to archive safely.")
+        media_type = "image" if not videos else "archive"
+        path = destination / ("images.zip" if media_type == "image" else "media.zip")
         with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
-            for image in images:
-                archive.write(image, image.name)
-        for image in images[1:]:
-            image.unlink()
+            for media_file in media_files:
+                archive.write(media_file, media_file.name)
+        for media_file in media_files:
+            if media_file != preview:
+                media_file.unlink()
         operation = "archive"
 
     audio_path = audio[0] if platform == "tiktok" and audio else None
     for extra in audio[1:] if audio_path else audio:
         extra.unlink()
+    media = (
+        probe_media(preview, process_callback=process_callback)
+        if media_type == "video"
+        else {"size": path.stat().st_size}
+    )
     return {
         "path": path,
         "preview_path": preview,
         "audio_path": audio_path,
         "filename": path.name,
-        "format_id": format_id,
+        "format_id": format_id or ("images" if not videos else "gallery-media"),
         "operation": operation,
         "platform": platform,
-        "media_type": "image",
+        "media_type": media_type,
+        "preview_type": preview_type,
         "item_count": item_count,
-        "media": {"size": path.stat().st_size},
+        "media": media,
     }
 
 
@@ -739,7 +709,11 @@ def _download_instagram_image_source(
     *,
     yt_dlp: str,
     process_callback: ProcessCallback | None,
+    cancel_callback: CancelCallback | None,
 ) -> dict[str, Any] | None:
+    deadline = time.monotonic() + DOWNLOAD_TIMEOUT_SECONDS
+    if cancel_callback and cancel_callback():
+        raise SourceError("Source download cancelled.")
     existing = {path.name for path in destination.iterdir()}
     command = build_instagram_image_metadata_command(url, yt_dlp=yt_dlp)
     try:
@@ -785,6 +759,11 @@ def _download_instagram_image_source(
     total_size = 0
     try:
         for index, (image_url, identifier) in enumerate(candidates, 1):
+            if cancel_callback and cancel_callback():
+                raise SourceError("Source download cancelled.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SourceError("The Instagram image download timed out.")
             request = Request(
                 image_url,
                 headers={
@@ -794,7 +773,7 @@ def _download_instagram_image_source(
             )
             # Candidate and final redirect are both HTTPS CDN-allowlisted.
             with urlopen(  # nosec B310
-                request, timeout=SOCKET_TIMEOUT_SECONDS
+                request, timeout=min(SOCKET_TIMEOUT_SECONDS, remaining)
             ) as response:
                 if not _is_instagram_image_url(response.geturl()):
                     raise SourceError("Instagram returned an untrusted image location.")
@@ -806,6 +785,10 @@ def _download_instagram_image_source(
                 output = destination / f"instagram-{index:02d}-{identifier}{extension}"
                 with output.open("xb") as file:
                     while chunk := response.read(1024 * 1024):
+                        if cancel_callback and cancel_callback():
+                            raise SourceError("Source download cancelled.")
+                        if time.monotonic() >= deadline:
+                            raise SourceError("The Instagram image download timed out.")
                         total_size += len(chunk)
                         if total_size > MAX_SOURCE_BYTES:
                             raise SourceError(
@@ -815,12 +798,14 @@ def _download_instagram_image_source(
             if not output.stat().st_size:
                 raise SourceError("Instagram returned an empty image.")
             images.append(output)
-        return _package_images(
+        return _package_media(
             destination,
             "instagram",
             images,
             [],
+            [],
             format_id="instagram-original-images",
+            process_callback=process_callback,
         )
     except SourceError:
         _remove_new_entries(destination, existing)
@@ -867,12 +852,20 @@ def _download_image_source(
         key=lambda path: path.name,
     )
     images = [path for path in files if path.suffix.lower() in IMAGE_EXTENSIONS]
+    videos = [path for path in files if path.suffix.lower() in VIDEO_EXTENSIONS]
     audio = [path for path in files if path.suffix.lower() in AUDIO_EXTENSIONS]
-    if completed.returncode or not images:
+    if completed.returncode or not images and not videos:
         _remove_new_entries(destination, existing)
         return None
     try:
-        return _package_images(destination, platform, images, audio)
+        return _package_media(
+            destination,
+            platform,
+            images,
+            videos,
+            audio,
+            process_callback=process_callback,
+        )
     except (OSError, SourceError):
         _remove_new_entries(destination, existing)
         raise
@@ -896,6 +889,7 @@ def download_source(
     gallery_dl: str = "gallery-dl",
     quality: str = "best",
     process_callback: ProcessCallback | None = None,
+    cancel_callback: CancelCallback | None = None,
 ) -> dict[str, Any]:
     destination.mkdir(parents=True, exist_ok=True)
     normalized_url = url.strip()
@@ -914,7 +908,7 @@ def download_source(
             return image_result
         if platform == "vsco":
             raise SourceError(
-                "VSCO did not provide public images for this link. "
+                "VSCO did not provide public media for this link. "
                 "Check that the link is public and try again."
             )
 
@@ -950,6 +944,7 @@ def download_source(
                 destination,
                 yt_dlp=yt_dlp,
                 process_callback=process_callback,
+                cancel_callback=cancel_callback,
             )
             if image_result:
                 return image_result
@@ -994,6 +989,7 @@ def download_source(
                     destination,
                     yt_dlp=yt_dlp,
                     process_callback=process_callback,
+                    cancel_callback=cancel_callback,
                 )
                 if image_result:
                     return image_result
@@ -1010,24 +1006,16 @@ def download_source(
                 "The source platform did not provide public media for this link. "
                 "Check that the link is public and try again."
             ) from exc
-        audio_path = (
-            extract_audio(
-                file_path,
-                destination / f"{file_path.stem}-audio.mp3",
-                process_callback=process_callback,
-            )
-            if platform == "tiktok" and media.get("audio_codec")
-            else None
-        )
         return {
             "path": file_path,
             "preview_path": file_path,
-            "audio_path": audio_path,
+            "audio_path": None,
             "filename": file_path.name,
             "format_id": selected,
             "operation": "remuxed" if "+" in selected else "direct",
             "platform": platform,
             "media_type": "video",
+            "preview_type": "video",
             "item_count": 1,
             "media": media,
         }

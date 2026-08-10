@@ -76,7 +76,7 @@ feltene åpner nå en strukturert sponsorhenvendelse i Lite-repoet, men gir fort
 
 ## Hvordan prosjektet var før denne omleggingen
 
-`origin/main` og lokal `HEAD` peker fortsatt på commit `e0156e0`. Der var
+Den historiske Plus-basen før omleggingen var commit `e0156e0`. Der var
 produktet i hovedsak en lokal Video Enhancer-beta:
 
 - Brukeren måtte kjøre/installere en lokal Python-app eller planlagt macOS-pakke.
@@ -371,7 +371,7 @@ Det separate `/Users/po/dev/media-downloader-lite`-prosjektet er rent på branch
 
 ## Verifisering 10. august 2026
 
-- Python: 127 tester bestått.
+- Python: 130 tester bestått.
 - Ruff: alle kontroller bestått.
 - Bandit: ingen funn etter eksplisitt HTTPS-/redirect-validering av tillatt
   Instagram-CDN.

@@ -128,6 +128,14 @@ def test_web_ui_contains_source_first_controls() -> None:
     assert "browser-session" not in HTML
     assert "cookies-from-browser" not in HTML
     assert "if (!response.ok) throw new Error(config.error" in HTML
+    assert 'id="output-image"' in HTML
+    assert 'id="output-advanced"' in HTML
+    assert "if (state.localJobActive) return;" in HTML
+    assert "setLocalJobActive(true);" in HTML
+    assert HTML.index('const source = await postJSON("/api/sources/download"') < HTML.index(
+        "showSourceLoading();"
+    )
+    assert 'const gif = extension === "gif";' in HTML
     for label in (
         "Original platform stream",
         "Remuxed without video re-encoding",
@@ -572,6 +580,27 @@ def test_source_routes_serve_image_preview_and_tiktok_audio_types(
                 assert response.read() == body
 
 
+def test_job_route_serves_export_media_types(tmp_path: Path) -> None:
+    with running_server(tmp_path) as base:
+        for extension, content_type in (
+            ("gif", "image/gif"),
+            ("mov", "video/quicktime"),
+            ("avi", "video/x-msvideo"),
+        ):
+            output = tmp_path / f"output.{extension}"
+            output.write_bytes(extension.encode())
+            job = Job(extension, tmp_path / "input.mp4", output, ["ffmpeg"])
+            job.status = "done"
+            JOBS[job.id] = job
+            request = Request(
+                f"{base}/files/{job.id}/output",
+                headers={"x-video-enhancer-token": TOKEN},
+            )
+            with urlopen(request) as response:
+                assert response.headers["content-type"] == content_type
+                assert response.read() == extension.encode()
+
+
 def test_build_options_uses_existing_preset_and_toggles() -> None:
     options = build_options(
         {
@@ -910,7 +939,8 @@ def test_forced_clear_stops_owned_process_before_removing_files(
     job.process = object()
 
     class Worker:
-        def join(self) -> None:
+        def join(self, *, timeout: float | None = None) -> None:
+            assert timeout == web.REQUEST_TIMEOUT_SECONDS
             events.append("joined")
 
     job.thread = Worker()
@@ -939,6 +969,7 @@ def test_source_download_route_runs_async_and_reports_saved_media(
     ) -> dict[str, object]:
         assert url == "https://tiktok.com/@a/video/123"
         assert kwargs["quality"] == "4k"
+        assert kwargs["cancel_callback"]() is False
         callback = kwargs["process_callback"]
         process = object()
         callback(process)
@@ -953,6 +984,7 @@ def test_source_download_route_runs_async_and_reports_saved_media(
             "audio_path": None,
             "platform": "tiktok",
             "media_type": "video",
+            "preview_type": "video",
             "item_count": 1,
             "media": {"width": 1080, "height": 1920, "fps": 30.0},
             "format_id": "best",
@@ -984,6 +1016,7 @@ def test_source_download_route_runs_async_and_reports_saved_media(
 
     assert payload["status"] == "done"
     assert payload["quality"] == "4k"
+    assert payload["preview_type"] == "video"
     assert payload["media"]["width"] == 1080
     assert payload["original_url"] == f"/files/sources/{source_id}/original"
 

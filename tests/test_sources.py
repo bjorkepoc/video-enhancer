@@ -16,7 +16,6 @@ from video_enhancer.sources import (
     build_image_download_command,
     build_instagram_image_metadata_command,
     download_source,
-    extract_audio,
     parse_ffprobe,
     probe_media,
     validate_social_url,
@@ -70,7 +69,10 @@ def test_download_command_caps_source_quality_without_upscaling(tmp_path: Path) 
     )
 
     assert command[command.index("-f") + 1] == (
-        "bv*[height<=2160]+ba/b[height<=2160]"
+        "(bv*[aspect_ratio>=1][height<=2160]/"
+        "bv*[aspect_ratio<1][width<=2160])+ba/"
+        "(b[aspect_ratio>=1][height<=2160]/"
+        "b[aspect_ratio<1][width<=2160])"
     )
 
     with pytest.raises(SourceError, match="Quality must be"):
@@ -119,6 +121,7 @@ def test_image_download_command_is_bounded_and_ignores_user_config(
     assert command[command.index("--directory") + 1] == str(tmp_path)
     assert command[command.index("--filesize-max") + 1] == "8G"
     assert command[command.index("--range") + 1] == "1-51"
+    assert "mp4" in command[command.index("--filter") + 1]
     assert command[-1] == "https://vsco.co/user/media/abc"
 
 
@@ -309,6 +312,7 @@ def test_download_source_returns_contained_file_and_probe(
         "operation": "direct",
         "platform": "tiktok",
         "media_type": "video",
+        "preview_type": "video",
         "item_count": 1,
         "media": {"width": 1080, "height": 1920},
     }
@@ -337,6 +341,49 @@ def test_download_source_archives_image_post_and_keeps_tiktok_audio(
     with sources.zipfile.ZipFile(result["path"]) as archive:
         assert archive.namelist() == ["one.jpg", "two.webp"]
     assert not (tmp_path / "two.webp").exists()
+
+
+def test_download_source_accepts_vsco_video_from_gallery_dl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "clip.mp4"
+
+    def download(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        video.write_bytes(b"video")
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(sources, "_run_gallery_dl", download)
+    monkeypatch.setattr(
+        sources,
+        "probe_media",
+        lambda path, **kwargs: {"width": 1080, "height": 1920, "size": 5},
+    )
+
+    result = download_source("https://vsco.co/user/media/abc", tmp_path)
+
+    assert result["path"] == video
+    assert result["preview_type"] == "video"
+    assert result["media_type"] == "video"
+
+
+def test_download_source_archives_mixed_image_and_video_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def download(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        (tmp_path / "one.jpg").write_bytes(b"image")
+        (tmp_path / "two.mp4").write_bytes(b"video")
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(sources, "_run_gallery_dl", download)
+
+    result = download_source("https://instagram.com/p/example/", tmp_path)
+
+    assert result["media_type"] == "archive"
+    assert result["preview_type"] == "image"
+    assert result["item_count"] == 2
+    assert result["path"] == tmp_path / "media.zip"
+    with sources.zipfile.ZipFile(result["path"]) as archive:
+        assert archive.namelist() == ["one.jpg", "two.mp4"]
 
 
 def test_download_source_falls_back_to_original_instagram_images(
@@ -468,12 +515,76 @@ def test_instagram_image_fallback_rejects_untrusted_media_host(
         download_source("https://www.instagram.com/p/example/", tmp_path)
 
 
-def test_download_source_extracts_tiktok_video_audio(
+def test_instagram_image_fallback_stops_when_cancelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {
+        "entries": [
+            {
+                "id": "one",
+                "formats": [],
+                "thumbnails": [
+                    {"url": "https://instagram.test.fbcdn.net/media/one.jpg"}
+                ],
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        sources,
+        "_run_gallery_dl",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", ""),
+    )
+    monkeypatch.setattr(
+        sources,
+        "_run_yt_dlp",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0 if "--dump-single-json" in command else 1,
+            json.dumps(payload) if "--dump-single-json" in command else "",
+            "",
+        ),
+    )
+
+    class Headers:
+        @staticmethod
+        def get_content_type() -> str:
+            return "image/jpeg"
+
+    class Response:
+        headers = Headers()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        @staticmethod
+        def geturl() -> str:
+            return "https://instagram.test.fbcdn.net/media/one.jpg"
+
+        @staticmethod
+        def read(size: int) -> bytes:
+            return b"image"
+
+    monkeypatch.setattr(sources, "urlopen", lambda *args, **kwargs: Response())
+    checks = iter((False, False, True))
+
+    with pytest.raises(SourceError, match="cancelled"):
+        download_source(
+            "https://www.instagram.com/p/example/",
+            tmp_path,
+            cancel_callback=lambda: next(checks),
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_source_does_not_extract_tiktok_video_audio_without_consent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     output = tmp_path / "video.mp4"
     output.write_bytes(b"video")
-    audio = tmp_path / "video-audio.mp3"
     monkeypatch.setattr(
         sources,
         "_run_yt_dlp",
@@ -487,17 +598,9 @@ def test_download_source_extracts_tiktok_video_audio(
         lambda *args, **kwargs: {"audio_codec": "aac"},
     )
 
-    def audio_extract(source: Path, target: Path, **kwargs: Any) -> Path:
-        assert source == output
-        assert target == audio
-        target.write_bytes(b"audio")
-        return target
-
-    monkeypatch.setattr(sources, "extract_audio", audio_extract)
-
     assert download_source("https://tiktok.com/video/123", tmp_path)[
         "audio_path"
-    ] == audio
+    ] is None
 
 
 def test_download_source_hides_raw_yt_dlp_errors(
@@ -524,35 +627,6 @@ def test_download_source_hides_raw_yt_dlp_errors(
         "Check that the link is public and try again."
     )
     assert "private platform diagnostic" not in str(error.value)
-
-
-def test_extract_audio_builds_bounded_mp3_command(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "source.mp4"
-    output = tmp_path / "audio.mp3"
-    source.write_bytes(b"video")
-    calls: list[tuple[list[str], dict[str, Any]]] = []
-    monkeypatch.setattr(sources, "_find_ffmpeg", lambda ffmpeg="ffmpeg": "ffmpeg")
-
-    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        calls.append((command, kwargs))
-        output.write_bytes(b"audio")
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr(sources, "run_bounded_process", run)
-
-    assert extract_audio(source, output) == output
-    assert calls[0][0][-7:] == [
-        "0:a:0",
-        "-vn",
-        "-c:a",
-        "libmp3lame",
-        "-q:a",
-        "2",
-        str(output),
-    ]
-    assert calls[0][1]["max_directory_growth_bytes"] == sources.MAX_AUDIO_BYTES
 
 
 def test_download_source_rejects_file_outside_destination(

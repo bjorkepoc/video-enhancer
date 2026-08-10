@@ -1631,9 +1631,10 @@ HTML = """<!doctype html>
               <div class="player-shell" id="output-shell">
                 <div class="video-stage" id="output-stage" data-zoomed="false">
                   <video id="output-video" preload="metadata" playsinline controls></video>
+                  <img id="output-image" alt="Processed GIF preview" hidden>
                   <div class="video-empty" id="output-empty">Creating the enhanced copy on this device...</div>
                 </div>
-                <details class="advanced-controls">
+                <details class="advanced-controls" id="output-advanced">
                   <summary>Playback controls</summary>
                   <div class="frame-controls" id="output-frame-controls" role="group" aria-label="Frame controls for enhanced copy">
                     <button id="output-previous-frame" type="button" aria-label="Previous frame" title="Previous frame" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg></button>
@@ -1887,6 +1888,7 @@ HTML = """<!doctype html>
       sourceId: null,
       outputFps: 30,
       pendingLocalAction: null,
+      localJobActive: false,
     };
 
     function apiFetch(path, options = {}) {
@@ -2155,14 +2157,13 @@ HTML = """<!doctype html>
       });
     }
 
-    $("source-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (!$("source-form").reportValidity()) return;
-      const url = $("source-url").value.trim();
-      state.sourceId = null;
-      $("download-original").disabled = true;
-     $("source-error").textContent = "";
-     $("source-result").hidden = true;
+    function setLocalJobActive(active) {
+      state.localJobActive = active;
+      $("download-original").disabled = active;
+    }
+
+    function showSourceLoading() {
+      $("source-result").hidden = true;
       $("result").hidden = true;
       $("source-media").hidden = true;
       $("source-audio").hidden = true;
@@ -2172,6 +2173,9 @@ HTML = """<!doctype html>
       $("source-advanced").hidden = false;
       $("enhancement-actions").hidden = false;
       $("output-player").hidden = true;
+      $("output-image").hidden = true;
+      $("output-image").removeAttribute("src");
+      $("output-advanced").hidden = false;
       $("preview-grid").dataset.single = "false";
       $("source-empty").hidden = false;
       $("source-empty").textContent = "Fetching the best available source...";
@@ -2185,24 +2189,33 @@ HTML = """<!doctype html>
       sourceFrames.reset();
       outputFrames.reset();
       showWorkspace(true);
-     setDerivedDisabled(true);
+      setDerivedDisabled(true);
       setLog(["Starting source download..."]);
-     try {
-       const source = await postJSON("/api/sources/download", {
-         url,
-         quality: $("source-quality-select").value,
-         terms_accepted: true,
-         terms_version: TERMS_VERSION,
-       });
-       state.sourceId = source.id;
-       watchSource(source.id).catch(showPollingError);
+    }
+
+    $("source-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (state.localJobActive) return;
+      if (!$("source-form").reportValidity()) return;
+      const url = $("source-url").value.trim();
+      $("download-original").disabled = true;
+      $("source-error").textContent = "";
+      try {
+        const source = await postJSON("/api/sources/download", {
+          url,
+          quality: $("source-quality-select").value,
+          terms_accepted: true,
+          terms_version: TERMS_VERSION,
+        });
+        state.sourceId = source.id;
+        showSourceLoading();
+        watchSource(source.id).catch(showPollingError);
       } catch (error) {
         $("source-error").textContent = error.message;
         $("download-original").disabled = false;
-        showWorkspace(false);
         setLog([error.message]);
       }
-   });
+    });
 
    function mediaValue(value, suffix = "") {
       return value === null || value === undefined ? "Unknown" : `${value}${suffix}`;
@@ -2211,8 +2224,8 @@ HTML = """<!doctype html>
    function renderMedia(source) {
      const media = source.media;
      const size = media.size ? `${(media.size / 1024 / 1024).toFixed(1)} MB` : "Unknown";
-     const values = source.media_type === "image" ? [
-        ["Type", source.item_count > 1 ? "Image archive" : "Image"],
+     const values = source.media_type !== "video" ? [
+        ["Type", source.media_type === "archive" ? "Media archive" : source.item_count > 1 ? "Image archive" : "Image"],
         ["Items", String(source.item_count)],
         ["Size", size],
      ] : [
@@ -2245,14 +2258,20 @@ HTML = """<!doctype html>
        setLog(source.logs);
        if (source.status === "done") {
          clearInterval(state.poll);
-         const image = source.media_type === "image";
-         const label = image
+         const image = source.preview_type === "image";
+         const archive = source.media_type === "archive";
+         const video = source.media_type === "video";
+         const label = archive
+           ? `${source.item_count} original files`
+           : image
            ? source.item_count > 1 ? `${source.item_count} original images` : "Original platform image"
            : source.operation === "remuxed" ? "Remuxed without video re-encoding" : "Original platform stream";
          $("source-quality").textContent = label;
          $("source-result-name").textContent = source.original_name;
          $("source-download").href = localFileUrl(source.original_url, true);
-         $("source-download-label").textContent = image
+         $("source-download-label").textContent = archive
+           ? "Download all media (.zip)"
+           : image
            ? source.item_count > 1 ? "Download all images (.zip)" : "Download image"
            : "Download video";
          if (source.audio_url) {
@@ -2260,10 +2279,10 @@ HTML = """<!doctype html>
            $("source-audio").hidden = false;
          }
          $("source-result").hidden = false;
-         $("preview-grid").dataset.single = String(image);
+         $("preview-grid").dataset.single = String(!video);
          $("output-player").hidden = true;
          $("source-advanced").hidden = image;
-         $("enhancement-actions").hidden = image;
+         $("enhancement-actions").hidden = !video;
          $("source-video").hidden = image;
          $("source-image").hidden = !image;
          if (image) {
@@ -2274,13 +2293,17 @@ HTML = """<!doctype html>
            sourceFrames.setFps(source.media.fps);
            $("source-video").src = localFileUrl(source.preview_url);
            $("source-video").load();
-           $("input-meta").textContent = `${mediaValue(source.media.width)}x${mediaValue(source.media.height)} · ${mediaValue(source.media.fps, " FPS")}`;
+           $("input-meta").textContent = archive
+             ? `${source.item_count} original files`
+             : `${mediaValue(source.media.width)}x${mediaValue(source.media.height)} · ${mediaValue(source.media.fps, " FPS")}`;
          }
          $("source-empty").hidden = true;
          renderMedia(source);
          $("download-original").disabled = false;
-         setDerivedDisabled(image);
-          $("workspace-status").textContent = image
+         setDerivedDisabled(!video);
+          $("workspace-status").textContent = archive
+            ? "Media archive ready to download."
+            : image
             ? "Images ready to download."
             : source.audio_url
               ? "Video and TikTok audio ready to download."
@@ -2307,6 +2330,7 @@ HTML = """<!doctype html>
    async function startSourceEnhancement(mode) {
      if (!state.sourceId) return;
      state.outputFps = mode === "upscale" ? sourceFrames.fps() : Number(mode);
+     setLocalJobActive(true);
      setDerivedDisabled(true);
      $("result").hidden = true;
       $("output-player").hidden = false;
@@ -2315,13 +2339,22 @@ HTML = """<!doctype html>
       $("output-empty").textContent = "Creating the enhanced copy on this device...";
       $("output-video").removeAttribute("src");
       $("output-video").load();
+      $("output-video").hidden = false;
+      $("output-image").removeAttribute("src");
+      $("output-image").hidden = true;
+      $("output-advanced").hidden = false;
      try {
         const job = await postJSON(`/api/sources/${state.sourceId}/enhance`, {
           mode,
           local_processing_accepted: true,
         });
-        watchJob(job.id).catch(showPollingError);
+        watchJob(job.id).catch((error) => {
+          showPollingError(error);
+          setLocalJobActive(false);
+          setDerivedDisabled(false);
+        });
       } catch (error) {
+        setLocalJobActive(false);
         setDerivedDisabled(false);
         setLog([error.message]);
       }
@@ -2331,15 +2364,21 @@ HTML = """<!doctype html>
       if (!state.sourceId) return;
       const format = $("export-format").value;
       const audio = ["mp3", "aac", "m4a", "wav", "aiff", "flac", "wma"].includes(format);
+      const preview = format === "gif" || ["mp4", "m4v", "mov"].includes(format);
       state.outputFps = format === "gif" ? 15 : sourceFrames.fps();
+      setLocalJobActive(true);
       setDerivedDisabled(true);
       $("result").hidden = true;
-      $("output-player").hidden = audio;
+      $("output-player").hidden = !preview;
       $("output-meta").textContent = "Starting";
       $("output-empty").hidden = false;
       $("output-empty").textContent = "Creating the converted or trimmed copy on this device...";
       $("output-video").removeAttribute("src");
       $("output-video").load();
+      $("output-video").hidden = format === "gif";
+      $("output-image").removeAttribute("src");
+      $("output-image").hidden = true;
+      $("output-advanced").hidden = format === "gif";
       try {
         const job = await postJSON(`/api/sources/${state.sourceId}/export`, {
           format,
@@ -2347,8 +2386,13 @@ HTML = """<!doctype html>
           end: $("clip-end").value,
           local_processing_accepted: true,
         });
-        watchJob(job.id).catch(showPollingError);
+        watchJob(job.id).catch((error) => {
+          showPollingError(error);
+          setLocalJobActive(false);
+          setDerivedDisabled(false);
+        });
       } catch (error) {
+        setLocalJobActive(false);
         setDerivedDisabled(false);
         $("source-error").textContent = error.message;
         setLog([error.message]);
@@ -2385,16 +2429,26 @@ HTML = """<!doctype html>
        setLog(job.logs);
        if (job.status === "done") {
          clearInterval(state.poll);
+          setLocalJobActive(false);
           setDerivedDisabled(false);
          const audio = job.kind === "audio-export";
+         const extension = job.output_name.split(".").pop().toLowerCase();
+         const gif = extension === "gif";
+         const video = ["mp4", "m4v", "mov"].includes(extension);
          $("result").hidden = false;
          $("result-name").textContent = job.output_name;
          $("result-path").textContent = job.kind === "enhancement"
            ? "Enhanced synthetic copy"
            : audio ? "Local audio export" : "Local converted or trimmed copy";
          $("download").href = localFileUrl(job.output_url, true);
-         $("output-player").hidden = audio;
-         if (!audio) {
+         $("output-player").hidden = !gif && !video;
+         $("output-video").hidden = !video;
+         $("output-image").hidden = !gif;
+         $("output-advanced").hidden = !video;
+         if (gif) {
+           $("output-image").src = localFileUrl(job.output_url);
+           $("output-empty").hidden = true;
+         } else if (video) {
            outputFrames.setFps(state.outputFps);
            $("output-video").src = localFileUrl(job.output_url);
            $("output-video").load();
@@ -2408,6 +2462,7 @@ HTML = """<!doctype html>
        }
        if (job.status === "error") {
          clearInterval(state.poll);
+          setLocalJobActive(false);
           setDerivedDisabled(false);
           $("output-empty").textContent = job.error || "The enhanced copy could not be created.";
           $("source-error").textContent = job.error || "The local file could not be created.";
@@ -2415,6 +2470,7 @@ HTML = """<!doctype html>
      };
      state.poll = setInterval(() => tick().catch((error) => {
        showPollingError(error);
+        setLocalJobActive(false);
         setDerivedDisabled(false);
      }), 1000);
       await tick();
@@ -2425,6 +2481,7 @@ HTML = """<!doctype html>
      state.poll = null;
      state.sourceId = null;
      state.pendingLocalAction = null;
+     setLocalJobActive(false);
      $("source-url").value = "";
      $("source-result").hidden = true;
      $("result").hidden = true;
@@ -2445,6 +2502,9 @@ HTML = """<!doctype html>
       $("source-advanced").hidden = false;
       $("enhancement-actions").hidden = false;
       $("output-player").hidden = true;
+      $("output-image").hidden = true;
+      $("output-image").removeAttribute("src");
+      $("output-advanced").hidden = false;
       $("preview-grid").dataset.single = "false";
       $("output-empty").hidden = false;
       $("output-empty").textContent = "Choose an enhancement after the source is ready.";
@@ -2530,6 +2590,7 @@ class SourceJob:
     audio_path: Path | None = None
     platform: str = ""
     media_type: str = ""
+    preview_type: str = ""
     item_count: int = 0
     media: dict[str, Any] = field(default_factory=dict)
     format_id: str = ""
@@ -2585,7 +2646,7 @@ def clear_session(work_dir: Path, *, force: bool = False) -> None:
         current_thread = threading.current_thread()
         for thread in threads:
             if thread is not current_thread:
-                thread.join()
+                thread.join(timeout=REQUEST_TIMEOUT_SECONDS)
         with LOCK:
             JOBS.clear()
             SOURCES.clear()
@@ -2713,6 +2774,7 @@ def source_payload(job: SourceJob) -> dict[str, Any]:
         "operation": job.operation,
         "platform": job.platform,
         "media_type": job.media_type,
+        "preview_type": job.preview_type,
         "item_count": job.item_count,
         "quality": job.quality,
     }
@@ -2868,6 +2930,7 @@ def run_source_download(job: SourceJob) -> None:
             job.directory,
             quality=job.quality,
             process_callback=lambda process: own_process(job, process),
+            cancel_callback=lambda: job.cancelled,
         )
     except (OSError, SourceError) as exc:
         shutil.rmtree(job.directory, ignore_errors=True)
@@ -2882,6 +2945,7 @@ def run_source_download(job: SourceJob) -> None:
         job.audio_path = result["audio_path"]
         job.platform = result["platform"]
         job.media_type = result["media_type"]
+        job.preview_type = result.get("preview_type", job.media_type)
         job.item_count = result["item_count"]
         job.media = result["media"]
         job.format_id = result["format_id"]
@@ -3192,11 +3256,7 @@ class Handler(BaseHTTPRequestHandler):
         if not file or not file.is_file() or not file.resolve().is_relative_to(root):
             self.send_error(HTTPStatus.NOT_FOUND.value)
             return
-        content_type = (
-            "video/mp4"
-            if file.suffix.lower() in {".mp4", ".m4v"}
-            else "application/octet-stream"
-        )
+        content_type = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
         self.serve_file(file, content_type, attachment=attachment)
 
     def serve_file(

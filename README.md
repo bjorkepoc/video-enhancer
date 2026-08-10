@@ -1,12 +1,12 @@
 # Media Downloader Plus
 
 Download public images and the best video stream exposed by VSCO, Instagram,
-TikTok, or Facebook, save TikTok audio, and optionally create enhanced video
-copies with a local Python/FFmpeg app.
+TikTok, or Facebook, and optionally export audio or create enhanced video copies
+with a local Python/FFmpeg app after explicit confirmation.
 
-Original images and videos are not re-encoded. Multi-image posts are packaged
-as ZIP files, TikTok audio is exported as a separate MP3, and every converted,
-trimmed, or enhanced result remains a separate file. Python, gallery-dl,
+Original images and videos are not re-encoded. Multi-media posts are packaged
+as ZIP files, audio export requires separate local-processing consent, and every
+converted, trimmed, or enhanced result remains a separate file. Python, gallery-dl,
 yt-dlp, and FFmpeg all run locally on the user's machine; this repository has
 no hosted backend.
 
@@ -34,7 +34,7 @@ operator details are in place.
 - Original image, multi-image ZIP, and best-available video downloads
 - Source quality choices from best available through 8K, 4K, 1440p, 1080p,
   720p, and 480p without upscaling the original download
-- Separate TikTok audio download when the post contains sound
+- Original TikTok photo-post audio when exposed, plus consent-gated local audio export
 - Local MP4, MOV, AVI, MP3, AAC, M4A, WAV, AIFF, FLAC, WMA, and GIF exports
 - Local start/end trimming while keeping the original unchanged
 - 2x Lanczos or Bicubic upscaling
@@ -102,9 +102,10 @@ The printed local URL contains a random session key. Open it directly and do
 not share it; the key expires when the process stops.
 
 Paste a supported link to download its public images or best available video.
-TikTok posts with sound also expose a separate audio download. Source access is
-anonymous: the app never reads browser cookies or handles platform login
-sessions.
+TikTok photo posts may expose their original audio separately; extracting audio
+from a video uses the local export action and its explicit processing consent.
+Source access is anonymous: the app never reads browser cookies or handles
+platform login sessions.
 
 The local UI loads no ad-network code, analytics, cookies, pixels, or remote
 creative. It includes one static **Advertise here** project notice that opens a

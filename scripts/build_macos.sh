@@ -73,6 +73,7 @@ gallery_dl_entry="$($python_bin -c 'import gallery_dl.__main__; print(gallery_dl
   --console \
   --name gallery-dl \
   --collect-all gallery_dl \
+  --collect-all yt_dlp \
   --distpath "$vendor_dir" \
   --workpath "$project_dir/build/gallery-dl" \
   --specpath "$project_dir/build/gallery-dl" \

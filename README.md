@@ -5,9 +5,10 @@ TikTok, or Facebook, save TikTok audio, and optionally create enhanced video
 copies with a local Python/FFmpeg app.
 
 Original images and videos are not re-encoded. Multi-image posts are packaged
-as ZIP files, TikTok audio is exported as a separate MP3, and generated 60/90
-FPS output remains a separate file. Python, gallery-dl, yt-dlp, and FFmpeg all
-run locally on the user's machine; this repository has no hosted backend.
+as ZIP files, TikTok audio is exported as a separate MP3, and every converted,
+trimmed, or enhanced result remains a separate file. Python, gallery-dl,
+yt-dlp, and FFmpeg all run locally on the user's machine; this repository has
+no hosted backend.
 
 ## Separate Lite edition
 
@@ -31,7 +32,11 @@ operator details are in place.
 
 - VSCO, Instagram, TikTok, and Facebook HTTPS links
 - Original image, multi-image ZIP, and best-available video downloads
+- Source quality choices from best available through 8K, 4K, 1440p, 1080p,
+  720p, and 480p without upscaling the original download
 - Separate TikTok audio download when the post contains sound
+- Local MP4, MOV, AVI, MP3, AAC, M4A, WAV, AIFF, FLAC, WMA, and GIF exports
+- Local start/end trimming while keeping the original unchanged
 - 2x Lanczos or Bicubic upscaling
 - Frame interpolation to 48, 60, 90, 144 FPS, or another target up to 240 FPS
 - 1 FPS playback, calibrated frame stepping, and 1x-8x focal zoom/pan
@@ -39,6 +44,10 @@ operator details are in place.
 - CPU encoders: `libx264`, `libx265`
 - Dry-run mode that prints the exact FFmpeg command
 - Local web UI for previewing and downloading images, video, audio, and enhanced video
+
+See [the SnapDownloader parity matrix](docs/snapdownloader-parity.md) for the
+verified competitor feature list, current gaps, deliberate safety boundaries,
+and implementation order.
 
 ## Requirements
 
@@ -87,7 +96,7 @@ Facebook links, previews supported original and derived files in the browser,
 and keeps working files in a process-specific temporary directory. Use **Clear
 local files** to remove them immediately; normal app shutdown also removes them.
 Starting a new source replaces the previous working set, and starting a new
-enhancement replaces the previous enhanced copy.
+local conversion, trim, or enhancement replaces the previous created copy.
 
 The printed local URL contains a random session key. Open it directly and do
 not share it; the key expires when the process stops.

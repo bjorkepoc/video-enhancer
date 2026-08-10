@@ -195,6 +195,10 @@ Den lokale appen og CLI-en er fortsatt prosjektets bredeste funksjonsflate:
 - presets `fast`, `balanced`, `quality` og `ultra`;
 - 48, 60, 90, 144 eller egendefinert FPS opptil 240;
 - 2x Lanczos/Bicubic;
+- kildekvalitet som `best`, 8K, 4K, 1440p, 1080p, 720p eller 480p uten
+  oppskalering av originalnedlastingen;
+- lokal klipping og eksport til MP4, MOV, AVI, MP3, AAC, M4A, WAV, AIFF,
+  FLAC, WMA eller GIF etter separat samtykke;
 - `libx264`/`libx265`, dry-run og CLI;
 - lokal midlertidig arbeidsmappe og eksplisitt opprydding.
 
@@ -367,14 +371,20 @@ Det separate `/Users/po/dev/media-downloader-lite`-prosjektet er rent på branch
 
 ## Verifisering 10. august 2026
 
-- Python: 111 tester bestått.
+- Python: 127 tester bestått.
 - Ruff: alle kontroller bestått.
+- Bandit: ingen funn etter eksplisitt HTTPS-/redirect-validering av tillatt
+  Instagram-CDN.
+- `pip-audit`: ingen kjente sårbarheter i låste avhengigheter.
+- Faktisk lokal FFmpeg-kjøring: alle 11 eksportformatene opprettet gyldige
+  resultatfiler fra en syntetisk testvideo.
 - Node/Pages: 15 av 15 tester bestått.
 - `git diff --check`: bestått.
 - Produksjons-HTML, `Media Downloader Lite`-branding, VSCO-stopp og sponsorlenke
   verifisert direkte fra deploy `fe327f34-5a06-4eb0-8942-9221b172178c`.
-- Chrome desktop QA: korrekt sideidentitet, meningsfull DOM, ingen framework
-  overlay, ingen app-feil, korrekt sentrering og Terms-dialog åpnet/lukket.
+- Chrome desktop- og mobil-QA: korrekt sideidentitet, meningsfull DOM, ingen
+  framework overlay eller horisontal overflow, korrekt sentrering,
+  kvalitetsvalg og Terms-dialog åpnet/lukket.
 - Tidligere live offentlige eksempler: Instagram, TikTok og Facebook verifisert
   med resolver og byte-range-nedlasting. Nye VSCO-tester viser at både resolver
   og medieproxy stanser før nettverkskall; ingen omgåelse ble kjørt.
@@ -390,16 +400,17 @@ førsteversjon uten å miste lokal funksjonalitet.
 Prioritert gjenstående arbeid:
 
 1. Review og eventuelt merge Plus-branchen etter GitHub-backup.
-2. Avklare skriftlig plattformtillatelse eller godkjent mekanisme før kommersiell
+2. Lage en selvstendig Windows 64-bit-pakke for Plus og verifisere installasjon.
+3. Legge til en liten lokal kø, deretter undertekster, kapitler og native
+   varsler gjennom eksisterende `yt-dlp`-/operativsystemfunksjoner.
+4. Avklare skriftlig plattformtillatelse eller godkjent mekanisme før kommersiell
    markedsføring av Lite-resolveren.
-3. Publisere verifisert operatørnavn, geografisk adresse, direkte e-post,
+5. Publisere verifisert operatørnavn, geografisk adresse, direkte e-post,
    organisasjons-/MVA-status og privat rettighetskanal.
-4. Skaffe en reell direkte sponsor. Dagens plasser og henvendelsesflyt tjener
+6. Skaffe en reell direkte sponsor. Dagens plasser og henvendelsesflyt tjener
    ingenting uten en avtale.
-5. Vedlikeholde tillatte extractors når plattformene endrer offentlig HTML.
-6. Utvide QA med flere uttrykkelig tillatte offentlige eksempler og mobilvisning.
-7. Koble til eget domene bare når det ønskes og kostnaden er godkjent.
-8. Vurdere om flere avanserte lokale CLI-/desktopvalg skal eksponeres i Lite.
+7. Vedlikeholde tillatte extractors når plattformene endrer offentlig HTML.
+8. Koble til eget domene bare når det ønskes og kostnaden er godkjent.
 
 ## Ting vi ikke skal gjøre uten en ny beslutning
 
@@ -442,5 +453,7 @@ git stash list
 - `README.md`: bruk, funksjoner, lokal Plus-app og lenke til separat Lite.
 - `docs/launch-privacy-security.md`: detaljert launch-, personvern-, annonse-,
   plattform- og sikkerhetsgjennomgang.
+- `docs/snapdownloader-parity.md`: verifisert funksjonsmatrise og prioritert
+  Plus-gap mot SnapDownloader.
 - `SECURITY.md`: sikkerhetspolicy og rapportering.
 - `THIRD_PARTY_NOTICES.md`: dependency- og extractor-attribusjon.

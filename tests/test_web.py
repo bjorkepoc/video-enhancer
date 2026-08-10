@@ -27,6 +27,7 @@ from video_enhancer.web import (
     SourceJob,
     build_options,
     create_enhancement_job,
+    create_export_job,
     safe_filename,
     source_payload,
 )
@@ -97,6 +98,11 @@ def test_web_ui_contains_source_first_controls() -> None:
         'id="download-60"',
         'id="download-90"',
         'id="download-upscale"',
+        'id="source-quality-select"',
+        'id="export-format"',
+        'id="clip-start"',
+        'id="clip-end"',
+        'id="create-export"',
         'id="source-result"',
         'id="source-video"',
         'id="source-image"',
@@ -198,7 +204,9 @@ def test_web_ui_contains_source_first_controls() -> None:
     )
     assert 'postJSON("/api/sources/download", {' in HTML
     assert "terms_accepted: true" in HTML
+    assert 'quality: $("source-quality-select").value' in HTML
     assert "local_processing_accepted: true" in HTML
+    assert '`/api/sources/${state.sourceId}/export`' in HTML
     assert "inspect-source" not in HTML
     assert "compare-candidate" not in HTML
     for marker in (
@@ -605,6 +613,46 @@ def test_enhancement_from_source_reuses_file_without_upload(
     assert job.output_path.name == "source-enhanced.mp4"
 
 
+def test_export_from_source_reuses_file_with_format_and_clip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class NoopThread:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+    captured: dict[str, object] = {}
+
+    def build(input_path: Path, output_path: Path, output_format: str, **kwargs: object) -> list[str]:
+        captured.update(
+            input=input_path,
+            output=output_path,
+            format=output_format,
+            **kwargs,
+        )
+        return ["ffmpeg"]
+
+    monkeypatch.setattr(web.threading, "Thread", NoopThread)
+    monkeypatch.setattr(web, "build_export_command", build)
+
+    job = create_export_job(
+        source,
+        source.name,
+        {"format": "mp3", "start": "1.5", "end": "3"},
+        tmp_path,
+    )
+
+    assert job.kind == "audio-export"
+    assert job.output_path.name == "source-export.mp3"
+    assert captured["input"] == source
+    assert captured["start_seconds"] == 1.5
+    assert captured["end_seconds"] == 3.0
+
+
 def test_failed_enhancement_setup_removes_job_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -890,6 +938,7 @@ def test_source_download_route_runs_async_and_reports_saved_media(
         url: str, destination: Path, **kwargs: object
     ) -> dict[str, object]:
         assert url == "https://tiktok.com/@a/video/123"
+        assert kwargs["quality"] == "4k"
         callback = kwargs["process_callback"]
         process = object()
         callback(process)
@@ -916,7 +965,11 @@ def test_source_download_route_runs_async_and_reports_saved_media(
         status, payload = post_json(
             base,
             "/api/sources/download",
-            {"url": "https://tiktok.com/@a/video/123", **ACCEPTED_TERMS},
+            {
+                "url": "https://tiktok.com/@a/video/123",
+                "quality": "4k",
+                **ACCEPTED_TERMS,
+            },
         )
         assert status == 202
         assert payload["status"] in {"queued", "downloading", "done"}
@@ -930,6 +983,7 @@ def test_source_download_route_runs_async_and_reports_saved_media(
             time.sleep(0.01)
 
     assert payload["status"] == "done"
+    assert payload["quality"] == "4k"
     assert payload["media"]["width"] == 1080
     assert payload["original_url"] == f"/files/sources/{source_id}/original"
 
@@ -1098,4 +1152,81 @@ def test_source_enhance_requires_local_processing_confirmation(tmp_path: Path) -
     assert error.value.code == 400
     assert json.load(error.value) == {
         "error": "Confirm local device processing before enhancing."
+    }
+
+
+def test_source_export_route_reuses_original_with_explicit_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = tmp_path / "source-source1" / "original.mp4"
+    original.parent.mkdir()
+    original.write_bytes(b"video")
+    source = SourceJob("source1", "https://tiktok.com/x", original.parent)
+    source.original_path = original
+    source.media_type = "video"
+    source.status = "done"
+    captured: dict[str, object] = {}
+
+    def fake_create(
+        input_path: Path,
+        original_name: str,
+        body: dict[str, object],
+        work_dir: Path,
+    ) -> Job:
+        captured.update(
+            input_path=input_path,
+            original_name=original_name,
+            body=body,
+            work_dir=work_dir,
+        )
+        return Job(
+            "job1",
+            input_path,
+            tmp_path / "derived.mp3",
+            ["ffmpeg"],
+            kind="audio-export",
+        )
+
+    monkeypatch.setattr(web, "create_export_job", fake_create)
+
+    with running_server(tmp_path) as base:
+        SOURCES[source.id] = source
+        status, payload = post_json(
+            base,
+            "/api/sources/source1/export",
+            {
+                "format": "mp3",
+                "start": "4",
+                "end": "9",
+                **LOCAL_PROCESSING_ACCEPTED,
+            },
+        )
+
+    assert status == 202
+    assert payload["kind"] == "audio-export"
+    assert captured["input_path"] == original
+    assert captured["body"] == {
+        "format": "mp3",
+        "start": "4",
+        "end": "9",
+        **LOCAL_PROCESSING_ACCEPTED,
+    }
+
+
+def test_source_export_requires_local_processing_confirmation(tmp_path: Path) -> None:
+    original = tmp_path / "source-source1" / "original.mp4"
+    original.parent.mkdir()
+    original.write_bytes(b"video")
+    source = SourceJob("source1", "https://tiktok.com/x", original.parent)
+    source.original_path = original
+    source.media_type = "video"
+    source.status = "done"
+
+    with running_server(tmp_path) as base, pytest.raises(HTTPError) as error:
+        SOURCES[source.id] = source
+        post_json(base, "/api/sources/source1/export", {"format": "mp3"})
+
+    assert error.value.code == 400
+    assert json.load(error.value) == {
+        "error": "Confirm local device processing before exporting."
     }

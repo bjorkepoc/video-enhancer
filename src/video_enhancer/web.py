@@ -16,6 +16,7 @@ import tempfile
 import threading
 import uuid
 import webbrowser
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,11 +25,14 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .ffmpeg import (
+    AUDIO_EXPORT_FORMATS,
     ENHANCEMENT_TIMEOUT_SECONDS,
+    EXPORT_FORMATS,
     SUPPORTED_VIDEO_CODECS,
     EnhancementOptions,
     FFmpegNotFoundError,
     VideoEnhancerError,
+    build_export_command,
     build_ffmpeg_command,
     resolve_ffmpeg,
 )
@@ -40,6 +44,7 @@ from .sources import (
     download_source,
     run_bounded_process,
     stop_process,
+    validate_download_quality,
     validate_social_url,
 )
 
@@ -1183,6 +1188,22 @@ HTML = """<!doctype html>
       text-underline-offset: 2px;
     }
     .policy-links button:hover { background: transparent; color: var(--accent-dark); }
+    .download-settings {
+      display: flex;
+      grid-column: 1 / -1;
+      align-items: end;
+      gap: 14px;
+    }
+    .download-settings label { width: min(220px, 100%); }
+    .download-settings select,
+    .export-grid input,
+    .export-grid select {
+      min-height: 40px;
+      margin-top: 5px;
+      border-radius: 3px;
+      font-size: 13px;
+    }
+    .download-settings .hint { margin: 0 0 9px; }
     .url-control { position: relative; }
     .url-control > svg { left: 17px; width: 19px; height: 19px; color: var(--muted); }
     .url-control input {
@@ -1354,6 +1375,10 @@ HTML = """<!doctype html>
     }
     .choice-button:hover { border-color: var(--accent); background: var(--accent-soft); }
     .choice-button strong { font-size: 12px; font-weight: 650; white-space: nowrap; }
+    .export-actions { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
+    .export-grid { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 8px; }
+    .export-grid label { font-size: 11px; font-weight: 650; }
+    .export-submit { grid-column: 1 / -1; min-height: 44px; margin-top: 2px; }
     .result { margin-top: 20px; padding: 18px 0 0; border: solid var(--line); border-width: 1px 0 0; border-radius: 0; background: transparent; }
     .result .download-link { margin-top: 15px; }
     .activity-log { margin-top: 16px; border: 1px solid var(--line); border-radius: 3px; }
@@ -1444,6 +1469,9 @@ HTML = """<!doctype html>
       .hero h1 { font-size: clamp(30px, 9vw, 36px); line-height: 1.12; }
       .hero-copy { margin-top: 9px; font-size: 15px; }
       .source-form { grid-template-columns: 1fr; gap: 9px; margin-top: 20px; }
+      .download-settings { align-items: stretch; flex-direction: column; gap: 4px; }
+      .download-settings label { width: 100%; }
+      .download-settings .hint { margin: 0; }
       .url-control input,
       .primary-button { min-height: 52px; }
       .primary-button { width: 100%; }
@@ -1462,6 +1490,8 @@ HTML = """<!doctype html>
       .download-actions { width: 100%; }
       .download-link { width: 100%; }
       .action-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .export-grid { grid-template-columns: 1fr; }
+      .export-submit { grid-column: 1; }
       .house-ad { align-items: center; flex-direction: row; gap: 12px; }
       .house-ad > div { min-width: 0; }
       .house-ad strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1524,6 +1554,20 @@ HTML = """<!doctype html>
           Download media
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
         </button>
+        <div class="download-settings">
+          <label for="source-quality-select">Source quality
+            <select id="source-quality-select">
+              <option value="best">Best available</option>
+              <option value="8k">Up to 8K (4320p)</option>
+              <option value="4k">Up to 4K (2160p)</option>
+              <option value="1440p">Up to QHD (1440p)</option>
+              <option value="1080p">Up to Full HD (1080p)</option>
+              <option value="720p">Up to HD (720p)</option>
+              <option value="480p">Up to 480p</option>
+            </select>
+          </label>
+          <p class="hint">Uses the best source at or below your limit. It never upscales the original download.</p>
+        </div>
         <label class="terms-acceptance" for="terms-accepted">
           <input id="terms-accepted" type="checkbox" required>
           <span>I accept the Terms of Use and confirm that I have read the Privacy Notice.</span>
@@ -1583,7 +1627,7 @@ HTML = """<!doctype html>
             </article>
 
             <article class="video-preview" id="output-player" hidden>
-              <div class="video-title">Enhanced <span class="meta" id="output-meta">Not started</span></div>
+              <div class="video-title">Processed <span class="meta" id="output-meta">Not started</span></div>
               <div class="player-shell" id="output-shell">
                 <div class="video-stage" id="output-stage" data-zoomed="false">
                   <video id="output-video" preload="metadata" playsinline controls></video>
@@ -1631,12 +1675,40 @@ HTML = """<!doctype html>
                   <button class="choice-button" id="download-90" type="button" disabled><strong>90 FPS</strong></button>
                   <button class="choice-button" id="download-upscale" type="button" disabled><strong>2&times; Upscale</strong></button>
                 </div>
+                <div class="export-actions">
+                  <h3>Convert or trim</h3>
+                  <p class="hint">Creates a separate file locally. Leave the clip fields empty to convert the full video.</p>
+                  <div class="export-grid">
+                    <label for="export-format">Format
+                      <select id="export-format">
+                        <option value="mp4">MP4 video</option>
+                        <option value="mov">MOV video</option>
+                        <option value="avi">AVI video</option>
+                        <option value="mp3">MP3 audio</option>
+                        <option value="aac">AAC audio</option>
+                        <option value="m4a">M4A audio</option>
+                        <option value="wav">WAV audio</option>
+                        <option value="aiff">AIFF audio</option>
+                        <option value="flac">FLAC audio</option>
+                        <option value="wma">WMA audio</option>
+                        <option value="gif">Animated GIF</option>
+                      </select>
+                    </label>
+                    <label for="clip-start">Start (seconds)
+                      <input id="clip-start" type="number" min="0" step="0.1" inputmode="decimal" placeholder="0">
+                    </label>
+                    <label for="clip-end">End (seconds)
+                      <input id="clip-end" type="number" min="0" step="0.1" inputmode="decimal" placeholder="Full length">
+                    </label>
+                    <button class="choice-button export-submit" id="create-export" type="button" disabled><strong>Create local file</strong></button>
+                  </div>
+                </div>
               </div>
             </section>
 
             <section class="result" id="result" hidden aria-labelledby="result-name">
               <div>
-                <span class="quality-label">Enhanced file</span>
+                <span class="quality-label">Created file</span>
                 <strong id="result-name"></strong>
                 <p class="hint" id="result-path">Enhanced synthetic copy</p>
               </div>
@@ -1788,20 +1860,20 @@ HTML = """<!doctype html>
   <dialog id="local-processing-dialog" aria-labelledby="local-processing-title">
     <form class="dialog-body policy-content" id="local-processing-form">
       <div class="dialog-heading">
-        <div><p class="dialog-kicker">Runs on this device</p><h2 id="local-processing-title">Confirm local enhancement</h2></div>
-        <button class="icon-button" type="button" data-close-dialog="local-processing-dialog" aria-label="Cancel local enhancement">&times;</button>
+        <div><p class="dialog-kicker">Runs on this device</p><h2 id="local-processing-title">Confirm local processing</h2></div>
+        <button class="icon-button" type="button" data-close-dialog="local-processing-dialog" aria-label="Cancel local processing">&times;</button>
       </div>
       <section>
         <h3>Your device does the work</h3>
-        <p>This enhancement uses your device's processor, memory, storage and battery. It may take time, make the device warm or temporarily reduce performance. The original remains unchanged and the synthetic result stays on this device.</p>
+        <p>Conversion, trimming, or enhancement uses your device's processor, memory, storage and battery. It may take time, make the device warm or temporarily reduce performance. The original remains unchanged and the new file stays on this device.</p>
       </section>
       <label class="terms-acceptance" for="local-processing-accepted">
         <input id="local-processing-accepted" type="checkbox" required>
-        <span>I understand and want to start local enhancement.</span>
+        <span>I understand and want to start local processing.</span>
       </label>
       <div class="dialog-actions">
         <button class="secondary-dialog-button" type="button" data-close-dialog="local-processing-dialog">Cancel</button>
-        <button type="submit">Start local enhancement</button>
+        <button type="submit">Start local processing</button>
       </div>
     </form>
   </dialog>
@@ -1814,7 +1886,7 @@ HTML = """<!doctype html>
       poll: null,
       sourceId: null,
       outputFps: 30,
-      pendingEnhancementMode: null,
+      pendingLocalAction: null,
     };
 
     function apiFetch(path, options = {}) {
@@ -2078,7 +2150,7 @@ HTML = """<!doctype html>
     }
 
     function setDerivedDisabled(disabled) {
-      ["download-60", "download-90", "download-upscale"].forEach((id) => {
+      ["download-60", "download-90", "download-upscale", "create-export"].forEach((id) => {
         $(id).disabled = disabled;
       });
     }
@@ -2118,6 +2190,7 @@ HTML = """<!doctype html>
      try {
        const source = await postJSON("/api/sources/download", {
          url,
+         quality: $("source-quality-select").value,
          terms_accepted: true,
          terms_version: TERMS_VERSION,
        });
@@ -2254,8 +2327,36 @@ HTML = """<!doctype html>
       }
     }
 
-    function requestSourceEnhancement(mode) {
-      state.pendingEnhancementMode = mode;
+    async function startSourceExport() {
+      if (!state.sourceId) return;
+      const format = $("export-format").value;
+      const audio = ["mp3", "aac", "m4a", "wav", "aiff", "flac", "wma"].includes(format);
+      state.outputFps = format === "gif" ? 15 : sourceFrames.fps();
+      setDerivedDisabled(true);
+      $("result").hidden = true;
+      $("output-player").hidden = audio;
+      $("output-meta").textContent = "Starting";
+      $("output-empty").hidden = false;
+      $("output-empty").textContent = "Creating the converted or trimmed copy on this device...";
+      $("output-video").removeAttribute("src");
+      $("output-video").load();
+      try {
+        const job = await postJSON(`/api/sources/${state.sourceId}/export`, {
+          format,
+          start: $("clip-start").value,
+          end: $("clip-end").value,
+          local_processing_accepted: true,
+        });
+        watchJob(job.id).catch(showPollingError);
+      } catch (error) {
+        setDerivedDisabled(false);
+        $("source-error").textContent = error.message;
+        setLog([error.message]);
+      }
+    }
+
+    function requestLocalProcessing(action) {
+      state.pendingLocalAction = action;
       $("local-processing-accepted").checked = false;
       $("local-processing-dialog").showModal();
     }
@@ -2263,15 +2364,16 @@ HTML = """<!doctype html>
     $("local-processing-form").addEventListener("submit", (event) => {
       event.preventDefault();
       if (!event.currentTarget.reportValidity()) return;
-      const mode = state.pendingEnhancementMode;
-      state.pendingEnhancementMode = null;
+      const action = state.pendingLocalAction;
+      state.pendingLocalAction = null;
       $("local-processing-dialog").close();
-      if (mode) startSourceEnhancement(mode);
+      if (action) action();
     });
 
-    $("download-60").addEventListener("click", () => requestSourceEnhancement("60"));
-   $("download-90").addEventListener("click", () => requestSourceEnhancement("90"));
-   $("download-upscale").addEventListener("click", () => requestSourceEnhancement("upscale"));
+    $("download-60").addEventListener("click", () => requestLocalProcessing(() => startSourceEnhancement("60")));
+   $("download-90").addEventListener("click", () => requestLocalProcessing(() => startSourceEnhancement("90")));
+   $("download-upscale").addEventListener("click", () => requestLocalProcessing(() => startSourceEnhancement("upscale")));
+   $("create-export").addEventListener("click", () => requestLocalProcessing(startSourceExport));
 
     async function watchJob(id) {
      clearInterval(state.poll);
@@ -2284,20 +2386,31 @@ HTML = """<!doctype html>
        if (job.status === "done") {
          clearInterval(state.poll);
           setDerivedDisabled(false);
+         const audio = job.kind === "audio-export";
          $("result").hidden = false;
          $("result-name").textContent = job.output_name;
-         $("result-path").textContent = "Enhanced synthetic copy";
+         $("result-path").textContent = job.kind === "enhancement"
+           ? "Enhanced synthetic copy"
+           : audio ? "Local audio export" : "Local converted or trimmed copy";
          $("download").href = localFileUrl(job.output_url, true);
-         outputFrames.setFps(state.outputFps);
-         $("output-video").src = localFileUrl(job.output_url);
-         $("output-video").load();
-          $("output-empty").hidden = true;
-          $("workspace-status").textContent = "Enhanced file ready to download.";
+         $("output-player").hidden = audio;
+         if (!audio) {
+           outputFrames.setFps(state.outputFps);
+           $("output-video").src = localFileUrl(job.output_url);
+           $("output-video").load();
+           $("output-empty").hidden = true;
+         }
+          $("workspace-status").textContent = audio
+            ? "Audio file ready to download."
+            : job.kind === "enhancement"
+              ? "Enhanced file ready to download."
+              : "Converted or trimmed file ready to download.";
        }
        if (job.status === "error") {
          clearInterval(state.poll);
           setDerivedDisabled(false);
           $("output-empty").textContent = job.error || "The enhanced copy could not be created.";
+          $("source-error").textContent = job.error || "The local file could not be created.";
        }
      };
      state.poll = setInterval(() => tick().catch((error) => {
@@ -2311,6 +2424,7 @@ HTML = """<!doctype html>
      clearInterval(state.poll);
      state.poll = null;
      state.sourceId = null;
+     state.pendingLocalAction = null;
      $("source-url").value = "";
      $("source-result").hidden = true;
      $("result").hidden = true;
@@ -2326,6 +2440,8 @@ HTML = """<!doctype html>
       $("source-video").hidden = false;
       $("source-audio").hidden = true;
       $("source-audio").removeAttribute("href");
+      $("clip-start").value = "";
+      $("clip-end").value = "";
       $("source-advanced").hidden = false;
       $("enhancement-actions").hidden = false;
       $("output-player").hidden = true;
@@ -2393,6 +2509,7 @@ class Job:
     input_path: Path
     output_path: Path
     command: list[str]
+    kind: str = "enhancement"
     status: str = "queued"
     logs: list[str] = field(default_factory=list)
     error: str = ""
@@ -2406,6 +2523,7 @@ class SourceJob:
     id: str
     url: str
     directory: Path
+    quality: str = "best"
     status: str = "queued"
     original_path: Path | None = None
     preview_path: Path | None = None
@@ -2575,6 +2693,7 @@ def job_payload(job: Job) -> dict[str, Any]:
     return {
         "id": job.id,
         "status": job.status,
+        "kind": job.kind,
         "error": job.error,
         "logs": job.logs,
         "input_name": job.input_path.name,
@@ -2595,6 +2714,7 @@ def source_payload(job: SourceJob) -> dict[str, Any]:
         "platform": job.platform,
         "media_type": job.media_type,
         "item_count": job.item_count,
+        "quality": job.quality,
     }
     if job.original_path:
         payload.update(
@@ -2634,6 +2754,33 @@ def create_enhancement_job(
     params: dict[str, list[str]],
     work_dir: Path,
 ) -> Job:
+    original = safe_filename(original_name)
+    output_name = safe_filename(
+        params.get("output", [f"{Path(original).stem}-enhanced.mp4"])[0],
+        default="enhanced.mp4",
+    )
+    if Path(output_name).suffix.lower() not in {".mp4", ".mkv", ".mov", ".m4v"}:
+        output_name = f"{Path(output_name).stem}.mp4"
+    return _create_local_job(
+        input_path,
+        original,
+        output_name,
+        work_dir,
+        "enhancement",
+        lambda output_path: build_ffmpeg_command(
+            input_path, output_path, build_options(params)
+        ),
+    )
+
+
+def _create_local_job(
+    input_path: Path,
+    original_name: str,
+    output_name: str,
+    work_dir: Path,
+    kind: str,
+    command_builder: Callable[[Path], list[str]],
+) -> Job:
     with LOCK:
         if any(job.status in {"queued", "running"} for job in JOBS.values()):
             raise ValueError("Wait for the active export to finish.")
@@ -2642,29 +2789,20 @@ def create_enhancement_job(
             for source in SOURCES.values()
         ):
             raise ValueError("Wait for the active source download to finish.")
-        original = safe_filename(original_name)
         job_id = uuid.uuid4().hex[:12]
         job_dir = work_dir / job_id
         job_dir.mkdir(parents=True, exist_ok=False)
-        output_name = safe_filename(
-            params.get("output", [f"{Path(original).stem}-enhanced.mp4"])[0],
-            default="enhanced.mp4",
-        )
-        if Path(output_name).suffix.lower() not in {".mp4", ".mkv", ".mov", ".m4v"}:
-            output_name = f"{Path(output_name).stem}.mp4"
         output_path = job_dir / output_name
         try:
-            command = build_ffmpeg_command(
-                input_path, output_path, build_options(params)
-            )
+            command = command_builder(output_path)
         except Exception:
             shutil.rmtree(job_dir, ignore_errors=True)
             raise
         for previous in JOBS.values():
             shutil.rmtree(previous.output_path.parent, ignore_errors=True)
         JOBS.clear()
-        job = Job(job_id, input_path, output_path, command)
-        job.logs.append(f"Loaded {original}.")
+        job = Job(job_id, input_path, output_path, command, kind=kind)
+        job.logs.append(f"Loaded {original_name}.")
         thread = threading.Thread(target=run_job, args=(job,), daemon=True)
         job.thread = thread
         JOBS[job_id] = job
@@ -2677,6 +2815,49 @@ def create_enhancement_job(
     return job
 
 
+def create_export_job(
+    input_path: Path,
+    original_name: str,
+    body: dict[str, Any],
+    work_dir: Path,
+) -> Job:
+    output_format = str(body.get("format", "")).strip().lower()
+    if output_format not in EXPORT_FORMATS:
+        raise ValueError(f"Output format must be one of: {', '.join(EXPORT_FORMATS)}.")
+
+    def seconds(name: str) -> float | None:
+        value = body.get(name)
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Clip {name} must be a number of seconds.") from exc
+
+    start_seconds = seconds("start")
+    end_seconds = seconds("end")
+    original = safe_filename(original_name)
+    output_name = safe_filename(
+        f"{Path(original).stem}-export.{output_format}",
+        default=f"export.{output_format}",
+    )
+    kind = "audio-export" if output_format in AUDIO_EXPORT_FORMATS else "media-export"
+    return _create_local_job(
+        input_path,
+        original,
+        output_name,
+        work_dir,
+        kind,
+        lambda output_path: build_export_command(
+            input_path,
+            output_path,
+            output_format,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+        ),
+    )
+
+
 def run_source_download(job: SourceJob) -> None:
     with LOCK:
         job.status = "downloading"
@@ -2685,6 +2866,7 @@ def run_source_download(job: SourceJob) -> None:
         result = download_source(
             job.url,
             job.directory,
+            quality=job.quality,
             process_callback=lambda process: own_process(job, process),
         )
     except (OSError, SourceError) as exc:
@@ -2886,9 +3068,16 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Accept the current Terms of Use before downloading media.")
         url = str(body.get("url", "")).strip()
         platform = validate_social_url(url)
+        quality = validate_download_quality(str(body.get("quality", "best")))
         source_id = uuid.uuid4().hex[:12]
         directory = self.work_dir / f"source-{source_id}"
-        source = SourceJob(source_id, url, directory, platform=platform)
+        source = SourceJob(
+            source_id,
+            url,
+            directory,
+            quality=quality,
+            platform=platform,
+        )
         with LOCK:
             if any(job.status in {"queued", "running"} for job in JOBS.values()):
                 raise ValueError("Wait for the active export to finish.")
@@ -2942,6 +3131,21 @@ class Handler(BaseHTTPRequestHandler):
                 source.original_path,
                 source.original_path.name,
                 params,
+                self.work_dir,
+            )
+            self.send_json(HTTPStatus.ACCEPTED, job_payload(job))
+            return
+        if action == "export":
+            if body.get("local_processing_accepted") is not True:
+                raise ValueError("Confirm local device processing before exporting.")
+            if source.status != "done" or not source.original_path:
+                raise ValueError("Download the original source before exporting it.")
+            if source.media_type != "video":
+                raise ValueError("Only downloaded videos can be converted or trimmed.")
+            job = create_export_job(
+                source.original_path,
+                source.original_path.name,
+                body,
                 self.work_dir,
             )
             self.send_json(HTTPStatus.ACCEPTED, job_payload(job))

@@ -10,10 +10,12 @@ import pytest
 
 from video_enhancer import ffmpeg, macos_app
 from video_enhancer.ffmpeg import (
+    EXPORT_FORMATS,
     SUPPORTED_VIDEO_CODECS,
     EnhancementOptions,
     FFmpegExecutionError,
     ValidationError,
+    build_export_command,
     build_ffmpeg_command,
     resolve_ffmpeg,
 )
@@ -65,6 +67,60 @@ def test_public_presets_build_ffmpeg_commands(tmp_path: Path, preset: str) -> No
 
 def test_supported_video_codecs_are_cpu_only() -> None:
     assert SUPPORTED_VIDEO_CODECS == ("libx264", "libx265")
+
+
+@pytest.mark.parametrize(
+    ("output_format", "expected"),
+    [
+        ("mp4", "libx264"),
+        ("mov", "libx264"),
+        ("avi", "mpeg4"),
+        ("mp3", "libmp3lame"),
+        ("aac", "aac"),
+        ("m4a", "aac"),
+        ("wav", "pcm_s16le"),
+        ("aiff", "pcm_s16be"),
+        ("flac", "flac"),
+        ("wma", "wmav2"),
+        ("gif", "paletteuse"),
+    ],
+)
+def test_local_export_formats_support_clipping(
+    tmp_path: Path, output_format: str, expected: str
+) -> None:
+    input_path, _ = _sample_paths(tmp_path)
+    output_path = tmp_path / f"output.{output_format}"
+
+    command = build_export_command(
+        input_path,
+        output_path,
+        output_format,
+        start_seconds=2.5,
+        end_seconds=6.5,
+        check_executable=False,
+    )
+    text = " ".join(command)
+
+    assert output_format in EXPORT_FORMATS
+    assert command[command.index("-ss") + 1] == "2.5"
+    assert command[command.index("-t") + 1] == "4"
+    assert "-map_metadata" in command
+    assert expected in text
+    assert command[-1] == str(output_path)
+
+
+def test_local_export_rejects_reversed_clip(tmp_path: Path) -> None:
+    input_path, output_path = _sample_paths(tmp_path)
+
+    with pytest.raises(ValidationError, match="end must be later"):
+        build_export_command(
+            input_path,
+            output_path,
+            "mp4",
+            start_seconds=8,
+            end_seconds=4,
+            check_executable=False,
+        )
 
 
 def test_packaged_ffmpeg_override_is_resolved(

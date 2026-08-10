@@ -60,6 +60,25 @@ def test_download_command_uses_best_source_without_recode(tmp_path: Path) -> Non
     ):
         assert option in command
     assert command[command.index("--downloader") + 1] == "native"
+
+
+def test_download_command_caps_source_quality_without_upscaling(tmp_path: Path) -> None:
+    command = build_download_command(
+        "https://tiktok.com/x",
+        tmp_path,
+        quality="4k",
+    )
+
+    assert command[command.index("-f") + 1] == (
+        "bv*[height<=2160]+ba/b[height<=2160]"
+    )
+
+    with pytest.raises(SourceError, match="Quality must be"):
+        build_download_command(
+            "https://tiktok.com/x",
+            tmp_path,
+            quality="16k",
+        )
     assert command[command.index("--max-filesize") + 1] == "8G"
     assert command[command.index("--socket-timeout") + 1] == "30"
     assert command[command.index("--retries") + 1] == "3"

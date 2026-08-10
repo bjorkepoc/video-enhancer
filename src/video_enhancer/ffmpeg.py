@@ -17,6 +17,20 @@ MAX_SCALE_FACTOR = 2.0
 MAX_TARGET_FPS = 240
 ENHANCEMENT_TIMEOUT_SECONDS = 6 * 60 * 60
 SUPPORTED_VIDEO_CODECS = ("libx264", "libx265")
+EXPORT_FORMATS = (
+    "mp4",
+    "mov",
+    "avi",
+    "mp3",
+    "aac",
+    "m4a",
+    "wav",
+    "aiff",
+    "flac",
+    "wma",
+    "gif",
+)
+AUDIO_EXPORT_FORMATS = frozenset({"mp3", "aac", "m4a", "wav", "aiff", "flac", "wma"})
 
 
 class VideoEnhancerError(Exception):
@@ -164,6 +178,108 @@ def build_ffmpeg_command(
         "+faststart",
         str(output_path),
     ]
+
+
+def build_export_command(
+    input_path: Path,
+    output_path: Path,
+    output_format: str,
+    *,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+    check_executable: bool = True,
+) -> list[str]:
+    """Build a local conversion or trim command without changing the source."""
+
+    output_format = output_format.lower().strip()
+    if output_format not in EXPORT_FORMATS:
+        raise ValidationError(
+            f"Unknown output format '{output_format}'. Choose one of: "
+            f"{', '.join(EXPORT_FORMATS)}."
+        )
+    for name, value in (("start", start_seconds), ("end", end_seconds)):
+        if value is not None and (not math.isfinite(value) or value < 0):
+            raise ValidationError(f"Clip {name} must be a non-negative number of seconds.")
+    if end_seconds is not None and end_seconds <= (start_seconds or 0):
+        raise ValidationError("Clip end must be later than clip start.")
+
+    validate_paths(input_path, output_path, overwrite=True)
+    ffmpeg = resolve_ffmpeg() if check_executable else "ffmpeg"
+    command = [ffmpeg, "-hide_banner", "-y", "-nostdin"]
+    if start_seconds:
+        command.extend(["-ss", f"{start_seconds:g}"])
+    command.extend(["-i", str(input_path)])
+    if end_seconds is not None:
+        command.extend(["-t", f"{end_seconds - (start_seconds or 0):g}"])
+    command.extend(["-map_metadata", "0"])
+
+    audio_codecs = {
+        "mp3": ["-c:a", "libmp3lame", "-q:a", "2"],
+        "aac": ["-c:a", "aac", "-b:a", "256k"],
+        "m4a": ["-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart"],
+        "wav": ["-c:a", "pcm_s16le"],
+        "aiff": ["-c:a", "pcm_s16be"],
+        "flac": ["-c:a", "flac"],
+        "wma": ["-c:a", "wmav2", "-b:a", "256k"],
+    }
+    if output_format in AUDIO_EXPORT_FORMATS:
+        command.extend(["-map", "0:a:0", "-vn", *audio_codecs[output_format]])
+    elif output_format == "gif":
+        command.extend(
+            [
+                "-filter_complex",
+                (
+                    "[0:v:0]fps=15,scale=w='min(1280,iw)':h=-2:flags=lanczos,"
+                    "split[v0][v1];[v0]palettegen=max_colors=256[p];"
+                    "[v1][p]paletteuse=dither=sierra2_4a[out]"
+                ),
+                "-map",
+                "[out]",
+                "-loop",
+                "0",
+            ]
+        )
+    elif output_format == "avi":
+        command.extend(
+            [
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-c:v",
+                "mpeg4",
+                "-q:v",
+                "3",
+                "-c:a",
+                "libmp3lame",
+                "-q:a",
+                "2",
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "256k",
+                "-movflags",
+                "+faststart",
+            ]
+        )
+    return [*command, str(output_path)]
 
 
 def format_command(command: Sequence[str]) -> str:

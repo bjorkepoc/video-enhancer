@@ -28,6 +28,15 @@ SUPPORTED_HOSTS = {
 }
 BEST_FORMAT = "bv*+ba/b"
 BEST_FORMAT_SORT = "res,fps,quality,hdr:12,vcodec,size,br,asr,source"
+DOWNLOAD_QUALITIES = {
+    "best": None,
+    "8k": 4320,
+    "4k": 2160,
+    "1440p": 1440,
+    "1080p": 1080,
+    "720p": 720,
+    "480p": 480,
+}
 IMAGE_EXTENSIONS = {".avif", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".webp"}
 AUDIO_EXTENSIONS = {".aac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 INSTAGRAM_IMAGE_HOSTS = {"fbcdn.net", "cdninstagram.com"}
@@ -319,14 +328,30 @@ def validate_social_url(raw: str) -> str:
     raise SourceError("Only VSCO, Instagram, TikTok, and Facebook URLs are supported.")
 
 
+def validate_download_quality(raw: str) -> str:
+    quality = raw.strip().lower()
+    if quality not in DOWNLOAD_QUALITIES:
+        raise SourceError(
+            "Quality must be best, 8k, 4k, 1440p, 1080p, 720p, or 480p."
+        )
+    return quality
+
+
 def build_download_command(
     url: str,
     destination: Path,
     *,
     yt_dlp: str = "yt-dlp",
+    quality: str = "best",
 ) -> list[str]:
     normalized_url = url.strip()
     validate_social_url(normalized_url)
+    max_height = DOWNLOAD_QUALITIES[validate_download_quality(quality)]
+    selected_format = (
+        BEST_FORMAT
+        if max_height is None
+        else f"bv*[height<={max_height}]+ba/b[height<={max_height}]"
+    )
     return [
         *_yt_dlp_command(yt_dlp),
         "--no-overwrites",
@@ -343,7 +368,7 @@ def build_download_command(
         "--format-sort",
         BEST_FORMAT_SORT,
         "-f",
-        BEST_FORMAT,
+        selected_format,
         "-o",
         str(destination / "%(title).80s-%(id)s.%(ext)s"),
         "--print",
@@ -767,7 +792,10 @@ def _download_instagram_image_source(
                     "User-Agent": "Mozilla/5.0",
                 },
             )
-            with urlopen(request, timeout=SOCKET_TIMEOUT_SECONDS) as response:
+            # Candidate and final redirect are both HTTPS CDN-allowlisted.
+            with urlopen(  # nosec B310
+                request, timeout=SOCKET_TIMEOUT_SECONDS
+            ) as response:
                 if not _is_instagram_image_url(response.geturl()):
                     raise SourceError("Instagram returned an untrusted image location.")
                 extension = INSTAGRAM_IMAGE_TYPES.get(
@@ -866,11 +894,13 @@ def download_source(
     *,
     yt_dlp: str = "yt-dlp",
     gallery_dl: str = "gallery-dl",
+    quality: str = "best",
     process_callback: ProcessCallback | None = None,
 ) -> dict[str, Any]:
     destination.mkdir(parents=True, exist_ok=True)
     normalized_url = url.strip()
     platform = validate_social_url(normalized_url)
+    quality = validate_download_quality(quality)
     image_attempted = _looks_like_image_post(platform, normalized_url)
     if image_attempted:
         image_result = _download_image_source(
@@ -888,7 +918,12 @@ def download_source(
                 "Check that the link is public and try again."
             )
 
-    command = build_download_command(normalized_url, destination, yt_dlp=yt_dlp)
+    command = build_download_command(
+        normalized_url,
+        destination,
+        yt_dlp=yt_dlp,
+        quality=quality,
+    )
     existing = {path.name for path in destination.iterdir()}
     try:
         completed = _run_yt_dlp(

@@ -28,6 +28,18 @@ def main() -> None:
     os.environ["PATH"] = os.pathsep.join(
         part for part in (str(bin_dir), os.environ.get("PATH")) if part
     )
+    if os.environ.get("VIDEO_ENHANCER_SMOKE_TEST") == "1":
+        from video_enhancer.sources import _is_single_post_url
+
+        for platform, url in (
+            ("vsco", "https://vsco.co/example/media/abc"),
+            ("instagram", "https://instagram.com/p/abc/"),
+            ("tiktok", "https://tiktok.com/@example/video/123"),
+            ("facebook", "https://facebook.com/photo.php?fbid=123"),
+        ):
+            if not _is_single_post_url(platform, url):
+                raise RuntimeError(f"The packaged {platform} extractor is missing.")
+        return
     run_server(port=0, open_browser=True)
 
 

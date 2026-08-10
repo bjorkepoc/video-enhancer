@@ -97,6 +97,7 @@ pyinstaller_args=(
   --icon "$project_dir/assets/VideoEnhancer.icns"
   --osx-bundle-identifier com.bjorkepoc.videoenhancer
   --paths "$project_dir/src"
+  --collect-submodules gallery_dl.extractor
   --add-binary "$yt_dlp:bin"
   --add-binary "$gallery_dl:bin"
   --add-binary "$ffmpeg:bin"
@@ -129,6 +130,7 @@ if [[ "$signing_identity" != "-" ]]; then
 fi
 codesign "${codesign_args[@]}" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
+VIDEO_ENHANCER_SMOKE_TEST=1 "$app/Contents/MacOS/Video Enhancer"
 "$app/Contents/Frameworks/bin/gallery-dl" --version >/dev/null
 
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then

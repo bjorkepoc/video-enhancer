@@ -2,6 +2,9 @@
 
 The optional macOS application bundle contains these third-party components:
 
+- **gallery-dl 1.32.9** — GPL-2.0. The separately bundled executable handles
+  supported public image posts and is invoked as a subprocess. Source and
+  license: <https://codeberg.org/mikf/gallery-dl/releases/tag/v1.32.9>.
 - **yt-dlp 2026.07.04** — GPL-3.0-or-later. The bundled official macOS
   executable is GPL-licensed because it includes compiled third-party
   components; the source-only yt-dlp project is Unlicense. Source, licenses,

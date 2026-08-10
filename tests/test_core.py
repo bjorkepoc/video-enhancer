@@ -82,7 +82,7 @@ def test_macos_app_uses_bundled_tools(
 ) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name in ("ffmpeg", "yt-dlp"):
+    for name in ("ffmpeg", "gallery-dl", "yt-dlp"):
         (bin_dir / name).write_bytes(b"binary")
     called: dict[str, object] = {}
     monkeypatch.setattr(macos_app.sys, "_MEIPASS", str(tmp_path), raising=False)
@@ -93,6 +93,7 @@ def test_macos_app_uses_bundled_tools(
     )
     monkeypatch.setenv("VIDEO_ENHANCER_FFMPEG", "")
     monkeypatch.setenv("VIDEO_ENHANCER_YT_DLP", "")
+    monkeypatch.setenv("VIDEO_ENHANCER_GALLERY_DL", "")
     monkeypatch.setenv("PATH", "/usr/bin")
 
     macos_app.main()
@@ -100,6 +101,9 @@ def test_macos_app_uses_bundled_tools(
     assert called == {"port": 0, "open_browser": True}
     assert macos_app.os.environ["VIDEO_ENHANCER_FFMPEG"] == str(bin_dir / "ffmpeg")
     assert macos_app.os.environ["VIDEO_ENHANCER_YT_DLP"] == str(bin_dir / "yt-dlp")
+    assert macos_app.os.environ["VIDEO_ENHANCER_GALLERY_DL"] == str(
+        bin_dir / "gallery-dl"
+    )
     assert macos_app.os.environ["PATH"].split(macos_app.os.pathsep)[0] == str(bin_dir)
 
 

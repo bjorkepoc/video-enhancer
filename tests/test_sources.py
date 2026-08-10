@@ -13,7 +13,10 @@ from video_enhancer import sources
 from video_enhancer.sources import (
     SourceError,
     build_download_command,
+    build_image_download_command,
+    build_instagram_image_metadata_command,
     download_source,
+    extract_audio,
     parse_ffprobe,
     probe_media,
     validate_social_url,
@@ -23,6 +26,8 @@ from video_enhancer.sources import (
 def test_validate_social_url_allows_only_supported_https_hosts() -> None:
     assert validate_social_url("https://vm.tiktok.com/abc") == "tiktok"
     assert validate_social_url("https://www.instagram.com/reel/abc/") == "instagram"
+    assert validate_social_url("https://www.facebook.com/reel/123") == "facebook"
+    assert validate_social_url("https://vsco.co/user/media/abc") == "vsco"
     for url in (
         "http://tiktok.com/a",
         "https://tiktok.com.evil.test/a",
@@ -77,6 +82,39 @@ def test_download_command_uses_packaged_yt_dlp(
     assert command[0] == str(packaged)
     assert "-m" not in command[:3]
     assert command[command.index("--ffmpeg-location") + 1] == str(ffmpeg)
+
+
+def test_image_download_command_is_bounded_and_ignores_user_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packaged = tmp_path / "gallery-dl"
+    monkeypatch.setenv("VIDEO_ENHANCER_GALLERY_DL", str(packaged))
+
+    command = build_image_download_command(
+        "https://vsco.co/user/media/abc", tmp_path
+    )
+
+    assert command[0] == str(packaged)
+    assert "--config-ignore" in command
+    assert command[command.index("--cache-file") + 1] == ":memory:"
+    assert command[command.index("--directory") + 1] == str(tmp_path)
+    assert command[command.index("--filesize-max") + 1] == "8G"
+    assert command[command.index("--range") + 1] == "1-51"
+    assert command[-1] == "https://vsco.co/user/media/abc"
+
+
+def test_instagram_image_metadata_command_is_anonymous_and_bounded() -> None:
+    command = build_instagram_image_metadata_command(
+        "https://www.instagram.com/p/example/"
+    )
+
+    assert "--ignore-no-formats-error" in command
+    assert "--dump-single-json" in command
+    assert "--skip-download" in command
+    assert "--no-cookies-from-browser" in command
+    assert command[command.index("--socket-timeout") + 1] == "30"
+    assert command[command.index("--retries") + 1] == "3"
+    assert command[-1] == "https://www.instagram.com/p/example/"
 
 
 def test_stop_process_terminates_windows_process_tree(
@@ -245,11 +283,202 @@ def test_download_source_returns_contained_file_and_probe(
 
     assert result == {
         "path": output,
+        "preview_path": output,
+        "audio_path": None,
         "filename": output.name,
         "format_id": "best-id",
         "operation": "direct",
+        "platform": "tiktok",
+        "media_type": "video",
+        "item_count": 1,
         "media": {"width": 1080, "height": 1920},
     }
+
+
+def test_download_source_archives_image_post_and_keeps_tiktok_audio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def download(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        (tmp_path / "one.jpg").write_bytes(b"one")
+        (tmp_path / "two.webp").write_bytes(b"two")
+        (tmp_path / "sound.mp3").write_bytes(b"sound")
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(sources, "_run_gallery_dl", download)
+
+    result = download_source(
+        "https://www.tiktok.com/@creator/photo/123", tmp_path
+    )
+
+    assert result["media_type"] == "image"
+    assert result["item_count"] == 2
+    assert result["preview_path"] == tmp_path / "one.jpg"
+    assert result["audio_path"] == tmp_path / "sound.mp3"
+    assert result["path"] == tmp_path / "images.zip"
+    with sources.zipfile.ZipFile(result["path"]) as archive:
+        assert archive.namelist() == ["one.jpg", "two.webp"]
+    assert not (tmp_path / "two.webp").exists()
+
+
+def test_download_source_falls_back_to_original_instagram_images(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_urls = [
+        "https://instagram.test.fbcdn.net/media/one.jpg?stp=original",
+        "https://instagram.test.fbcdn.net/media/two.jpg?stp=original",
+    ]
+    payload = {
+        "entries": [
+            {
+                "id": identifier,
+                "formats": [],
+                "thumbnails": [
+                    {
+                        "id": "0",
+                        "url": f"https://instagram.test.fbcdn.net/media/{identifier}.jpg?stp=s1080x1080",
+                    },
+                    {"id": "13", "url": original_url},
+                ],
+            }
+            for identifier, original_url in zip(
+                ("one", "two"), original_urls, strict=True
+            )
+        ]
+    }
+    monkeypatch.setattr(
+        sources,
+        "_run_gallery_dl",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", ""),
+    )
+
+    def run_yt_dlp(
+        command: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        if "--dump-single-json" in command:
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(command, 1, "", "")
+
+    monkeypatch.setattr(sources, "_run_yt_dlp", run_yt_dlp)
+    requested: list[str] = []
+
+    class Headers:
+        @staticmethod
+        def get_content_type() -> str:
+            return "image/jpeg"
+
+    class Response:
+        headers = Headers()
+
+        def __init__(self, url: str) -> None:
+            self.url = url
+            self.data = f"image:{url}".encode()
+            self.offset = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        def geturl(self) -> str:
+            return self.url
+
+        def read(self, size: int) -> bytes:
+            chunk = self.data[self.offset : self.offset + size]
+            self.offset += len(chunk)
+            return chunk
+
+    def open_image(request: object, **kwargs: Any) -> Response:
+        url = request.full_url
+        requested.append(url)
+        return Response(url)
+
+    monkeypatch.setattr(sources, "urlopen", open_image)
+
+    result = download_source(
+        "https://www.instagram.com/p/example/?img_index=1", tmp_path
+    )
+
+    assert requested == original_urls
+    assert result["format_id"] == "instagram-original-images"
+    assert result["media_type"] == "image"
+    assert result["item_count"] == 2
+    assert result["path"] == tmp_path / "images.zip"
+    assert result["preview_path"] == tmp_path / "instagram-01-one.jpg"
+    with sources.zipfile.ZipFile(result["path"]) as archive:
+        assert archive.namelist() == [
+            "instagram-01-one.jpg",
+            "instagram-02-two.jpg",
+        ]
+
+
+def test_instagram_image_fallback_rejects_untrusted_media_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {
+        "entries": [
+            {
+                "id": "one",
+                "formats": [],
+                "thumbnails": [{"url": "https://attacker.example/image.jpg"}],
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        sources,
+        "_run_gallery_dl",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", ""),
+    )
+    monkeypatch.setattr(
+        sources,
+        "_run_yt_dlp",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0 if "--dump-single-json" in command else 1,
+            json.dumps(payload) if "--dump-single-json" in command else "",
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        sources,
+        "urlopen",
+        lambda *args, **kwargs: pytest.fail("untrusted URL was opened"),
+    )
+
+    with pytest.raises(SourceError, match="did not provide public media"):
+        download_source("https://www.instagram.com/p/example/", tmp_path)
+
+
+def test_download_source_extracts_tiktok_video_audio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "video.mp4"
+    output.write_bytes(b"video")
+    audio = tmp_path / "video-audio.mp3"
+    monkeypatch.setattr(
+        sources,
+        "_run_yt_dlp",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, f"FILE:{output}\nFORMAT:best\n", ""
+        ),
+    )
+    monkeypatch.setattr(
+        sources,
+        "probe_media",
+        lambda *args, **kwargs: {"audio_codec": "aac"},
+    )
+
+    def audio_extract(source: Path, target: Path, **kwargs: Any) -> Path:
+        assert source == output
+        assert target == audio
+        target.write_bytes(b"audio")
+        return target
+
+    monkeypatch.setattr(sources, "extract_audio", audio_extract)
+
+    assert download_source("https://tiktok.com/video/123", tmp_path)[
+        "audio_path"
+    ] == audio
 
 
 def test_download_source_hides_raw_yt_dlp_errors(
@@ -262,15 +491,49 @@ def test_download_source_hides_raw_yt_dlp_errors(
             args[0], 1, "", "private platform diagnostic"
         ),
     )
+    monkeypatch.setattr(
+        sources,
+        "_run_gallery_dl",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", ""),
+    )
 
     with pytest.raises(SourceError) as error:
         download_source("https://tiktok.com/x", tmp_path)
 
     assert str(error.value) == (
-        "The source platform did not provide this public video. "
+        "The source platform did not provide public media for this link. "
         "Check that the link is public and try again."
     )
     assert "private platform diagnostic" not in str(error.value)
+
+
+def test_extract_audio_builds_bounded_mp3_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.mp4"
+    output = tmp_path / "audio.mp3"
+    source.write_bytes(b"video")
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    monkeypatch.setattr(sources, "_find_ffmpeg", lambda ffmpeg="ffmpeg": "ffmpeg")
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        output.write_bytes(b"audio")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(sources, "run_bounded_process", run)
+
+    assert extract_audio(source, output) == output
+    assert calls[0][0][-7:] == [
+        "0:a:0",
+        "-vn",
+        "-c:a",
+        "libmp3lame",
+        "-q:a",
+        "2",
+        str(output),
+    ]
+    assert calls[0][1]["max_directory_growth_bytes"] == sources.MAX_AUDIO_BYTES
 
 
 def test_download_source_rejects_file_outside_destination(

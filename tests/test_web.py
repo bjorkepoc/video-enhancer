@@ -32,6 +32,11 @@ from video_enhancer.web import (
 )
 
 TOKEN = "test-session-token"
+ACCEPTED_TERMS = {
+    "terms_accepted": True,
+    "terms_version": web.TERMS_VERSION,
+}
+LOCAL_PROCESSING_ACCEPTED = {"local_processing_accepted": True}
 
 
 @pytest.fixture(autouse=True)
@@ -94,18 +99,25 @@ def test_web_ui_contains_source_first_controls() -> None:
         'id="download-upscale"',
         'id="source-result"',
         'id="source-video"',
+        'id="source-image"',
+        'id="source-audio"',
         'id="source-zoom"',
         'id="output-zoom"',
         'id="clear-session"',
+        'id="adblock-dialog"',
         'id="contact-dialog"',
         'id="privacy-dialog"',
         'id="terms-dialog"',
+        'id="terms-accepted"',
+        'id="local-processing-dialog"',
+        'id="local-processing-accepted"',
     ):
         assert control in HTML
     assert '<html lang="en">' in HTML
     assert 'id="input-local"' not in HTML
     assert 'id="local-controls"' not in HTML
     assert 'type="file"' not in HTML
+    assert 'tabindex="0"' not in HTML
     assert 'apiFetch(`/api/jobs?' not in HTML
     assert "browser-session" not in HTML
     assert "cookies-from-browser" not in HTML
@@ -120,14 +132,19 @@ def test_web_ui_contains_source_first_controls() -> None:
         assert label in HTML
     for label in (
         'aria-label="Advertisement"',
-        "Sponsor Video Enhancer",
+        "Sponsor Media Downloader",
         "Advertise here",
         "Open advertising inquiry",
         "public advertising inquiry",
         'href="mailto:bjorke.poc@gmail.com"',
-        "Last updated August 7, 2026",
+        "Last updated August 10, 2026",
         "Report security privately",
         "static project notice",
+        "VSCO, Instagram, TikTok, and Facebook",
+        "It looks like ads are being blocked",
+        "Continue without ads",
+        "Optional enhancement runs locally only after confirmation",
+        "Nothing in these terms limits mandatory consumer rights",
     ):
         assert label in HTML
     class ResourceAuditParser(HTMLParser):
@@ -179,9 +196,26 @@ def test_web_ui_contains_source_first_controls() -> None:
         HTML,
         re.IGNORECASE,
     )
-    assert 'postJSON("/api/sources/download", { url })' in HTML
+    assert 'postJSON("/api/sources/download", {' in HTML
+    assert "terms_accepted: true" in HTML
+    assert "local_processing_accepted: true" in HTML
     assert "inspect-source" not in HTML
     assert "compare-candidate" not in HTML
+    for marker in (
+        "Image &amp; video downloader",
+        "Download media",
+        'aria-describedby="url-help source-error"',
+        'class="workspace-layout"',
+        'id="output-player" hidden',
+        "Technical details",
+    ):
+        assert marker in HTML
+    assert "How it works" not in HTML
+    assert 'id="ad-bait"' in HTML
+    assert '$("adblock-dialog").showModal()' in HTML
+    assert '$("retry-adblock").addEventListener("click"' in HTML
+    assert HTML.index('id="source-error"') < HTML.index('id="url-help"')
+    assert HTML.index('class="house-ad') > HTML.index('id="workspace-active"')
 
 
 def test_web_ui_contains_frame_playback_controls() -> None:
@@ -497,6 +531,37 @@ def test_download_query_serves_a_physical_attachment(tmp_path: Path) -> None:
                 'attachment; filename="original.mp4"'
             )
             assert response.read() == b"video"
+
+
+def test_source_routes_serve_image_preview_and_tiktok_audio_types(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "source-source1"
+    directory.mkdir()
+    archive = directory / "images.zip"
+    preview = directory / "image.jpg"
+    audio = directory / "sound.mp3"
+    archive.write_bytes(b"zip")
+    preview.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+    source = SourceJob("source1", "https://tiktok.com/photo/1", directory)
+    source.original_path = archive
+    source.preview_path = preview
+    source.audio_path = audio
+
+    with running_server(tmp_path) as base:
+        SOURCES[source.id] = source
+        for kind, content_type, body in (
+            ("preview", "image/jpeg", b"image"),
+            ("audio", "audio/mpeg", b"audio"),
+        ):
+            request = Request(
+                f"{base}/files/sources/source1/{kind}",
+                headers={"x-video-enhancer-token": TOKEN},
+            )
+            with urlopen(request) as response:
+                assert response.headers["content-type"] == content_type
+                assert response.read() == body
 
 
 def test_build_options_uses_existing_preset_and_toggles() -> None:
@@ -835,6 +900,11 @@ def test_source_download_route_runs_async_and_reports_saved_media(
         path.write_bytes(b"video")
         return {
             "path": path,
+            "preview_path": path,
+            "audio_path": None,
+            "platform": "tiktok",
+            "media_type": "video",
+            "item_count": 1,
             "media": {"width": 1080, "height": 1920, "fps": 30.0},
             "format_id": "best",
             "operation": "direct",
@@ -846,7 +916,7 @@ def test_source_download_route_runs_async_and_reports_saved_media(
         status, payload = post_json(
             base,
             "/api/sources/download",
-            {"url": "https://tiktok.com/@a/video/123"},
+            {"url": "https://tiktok.com/@a/video/123", **ACCEPTED_TERMS},
         )
         assert status == 202
         assert payload["status"] in {"queued", "downloading", "done"}
@@ -878,7 +948,7 @@ def test_completed_source_is_replaced_to_bound_session_disk_use(
     handler.work_dir = tmp_path
 
     payload = handler.create_source_job(
-        {"url": "https://instagram.com/reel/ABC123/"}
+        {"url": "https://instagram.com/reel/ABC123/", **ACCEPTED_TERMS}
     )
 
     assert list(SOURCES) == [payload["id"]]
@@ -894,12 +964,26 @@ def test_source_download_route_rejects_parallel_downloads(tmp_path: Path) -> Non
             post_json(
                 base,
                 "/api/sources/download",
-                {"url": "https://instagram.com/reel/ABC123/"},
+                {"url": "https://instagram.com/reel/ABC123/", **ACCEPTED_TERMS},
             )
 
     assert error.value.code == 400
     assert json.load(error.value) == {
         "error": "Wait for the active source download to finish."
+    }
+
+
+def test_source_download_requires_current_terms_acceptance(tmp_path: Path) -> None:
+    with running_server(tmp_path) as base, pytest.raises(HTTPError) as error:
+        post_json(
+            base,
+            "/api/sources/download",
+            {"url": "https://tiktok.com/@a/video/123"},
+        )
+
+    assert error.value.code == 400
+    assert json.load(error.value) == {
+        "error": "Accept the current Terms of Use before downloading media."
     }
 
 
@@ -937,6 +1021,7 @@ def test_source_enhance_route_reuses_original_with_explicit_mode(
     original.write_bytes(b"video")
     source = SourceJob("source1", "https://tiktok.com/x", original.parent)
     source.original_path = original
+    source.media_type = "video"
     source.status = "done"
     captured: dict[str, object] = {}
 
@@ -959,7 +1044,9 @@ def test_source_enhance_route_reuses_original_with_explicit_mode(
     with running_server(tmp_path) as base:
         SOURCES[source.id] = source
         status, payload = post_json(
-            base, "/api/sources/source1/enhance", {"mode": "60"}
+            base,
+            "/api/sources/source1/enhance",
+            {"mode": "60", **LOCAL_PROCESSING_ACCEPTED},
         )
 
     assert status == 202
@@ -970,4 +1057,45 @@ def test_source_enhance_route_reuses_original_with_explicit_mode(
         "scale": ["1"],
         "preset": ["quality"],
         "output": ["original-60fps.mp4"],
+    }
+
+
+def test_source_enhance_route_rejects_images(tmp_path: Path) -> None:
+    original = tmp_path / "source-source1" / "image.jpg"
+    original.parent.mkdir()
+    original.write_bytes(b"image")
+    source = SourceJob("source1", "https://vsco.co/u/media/1", original.parent)
+    source.original_path = original
+    source.media_type = "image"
+    source.status = "done"
+
+    with running_server(tmp_path) as base:
+        SOURCES[source.id] = source
+        with pytest.raises(HTTPError) as error:
+            post_json(
+                base,
+                "/api/sources/source1/enhance",
+                {"mode": "60", **LOCAL_PROCESSING_ACCEPTED},
+            )
+
+    assert error.value.code == 400
+    assert json.load(error.value) == {"error": "Only downloaded videos can be enhanced."}
+
+
+def test_source_enhance_requires_local_processing_confirmation(tmp_path: Path) -> None:
+    original = tmp_path / "source-source1" / "original.mp4"
+    original.parent.mkdir()
+    original.write_bytes(b"video")
+    source = SourceJob("source1", "https://tiktok.com/x", original.parent)
+    source.original_path = original
+    source.media_type = "video"
+    source.status = "done"
+
+    with running_server(tmp_path) as base, pytest.raises(HTTPError) as error:
+        SOURCES[source.id] = source
+        post_json(base, "/api/sources/source1/enhance", {"mode": "60"})
+
+    assert error.value.code == 400
+    assert json.load(error.value) == {
+        "error": "Confirm local device processing before enhancing."
     }

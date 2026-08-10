@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "video-enhancer"
 version = "0.1.0"
-description = "Free local FFmpeg video enhancer with upscaling and frame interpolation."
+description = "Local social image and video downloader with optional FFmpeg enhancement."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "bjork", email = "bjorke.poc@gmail.com" }]
 license = "MIT"
 license-files = ["LICENSE"]
-keywords = ["video", "ffmpeg", "upscaling", "frame-interpolation"]
+keywords = ["video", "image", "downloader", "ffmpeg", "social-media"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
@@ -23,7 +23,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Multimedia :: Video :: Conversion",
 ]
-dependencies = ["yt-dlp[default,curl-cffi]>=2026.7.4"]
+dependencies = ["gallery-dl>=1.32.9", "yt-dlp[default,curl-cffi]>=2026.7.4"]
 
 [project.urls]
 Homepage = "https://github.com/bjorkepoc/video-enhancer"

@@ -1,4 +1,4 @@
-"""Download supported social videos without exposing media URLs."""
+"""Download supported social media without exposing media URLs."""
 
 from __future__ import annotations
 
@@ -11,19 +11,39 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
 from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
-SUPPORTED_HOSTS = {"tiktok.com": "tiktok", "instagram.com": "instagram"}
+SUPPORTED_HOSTS = {
+    "tiktok.com": "tiktok",
+    "instagram.com": "instagram",
+    "facebook.com": "facebook",
+    "fb.watch": "facebook",
+    "vsco.co": "vsco",
+}
 BEST_FORMAT = "bv*+ba/b"
 BEST_FORMAT_SORT = "res,fps,quality,hdr:12,vcodec,size,br,asr,source"
+IMAGE_EXTENSIONS = {".avif", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".webp"}
+AUDIO_EXTENSIONS = {".aac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
+INSTAGRAM_IMAGE_HOSTS = {"fbcdn.net", "cdninstagram.com"}
+INSTAGRAM_IMAGE_TYPES = {
+    "image/avif": ".avif",
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
 DOWNLOAD_TIMEOUT_SECONDS = 900
 SOCKET_TIMEOUT_SECONDS = 30
 NETWORK_RETRIES = 3
 MAX_SOURCE_SIZE = "8G"
 MAX_SOURCE_BYTES = 8 * 1024**3
+MAX_AUDIO_BYTES = 1024**3
 MAX_PROCESS_OUTPUT_BYTES = 16 * 1024**2
 MAX_YT_DLP_OUTPUT_BYTES = MAX_PROCESS_OUTPUT_BYTES
 MAX_PROBE_OUTPUT_BYTES = 4 * 1024**2
@@ -214,6 +234,24 @@ def _run_yt_dlp(
     )
 
 
+def _run_gallery_dl(
+    command: list[str],
+    *,
+    destination: Path,
+    process_callback: ProcessCallback | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return run_bounded_process(
+        command,
+        timeout=DOWNLOAD_TIMEOUT_SECONDS,
+        max_output_bytes=MAX_YT_DLP_OUTPUT_BYTES,
+        destination=destination,
+        max_directory_growth_bytes=MAX_SOURCE_BYTES,
+        output_limit_error="gallery-dl produced too much output.",
+        directory_limit_error="The source download exceeds the 8 GiB limit.",
+        process_callback=process_callback,
+    )
+
+
 def _yt_dlp_command(yt_dlp: str) -> list[str]:
     packaged = os.environ.get("VIDEO_ENHANCER_YT_DLP") if yt_dlp == "yt-dlp" else None
     ffmpeg = os.environ.get("VIDEO_ENHANCER_FFMPEG")
@@ -240,13 +278,30 @@ def _yt_dlp_command(yt_dlp: str) -> list[str]:
     ]
 
 
+def _gallery_dl_command(gallery_dl: str) -> list[str]:
+    packaged = (
+        os.environ.get("VIDEO_ENHANCER_GALLERY_DL")
+        if gallery_dl == "gallery-dl"
+        else None
+    )
+    return (
+        [packaged]
+        if packaged
+        else [sys.executable, "-m", "gallery_dl"]
+        if gallery_dl == "gallery-dl"
+        else [gallery_dl]
+    )
+
+
 def validate_social_url(raw: str) -> str:
     try:
         parsed = urlsplit(raw.strip())
         host = parsed.hostname
         port = parsed.port
     except ValueError as exc:
-        raise SourceError("Use an HTTPS TikTok or Instagram video URL.") from exc
+        raise SourceError(
+            "Use an HTTPS VSCO, Instagram, TikTok, or Facebook media URL."
+        ) from exc
     if (
         parsed.scheme != "https"
         or not host
@@ -254,12 +309,14 @@ def validate_social_url(raw: str) -> str:
         or parsed.password is not None
         or port not in {None, 443}
     ):
-        raise SourceError("Use an HTTPS TikTok or Instagram video URL.")
+        raise SourceError(
+            "Use an HTTPS VSCO, Instagram, TikTok, or Facebook media URL."
+        )
     host = host.lower().rstrip(".")
     for domain, platform in SUPPORTED_HOSTS.items():
         if host == domain or host.endswith(f".{domain}"):
             return platform
-    raise SourceError("Only TikTok and Instagram video URLs are supported.")
+    raise SourceError("Only VSCO, Instagram, TikTok, and Facebook URLs are supported.")
 
 
 def build_download_command(
@@ -293,6 +350,62 @@ def build_download_command(
         "after_move:FILE:%(filepath)s",
         "--print",
         "after_move:FORMAT:%(format_id)s",
+        normalized_url,
+    ]
+
+
+def build_image_download_command(
+    url: str,
+    destination: Path,
+    *,
+    gallery_dl: str = "gallery-dl",
+) -> list[str]:
+    normalized_url = url.strip()
+    validate_social_url(normalized_url)
+    extensions = tuple(sorted(extension.removeprefix(".") for extension in (
+        IMAGE_EXTENSIONS | AUDIO_EXTENSIONS
+    )))
+    return [
+        *_gallery_dl_command(gallery_dl),
+        "--config-ignore",
+        "--no-colors",
+        "--no-mtime",
+        "--cache-file",
+        ":memory:",
+        "--directory",
+        str(destination),
+        "--windows-filenames",
+        "--http-timeout",
+        str(SOCKET_TIMEOUT_SECONDS),
+        "--retries",
+        str(NETWORK_RETRIES),
+        "--filesize-max",
+        MAX_SOURCE_SIZE,
+        "--range",
+        "1-51",
+        "--filter",
+        f"extension in {extensions!r}",
+        normalized_url,
+    ]
+
+
+def build_instagram_image_metadata_command(
+    url: str,
+    *,
+    yt_dlp: str = "yt-dlp",
+) -> list[str]:
+    normalized_url = url.strip()
+    if validate_social_url(normalized_url) != "instagram":
+        raise SourceError("Use an HTTPS Instagram post URL.")
+    return [
+        *_yt_dlp_command(yt_dlp),
+        "--socket-timeout",
+        str(SOCKET_TIMEOUT_SECONDS),
+        "--retries",
+        str(NETWORK_RETRIES),
+        "--skip-download",
+        "--ignore-no-formats-error",
+        "--dump-single-json",
         normalized_url,
     ]
 
@@ -415,14 +528,7 @@ def probe_media(
             except (json.JSONDecodeError, SourceError):
                 pass
 
-    ffmpeg_name = (
-        os.environ.get("VIDEO_ENHANCER_FFMPEG", ffmpeg)
-        if ffmpeg == "ffmpeg"
-        else ffmpeg
-    )
-    ffmpeg_path = shutil.which(ffmpeg_name)
-    if not ffmpeg_path and Path(ffmpeg_name).is_file():
-        ffmpeg_path = ffmpeg_name
+    ffmpeg_path = _find_ffmpeg(ffmpeg)
     if not ffmpeg_path:
         raise SourceError("FFmpeg or ffprobe is required to verify the downloaded file.")
     try:
@@ -454,6 +560,296 @@ def probe_media(
     return media
 
 
+def _find_ffmpeg(ffmpeg: str = "ffmpeg") -> str | None:
+    name = (
+        os.environ.get("VIDEO_ENHANCER_FFMPEG", ffmpeg)
+        if ffmpeg == "ffmpeg"
+        else ffmpeg
+    )
+    return shutil.which(name) or (name if Path(name).is_file() else None)
+
+
+def extract_audio(
+    source: Path,
+    output: Path,
+    *,
+    ffmpeg: str = "ffmpeg",
+    process_callback: ProcessCallback | None = None,
+) -> Path:
+    ffmpeg_path = _find_ffmpeg(ffmpeg)
+    if not ffmpeg_path:
+        raise SourceError("FFmpeg is required to create the TikTok audio file.")
+    try:
+        completed = run_bounded_process(
+            [
+                ffmpeg_path,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-y",
+                "-i",
+                str(source),
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-c:a",
+                "libmp3lame",
+                "-q:a",
+                "2",
+                str(output),
+            ],
+            timeout=DOWNLOAD_TIMEOUT_SECONDS,
+            max_output_bytes=MAX_PROBE_OUTPUT_BYTES,
+            destination=output.parent,
+            max_directory_growth_bytes=MAX_AUDIO_BYTES,
+            output_limit_error="Audio extraction produced too much output.",
+            directory_limit_error="The audio file exceeds the 1 GiB limit.",
+            process_callback=process_callback,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output.unlink(missing_ok=True)
+        raise SourceError("TikTok audio extraction timed out.") from exc
+    except OSError as exc:
+        output.unlink(missing_ok=True)
+        raise SourceError(f"Could not start FFmpeg: {exc}") from exc
+    except SourceError:
+        output.unlink(missing_ok=True)
+        raise
+    if completed.returncode or not output.is_file() or not output.stat().st_size:
+        output.unlink(missing_ok=True)
+        raise SourceError("The TikTok post did not provide a usable audio stream.")
+    return output
+
+
+def _looks_like_image_post(platform: str, url: str) -> bool:
+    path = urlsplit(url).path.lower()
+    return (
+        platform == "vsco"
+        or platform == "tiktok" and "/photo/" in path
+        or platform == "instagram" and "/p/" in path
+        or platform == "facebook" and "/photo" in path
+    )
+
+
+def _package_images(
+    destination: Path,
+    platform: str,
+    images: list[Path],
+    audio: list[Path],
+    *,
+    format_id: str = "images",
+) -> dict[str, Any]:
+    total_size = sum(path.stat().st_size for path in [*images, *audio])
+    if total_size > MAX_SOURCE_BYTES:
+        raise SourceError("The downloaded source exceeds the 8 GiB limit.")
+
+    item_count = len(images)
+    preview = images[0]
+    if item_count == 1:
+        path = preview
+        operation = "direct"
+    else:
+        if total_size > MAX_SOURCE_BYTES // 2:
+            raise SourceError("The image set is too large to archive safely.")
+        path = destination / "images.zip"
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+            for image in images:
+                archive.write(image, image.name)
+        for image in images[1:]:
+            image.unlink()
+        operation = "archive"
+
+    audio_path = audio[0] if platform == "tiktok" and audio else None
+    for extra in audio[1:] if audio_path else audio:
+        extra.unlink()
+    return {
+        "path": path,
+        "preview_path": preview,
+        "audio_path": audio_path,
+        "filename": path.name,
+        "format_id": format_id,
+        "operation": operation,
+        "platform": platform,
+        "media_type": "image",
+        "item_count": item_count,
+        "media": {"size": path.stat().st_size},
+    }
+
+
+def _instagram_thumbnail_score(thumbnail: dict[str, Any]) -> tuple[bool, int, int]:
+    raw_url = str(thumbnail.get("url", ""))
+    dimensions = re.findall(r"(?<!\d)(\d{2,5})x(\d{2,5})(?!\d)", raw_url)
+    areas = [int(width) * int(height) for width, height in dimensions]
+    width = int(_number(thumbnail.get("width"), int) or 0)
+    height = int(_number(thumbnail.get("height"), int) or 0)
+    try:
+        identifier = int(thumbnail.get("id", -1))
+    except (TypeError, ValueError):
+        identifier = -1
+    return not dimensions, max([width * height, *areas]), identifier
+
+
+def _is_instagram_image_url(raw_url: str) -> bool:
+    try:
+        parsed = urlsplit(raw_url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        return (
+            parsed.scheme == "https"
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.port in {None, 443}
+            and any(
+                host == domain or host.endswith(f".{domain}")
+                for domain in INSTAGRAM_IMAGE_HOSTS
+            )
+        )
+    except ValueError:
+        return False
+
+
+def _download_instagram_image_source(
+    url: str,
+    destination: Path,
+    *,
+    yt_dlp: str,
+    process_callback: ProcessCallback | None,
+) -> dict[str, Any] | None:
+    existing = {path.name for path in destination.iterdir()}
+    command = build_instagram_image_metadata_command(url, yt_dlp=yt_dlp)
+    try:
+        completed = _run_yt_dlp(
+            command,
+            timeout=PROBE_TIMEOUT_SECONDS,
+            max_output_bytes=MAX_YT_DLP_OUTPUT_BYTES,
+            process_callback=process_callback,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SourceError("The Instagram image lookup timed out.") from exc
+    except (OSError, SourceError):
+        return None
+    if completed.returncode:
+        return None
+    try:
+        payload = json.loads(completed.stdout)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+    entries = payload.get("entries") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        entries = [payload]
+    candidates: list[tuple[str, str]] = []
+    for entry in entries[:51]:
+        if not isinstance(entry, dict) or entry.get("formats"):
+            continue
+        thumbnails = [
+            thumbnail
+            for thumbnail in entry.get("thumbnails", ())
+            if isinstance(thumbnail, dict)
+            and _is_instagram_image_url(str(thumbnail.get("url", "")))
+        ]
+        if not thumbnails:
+            continue
+        thumbnail = max(thumbnails, key=_instagram_thumbnail_score)
+        identifier = re.sub(r"[^A-Za-z0-9_-]+", "_", str(entry.get("id", "image")))
+        candidates.append((str(thumbnail["url"]), identifier[:80] or "image"))
+    if not candidates:
+        return None
+
+    images: list[Path] = []
+    total_size = 0
+    try:
+        for index, (image_url, identifier) in enumerate(candidates, 1):
+            request = Request(
+                image_url,
+                headers={
+                    "Referer": "https://www.instagram.com/",
+                    "User-Agent": "Mozilla/5.0",
+                },
+            )
+            with urlopen(request, timeout=SOCKET_TIMEOUT_SECONDS) as response:
+                if not _is_instagram_image_url(response.geturl()):
+                    raise SourceError("Instagram returned an untrusted image location.")
+                extension = INSTAGRAM_IMAGE_TYPES.get(
+                    response.headers.get_content_type()
+                )
+                if not extension:
+                    raise SourceError("Instagram returned an unsupported image format.")
+                output = destination / f"instagram-{index:02d}-{identifier}{extension}"
+                with output.open("xb") as file:
+                    while chunk := response.read(1024 * 1024):
+                        total_size += len(chunk)
+                        if total_size > MAX_SOURCE_BYTES:
+                            raise SourceError(
+                                "The downloaded source exceeds the 8 GiB limit."
+                            )
+                        file.write(chunk)
+            if not output.stat().st_size:
+                raise SourceError("Instagram returned an empty image.")
+            images.append(output)
+        return _package_images(
+            destination,
+            "instagram",
+            images,
+            [],
+            format_id="instagram-original-images",
+        )
+    except SourceError:
+        _remove_new_entries(destination, existing)
+        raise
+    except (OSError, URLError, ValueError):
+        _remove_new_entries(destination, existing)
+        return None
+
+
+def _download_image_source(
+    url: str,
+    destination: Path,
+    platform: str,
+    *,
+    gallery_dl: str,
+    process_callback: ProcessCallback | None,
+) -> dict[str, Any] | None:
+    existing = {path.name for path in destination.iterdir()}
+    command = build_image_download_command(
+        url, destination, gallery_dl=gallery_dl
+    )
+    try:
+        completed = _run_gallery_dl(
+            command,
+            destination=destination,
+            process_callback=process_callback,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _remove_new_entries(destination, existing)
+        raise SourceError("The image download timed out.") from exc
+    except OSError as exc:
+        _remove_new_entries(destination, existing)
+        raise SourceError(f"Could not start gallery-dl: {exc}") from exc
+    except SourceError:
+        _remove_new_entries(destination, existing)
+        raise
+
+    files = sorted(
+        (
+            path
+            for path in destination.iterdir()
+            if path.name not in existing and path.is_file() and not path.is_symlink()
+        ),
+        key=lambda path: path.name,
+    )
+    images = [path for path in files if path.suffix.lower() in IMAGE_EXTENSIONS]
+    audio = [path for path in files if path.suffix.lower() in AUDIO_EXTENSIONS]
+    if completed.returncode or not images:
+        _remove_new_entries(destination, existing)
+        return None
+    try:
+        return _package_images(destination, platform, images, audio)
+    except (OSError, SourceError):
+        _remove_new_entries(destination, existing)
+        raise
+
+
 def _remove_new_entries(destination: Path, existing: set[str]) -> None:
     for path in destination.iterdir():
         if path.name in existing:
@@ -469,10 +865,30 @@ def download_source(
     destination: Path,
     *,
     yt_dlp: str = "yt-dlp",
+    gallery_dl: str = "gallery-dl",
     process_callback: ProcessCallback | None = None,
 ) -> dict[str, Any]:
     destination.mkdir(parents=True, exist_ok=True)
-    command = build_download_command(url, destination, yt_dlp=yt_dlp)
+    normalized_url = url.strip()
+    platform = validate_social_url(normalized_url)
+    image_attempted = _looks_like_image_post(platform, normalized_url)
+    if image_attempted:
+        image_result = _download_image_source(
+            normalized_url,
+            destination,
+            platform,
+            gallery_dl=gallery_dl,
+            process_callback=process_callback,
+        )
+        if image_result:
+            return image_result
+        if platform == "vsco":
+            raise SourceError(
+                "VSCO did not provide public images for this link. "
+                "Check that the link is public and try again."
+            )
+
+    command = build_download_command(normalized_url, destination, yt_dlp=yt_dlp)
     existing = {path.name for path in destination.iterdir()}
     try:
         completed = _run_yt_dlp(
@@ -493,8 +909,27 @@ def download_source(
         raise
     if completed.returncode:
         _remove_new_entries(destination, existing)
+        if platform == "instagram" and image_attempted:
+            image_result = _download_instagram_image_source(
+                normalized_url,
+                destination,
+                yt_dlp=yt_dlp,
+                process_callback=process_callback,
+            )
+            if image_result:
+                return image_result
+        if not image_attempted:
+            image_result = _download_image_source(
+                normalized_url,
+                destination,
+                platform,
+                gallery_dl=gallery_dl,
+                process_callback=process_callback,
+            )
+            if image_result:
+                return image_result
         raise SourceError(
-            "The source platform did not provide this public video. "
+            "The source platform did not provide public media for this link. "
             "Check that the link is public and try again."
         )
 
@@ -512,12 +947,54 @@ def download_source(
             file_path.unlink(missing_ok=True)
             raise SourceError("The downloaded source exceeds the 8 GiB limit.")
         selected = values.get("FORMAT", "best")
+        try:
+            media = probe_media(file_path, process_callback=process_callback)
+        except SourceError as exc:
+            if "no video stream" not in str(exc):
+                raise
+            _remove_new_entries(destination, existing)
+            if platform == "instagram" and image_attempted:
+                image_result = _download_instagram_image_source(
+                    normalized_url,
+                    destination,
+                    yt_dlp=yt_dlp,
+                    process_callback=process_callback,
+                )
+                if image_result:
+                    return image_result
+            image_result = _download_image_source(
+                normalized_url,
+                destination,
+                platform,
+                gallery_dl=gallery_dl,
+                process_callback=process_callback,
+            )
+            if image_result:
+                return image_result
+            raise SourceError(
+                "The source platform did not provide public media for this link. "
+                "Check that the link is public and try again."
+            ) from exc
+        audio_path = (
+            extract_audio(
+                file_path,
+                destination / f"{file_path.stem}-audio.mp3",
+                process_callback=process_callback,
+            )
+            if platform == "tiktok" and media.get("audio_codec")
+            else None
+        )
         return {
             "path": file_path,
+            "preview_path": file_path,
+            "audio_path": audio_path,
             "filename": file_path.name,
             "format_id": selected,
             "operation": "remuxed" if "+" in selected else "direct",
-            "media": probe_media(file_path, process_callback=process_callback),
+            "platform": platform,
+            "media_type": "video",
+            "item_count": 1,
+            "media": media,
         }
     except (OSError, SourceError):
         _remove_new_entries(destination, existing)

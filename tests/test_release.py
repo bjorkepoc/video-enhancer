@@ -123,6 +123,9 @@ def test_macos_build_script_rejects_architecture_mismatches() -> None:
     assert 'lipo "$2" -verify_arch "$build_arch"' in script
     assert 'verify_arch "FFmpeg" "$ffmpeg"' in script
     assert 'verify_arch "yt-dlp" "$yt_dlp"' in script
+    assert 'verify_arch "gallery-dl" "$gallery_dl"' in script
+    assert "--collect-all gallery_dl" in script
+    assert 'verify_arch "Bundled gallery-dl"' in script
     assert 'verify_arch "App executable"' in script
     assert 'archive="Video-Enhancer-$version-macos-$build_arch.zip"' in script
 

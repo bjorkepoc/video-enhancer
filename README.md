@@ -1,11 +1,25 @@
-# Video Enhancer
+# Media Downloader Plus
 
-Download the best stream exposed by TikTok or Instagram, verify the saved
-media, and optionally create enhanced copies with a local Python/FFmpeg app.
+Download public images and the best video stream exposed by VSCO, Instagram,
+TikTok, or Facebook, save TikTok audio, and optionally create enhanced video
+copies with a local Python/FFmpeg app.
 
-The original download path never filters or video-encodes the source. Upscaling
-and generated 60/90 FPS output are always separate files. Everything runs
-locally on your computer; the app has no cloud backend.
+Original images and videos are not re-encoded. Multi-image posts are packaged
+as ZIP files, TikTok audio is exported as a separate MP3, and generated 60/90
+FPS output remains a separate file. Python, gallery-dl, yt-dlp, and FFmpeg all
+run locally on the user's machine; this repository has no hosted backend.
+
+## Separate Lite edition
+
+The zero-cost Cloudflare edition now lives in its own repository:
+
+- source: <https://github.com/bjorkepoc/media-downloader-lite>
+- production: <https://media-downloader-4y5.pages.dev/>
+- local checkout: `/Users/po/dev/media-downloader-lite`
+
+Lite and Plus share product decisions but not deployable source. No Cloudflare
+Pages, Worker, JavaScript frontend, or sponsor-placement file is required to
+build this Plus app. Lite does not run Python or native FFmpeg on its server.
 
 Release status: `v0.1.0` is an unpublished cross-platform Python beta candidate,
 with self-contained macOS packages planned for both Apple Silicon and Intel
@@ -15,22 +29,23 @@ operator details are in place.
 
 ## Features
 
-- TikTok and Instagram HTTPS links
-- Best-available original download with saved-file resolution/FPS verification
+- VSCO, Instagram, TikTok, and Facebook HTTPS links
+- Original image, multi-image ZIP, and best-available video downloads
+- Separate TikTok audio download when the post contains sound
 - 2x Lanczos or Bicubic upscaling
 - Frame interpolation to 48, 60, 90, 144 FPS, or another target up to 240 FPS
 - 1 FPS playback, calibrated frame stepping, and 1x-8x focal zoom/pan
 - Physical browser downloads with byte-range video playback
 - CPU encoders: `libx264`, `libx265`
 - Dry-run mode that prints the exact FFmpeg command
-- Local web UI for choosing, previewing, exporting, and downloading videos
+- Local web UI for previewing and downloading images, video, audio, and enhanced video
 
 ## Requirements
 
 - Python 3.10+
 - FFmpeg in `PATH`; ffprobe is optional and used when available
 - The CLI also accepts a custom FFmpeg executable through `--ffmpeg`
-- `yt-dlp` (installed automatically with this package)
+- `gallery-dl` and `yt-dlp` (installed automatically with this package)
 
 Install FFmpeg with the package manager for your operating system and verify it
 is available with `ffmpeg -version`. For example, on macOS:
@@ -67,25 +82,26 @@ python -m pip install "https://github.com/bjorkepoc/video-enhancer/releases/down
 video-enhancer-web --open
 ```
 
-The server binds to `127.0.0.1`, accepts public TikTok or Instagram links,
-previews original and derived files in the browser, and keeps working files in
-a process-specific temporary directory. Use **Clear local files** to remove
-them immediately; normal app shutdown also removes them. Starting a new source
-replaces the previous working set, and starting a new enhancement replaces the
-previous enhanced copy.
+The server binds to `127.0.0.1`, accepts public VSCO, Instagram, TikTok, and
+Facebook links, previews supported original and derived files in the browser,
+and keeps working files in a process-specific temporary directory. Use **Clear
+local files** to remove them immediately; normal app shutdown also removes them.
+Starting a new source replaces the previous working set, and starting a new
+enhancement replaces the previous enhanced copy.
 
 The printed local URL contains a random session key. Open it directly and do
 not share it; the key expires when the process stops.
 
-Paste a TikTok or Instagram link to download the best available source. Source
-access is anonymous: the app never reads browser cookies or handles platform
-login sessions.
+Paste a supported link to download its public images or best available video.
+TikTok posts with sound also expose a separate audio download. Source access is
+anonymous: the app never reads browser cookies or handles platform login
+sessions.
 
 The local UI loads no ad-network code, analytics, cookies, pixels, or remote
 creative. It includes one static **Advertise here** project notice that opens a
-public GitHub contact request. Video Enhancer does not track the impression or
-click; GitHub receives the request after the visitor chooses its link. TikTok or
-Instagram is contacted only after a link action. See
+public GitHub contact request. Media Downloader does not track the impression or
+click; GitHub receives the request after the visitor chooses its link. A source
+platform is contacted only after a link action. See
 [the launch/privacy/security checklist](docs/launch-privacy-security.md).
 
 Privacy and copyright contact: `bjorke.poc@gmail.com`. A verified legal
@@ -102,7 +118,7 @@ privacy, and consent gates in that checklist first.
 
 The planned `v0.1.0` beta provides two self-contained native `.app` ZIPs: one
 for Apple Silicon (`arm64`) and one for Intel (`x86_64`). Each bundles matching
-builds of yt-dlp and FFmpeg, so recipients do not need Python, Homebrew, or a
+builds of gallery-dl, yt-dlp, and FFmpeg, so recipients do not need Python, Homebrew, or a
 separate FFmpeg install. Choose the ZIP matching the Mac's processor; these are
 separate native artifacts rather than one universal binary.
 

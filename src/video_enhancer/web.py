@@ -3256,7 +3256,12 @@ class Handler(BaseHTTPRequestHandler):
         if not file or not file.is_file() or not file.resolve().is_relative_to(root):
             self.send_error(HTTPStatus.NOT_FOUND.value)
             return
-        content_type = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
+        content_type = {
+            ".avi": "video/x-msvideo",
+            ".gif": "image/gif",
+            ".mov": "video/quicktime",
+        }.get(file.suffix.lower()) or mimetypes.guess_type(file.name)[0]
+        content_type = content_type or "application/octet-stream"
         self.serve_file(file, content_type, attachment=attachment)
 
     def serve_file(

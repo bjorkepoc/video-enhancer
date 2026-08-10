@@ -25,7 +25,7 @@ Prosjektet består nå av to flater som skal leve videre samtidig:
 Fra 10. august 2026 er variantene også skilt i to lokale Git-prosjekter:
 
 - **Media Downloader Lite:** `/Users/po/dev/media-downloader-lite`, commit
-  `4edaacb`, <https://github.com/bjorkepoc/media-downloader-lite>. Dette er den
+  `c3c86b2`, <https://github.com/bjorkepoc/media-downloader-lite>. Dette er den
   rene Cloudflare Pages/Functions-kilden og den aktive produksjonskilden.
 - **Media Downloader Plus/Premium-base:** `/Users/po/dev/video-enhancer`.
   GitHub-prosjektet er <https://github.com/bjorkepoc/video-enhancer>. Dette er
@@ -169,7 +169,8 @@ I det separate Lite-repoet inneholder `functions/` to Pages Functions:
 TikTok-, Instagram- og Facebook-mønstre er delvis tilpasset fra det minste
 relevante uttrekket i MIT-prosjektet `Vette1123/social-media-downloader`.
 Attribusjon finnes i Lite-kildekoden og Lite-repoets `THIRD_PARTY_NOTICES.md`;
-hele prosjektet ble ikke importert. VSCO-parseren er implementert separat.
+hele prosjektet ble ikke importert. Lite gjenkjenner VSCO-lenker, men stanser
+både resolver og proxy; Plus beholder sin separate lokale VSCO-implementasjon.
 
 ### Lokal behandling i den offentlige nettleseren
 
@@ -209,7 +210,7 @@ hosted UI-paritet er derfor et mulig senere arbeid, ikke en ferdig leveranse.
 | Instagram | Verifisert | Støttet | Offentlige eksempler og byte-range-nedlasting virket |
 | TikTok | Verifisert | Støttet | Beste eksponerte video og separat lyd; fersk anonym sesjon brukes ved signerte CDN-lenker |
 | Facebook | Verifisert på nåværende offentlig eksempel | Støttet | Uttrekk kan brekke når Facebook endrer offentlig HTML |
-| VSCO | Pauset før upstream-request | Støttet lokalt | Parseren er bevart, men Lite automatiserer ikke tilgang uten tillatelse |
+| VSCO | Resolver og proxy pauset før upstream-request | Støttet lokalt | Plus beholder VSCO; Lite automatiserer ikke tilgang uten tillatelse |
 
 «Beste original» betyr beste variant plattformen faktisk eksponerer anonymt for
 den aktuelle requesten. Det er ingen garanti for oppløsning, bitrate, kodek,
@@ -297,8 +298,8 @@ eventuelle EØS-krav.
 - Hosting: Cloudflare Pages med Pages Functions.
 - Deploy: direkte Wrangler-upload, ikke automatisk Git-deploy.
 - Wrangler OAuth er autorisert for kontoen og deploytilgang er verifisert.
-- Siste verifiserte produksjonsdeploy: `36319e22-c0c6-4685-b13a-5e5844032866`.
-- Cloudflare viser Lite source commit `4edaacb`.
+- Siste verifiserte produksjonsdeploy: `fe327f34-5a06-4eb0-8942-9221b172178c`.
+- Cloudflare viser Lite source commit `c3c86b2`.
 - Eget domene er ikke kjøpt eller koblet til.
 - Database, R2, KV, betalt Worker-plan og andre betalte produkter er ikke brukt.
 - Fast kostnad i dagens oppsett: 0 kr per måned.
@@ -313,7 +314,7 @@ skal funksjonen heller feile enn at prosjektet oppgraderes til en betalt løsnin
 uten en ny, uttrykkelig beslutning. Cloudflare-priser og grenser må verifiseres
 på nytt før lansering eller større trafikk.
 
-Produksjonen kan nå gjenskapes fra Lite-committen `4edaacb`, som finnes både
+Produksjonen kan nå gjenskapes fra Lite-committen `c3c86b2`, som finnes både
 lokalt og på <https://github.com/bjorkepoc/media-downloader-lite>.
 `video-enhancer`/`e0156e0` er ikke kilden til den aktive Pages-deployen.
 
@@ -362,21 +363,21 @@ fortsatt på `e0156e0`. En separat worktree finnes i
 slettes uten egen kontroll.
 
 Det separate `/Users/po/dev/media-downloader-lite`-prosjektet er rent på branch
-`main` ved commit `4edaacb` og tracker `origin/main` på GitHub.
+`main` ved commit `c3c86b2` og tracker `origin/main` på GitHub.
 
 ## Verifisering 10. august 2026
 
 - Python: 111 tester bestått.
 - Ruff: alle kontroller bestått.
-- Node/Pages: 16 av 16 tester bestått.
+- Node/Pages: 15 av 15 tester bestått.
 - `git diff --check`: bestått.
 - Produksjons-HTML, `Media Downloader Lite`-branding, VSCO-stopp og sponsorlenke
-  verifisert direkte fra deploy `36319e22-c0c6-4685-b13a-5e5844032866`.
+  verifisert direkte fra deploy `fe327f34-5a06-4eb0-8942-9221b172178c`.
 - Chrome desktop QA: korrekt sideidentitet, meningsfull DOM, ingen framework
   overlay, ingen app-feil, korrekt sentrering og Terms-dialog åpnet/lukket.
 - Tidligere live offentlige eksempler: Instagram, TikTok og Facebook verifisert
-  med resolver og byte-range-nedlasting. Ny VSCO-test viser at resolveren stanser
-  før nettverkskall; ingen omgåelse ble kjørt.
+  med resolver og byte-range-nedlasting. Nye VSCO-tester viser at både resolver
+  og medieproxy stanser før nettverkskall; ingen omgåelse ble kjørt.
 
 Teknisk grønt betyr ikke at alle kommersielle, juridiske eller
 plattformspesifikke lanseringskrav er ferdige.

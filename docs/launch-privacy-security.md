@@ -114,10 +114,10 @@ it must not trigger an unreviewed paid-plan upgrade.
 
 Earlier live edge verification succeeded for Instagram, TikTok, and a current
 public Facebook example, including byte-range attachment responses. Lite now
-pauses VSCO resolution before making an upstream request; its parser remains
-tested for a future authorized mechanism. It does not impersonate a whitelisted
-crawler, use login cookies, or send the link through an unreviewed third-party
-reader.
+pauses VSCO resolution and proxying before making an upstream request; the local
+Plus app retains its separate implementation. Lite does not impersonate a
+whitelisted crawler, use login cookies, or send the link through an unreviewed
+third-party reader.
 
 ## Advertising And Funding
 

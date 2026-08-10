@@ -22,7 +22,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from .ffmpeg import (
     AUDIO_EXPORT_FORMATS,
@@ -3317,9 +3317,15 @@ class Handler(BaseHTTPRequestHandler):
             if status is HTTPStatus.PARTIAL_CONTENT:
                 self.send_header("content-range", f"bytes {start}-{end}/{size}")
             disposition = "attachment" if attachment else "inline"
-            self.send_header(
-                "content-disposition", f'{disposition}; filename="{file.name}"'
-            )
+            ascii_name = safe_filename(file.name, default="download")
+            if file.suffix and not Path(ascii_name).suffix:
+                ascii_name = f"download{file.suffix.lower()}"
+            content_disposition = f'{disposition}; filename="{ascii_name}"'
+            if ascii_name != file.name:
+                content_disposition += (
+                    f"; filename*=UTF-8''{quote(file.name, safe='')}"
+                )
+            self.send_header("content-disposition", content_disposition)
             self.end_headers()
             source.seek(start)
             remaining = length

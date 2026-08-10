@@ -549,6 +549,29 @@ def test_download_query_serves_a_physical_attachment(tmp_path: Path) -> None:
             assert response.read() == b"video"
 
 
+def test_source_routes_encode_unicode_filenames(tmp_path: Path) -> None:
+    file = tmp_path / "source-source1" / "🔥.jpg"
+    file.parent.mkdir()
+    file.write_bytes(b"image")
+    source = SourceJob("source1", "https://tiktok.com/photo/1", file.parent)
+    source.original_path = file
+    source.preview_path = file
+
+    with running_server(tmp_path) as base:
+        SOURCES[source.id] = source
+        for kind, disposition in (("preview", "inline"), ("original", "attachment")):
+            request = Request(
+                f"{base}/files/sources/source1/{kind}"
+                f"?token={TOKEN}&download={int(kind == 'original')}"
+            )
+            with urlopen(request) as response:
+                assert response.headers["content-disposition"] == (
+                    f'{disposition}; filename="download.jpg"; '
+                    "filename*=UTF-8''%F0%9F%94%A5.jpg"
+                )
+                assert response.read() == b"image"
+
+
 def test_source_routes_serve_image_preview_and_tiktok_audio_types(
     tmp_path: Path,
 ) -> None:

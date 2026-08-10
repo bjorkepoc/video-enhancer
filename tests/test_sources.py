@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from http.client import IncompleteRead
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -112,12 +113,17 @@ def test_image_download_command_is_bounded_and_ignores_user_config(
     monkeypatch.setenv("VIDEO_ENHANCER_GALLERY_DL", str(packaged))
 
     command = build_image_download_command(
-        "https://vsco.co/user/media/abc", tmp_path
+        "https://vsco.co/user/media/abc", tmp_path, quality="480p"
     )
 
     assert command[0] == str(packaged)
     assert "--config-ignore" in command
     assert command[command.index("--cache-file") + 1] == ":memory:"
+    assert command[command.index("-o") + 1] == (
+        "downloader.ytdl.format=(bv*[aspect_ratio>=1][height<=480]/"
+        "bv*[aspect_ratio<1][width<=480])+ba/"
+        "(b[aspect_ratio>=1][height<=480]/b[aspect_ratio<1][width<=480])"
+    )
     assert command[command.index("--directory") + 1] == str(tmp_path)
     assert command[command.index("--filesize-max") + 1] == "8G"
     assert command[command.index("--range") + 1] == "1-51"
@@ -359,19 +365,43 @@ def test_download_source_accepts_vsco_video_from_gallery_dl(
         lambda path, **kwargs: {"width": 1080, "height": 1920, "size": 5},
     )
 
-    result = download_source("https://vsco.co/user/media/abc", tmp_path)
+    result = download_source(
+        "https://vsco.co/user/media/abc", tmp_path, quality="1080p"
+    )
 
     assert result["path"] == video
     assert result["preview_type"] == "video"
     assert result["media_type"] == "video"
 
 
+def test_download_source_rejects_uncapped_progressive_vsco_video(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def download(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        (tmp_path / "clip.mp4").write_bytes(b"video")
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(sources, "_run_gallery_dl", download)
+    monkeypatch.setattr(
+        sources,
+        "probe_media",
+        lambda path, **kwargs: {"width": 2160, "height": 3840, "size": 5},
+    )
+
+    with pytest.raises(SourceError, match="above the selected source quality"):
+        download_source(
+            "https://vsco.co/user/media/abc", tmp_path, quality="480p"
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_download_source_archives_mixed_image_and_video_post(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def download(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        (tmp_path / "one.jpg").write_bytes(b"image")
-        (tmp_path / "two.mp4").write_bytes(b"video")
+        (tmp_path / "one.mp4").write_bytes(b"video")
+        (tmp_path / "two.jpg").write_bytes(b"image")
         return subprocess.CompletedProcess(args[0], 0, "", "")
 
     monkeypatch.setattr(sources, "_run_gallery_dl", download)
@@ -379,11 +409,12 @@ def test_download_source_archives_mixed_image_and_video_post(
     result = download_source("https://instagram.com/p/example/", tmp_path)
 
     assert result["media_type"] == "archive"
-    assert result["preview_type"] == "image"
+    assert result["preview_type"] == "video"
+    assert result["preview_path"] == tmp_path / "one.mp4"
     assert result["item_count"] == 2
     assert result["path"] == tmp_path / "media.zip"
     with sources.zipfile.ZipFile(result["path"]) as archive:
-        assert archive.namelist() == ["one.jpg", "two.mp4"]
+        assert archive.namelist() == ["one.mp4", "two.jpg"]
 
 
 def test_download_source_falls_back_to_original_instagram_images(
@@ -576,6 +607,66 @@ def test_instagram_image_fallback_stops_when_cancelled(
             tmp_path,
             cancel_callback=lambda: next(checks),
         )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_instagram_image_fallback_cleans_up_interrupted_transfer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {
+        "entries": [
+            {
+                "id": "one",
+                "formats": [],
+                "thumbnails": [
+                    {"url": "https://instagram.test.fbcdn.net/media/one.jpg"}
+                ],
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        sources,
+        "_run_gallery_dl",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", ""),
+    )
+    monkeypatch.setattr(
+        sources,
+        "_run_yt_dlp",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0 if "--dump-single-json" in command else 1,
+            json.dumps(payload) if "--dump-single-json" in command else "",
+            "",
+        ),
+    )
+
+    class Headers:
+        @staticmethod
+        def get_content_type() -> str:
+            return "image/jpeg"
+
+    class Response:
+        headers = Headers()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        @staticmethod
+        def geturl() -> str:
+            return "https://instagram.test.fbcdn.net/media/one.jpg"
+
+        @staticmethod
+        def read(size: int) -> bytes:
+            raise IncompleteRead(b"partial")
+
+    monkeypatch.setattr(sources, "urlopen", lambda *args, **kwargs: Response())
+
+    with pytest.raises(SourceError, match="did not provide public media"):
+        download_source("https://www.instagram.com/p/example/", tmp_path)
 
     assert list(tmp_path.iterdir()) == []
 

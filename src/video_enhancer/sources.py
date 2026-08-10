@@ -13,6 +13,7 @@ import threading
 import time
 import zipfile
 from collections.abc import Callable
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -338,6 +339,21 @@ def validate_download_quality(raw: str) -> str:
     return quality
 
 
+def _download_format(quality: str) -> str:
+    max_resolution = DOWNLOAD_QUALITIES[validate_download_quality(quality)]
+    if max_resolution is None:
+        return BEST_FORMAT
+    video = (
+        f"(bv*[aspect_ratio>=1][height<={max_resolution}]/"
+        f"bv*[aspect_ratio<1][width<={max_resolution}])"
+    )
+    combined = (
+        f"(b[aspect_ratio>=1][height<={max_resolution}]/"
+        f"b[aspect_ratio<1][width<={max_resolution}])"
+    )
+    return f"{video}+ba/{combined}"
+
+
 def build_download_command(
     url: str,
     destination: Path,
@@ -347,18 +363,7 @@ def build_download_command(
 ) -> list[str]:
     normalized_url = url.strip()
     validate_social_url(normalized_url)
-    max_height = DOWNLOAD_QUALITIES[validate_download_quality(quality)]
-    selected_format = BEST_FORMAT
-    if max_height is not None:
-        video = (
-            f"(bv*[aspect_ratio>=1][height<={max_height}]/"
-            f"bv*[aspect_ratio<1][width<={max_height}])"
-        )
-        combined = (
-            f"(b[aspect_ratio>=1][height<={max_height}]/"
-            f"b[aspect_ratio<1][width<={max_height}])"
-        )
-        selected_format = f"{video}+ba/{combined}"
+    selected_format = _download_format(quality)
     return [
         *_yt_dlp_command(yt_dlp),
         "--no-overwrites",
@@ -391,6 +396,7 @@ def build_image_download_command(
     destination: Path,
     *,
     gallery_dl: str = "gallery-dl",
+    quality: str = "best",
 ) -> list[str]:
     normalized_url = url.strip()
     validate_social_url(normalized_url)
@@ -407,6 +413,8 @@ def build_image_download_command(
         "--no-mtime",
         "--cache-file",
         ":memory:",
+        "-o",
+        f"downloader.ytdl.format={_download_format(quality)}",
         "--directory",
         str(destination),
         "--windows-filenames",
@@ -617,21 +625,36 @@ def _looks_like_image_post(platform: str, url: str) -> bool:
 def _package_media(
     destination: Path,
     platform: str,
-    images: list[Path],
-    videos: list[Path],
+    media_files: list[Path],
     audio: list[Path],
     *,
     format_id: str = "",
+    quality: str = "best",
     process_callback: ProcessCallback | None = None,
 ) -> dict[str, Any]:
-    media_files = [*images, *videos]
+    videos = [path for path in media_files if path.suffix.lower() in VIDEO_EXTENSIONS]
     total_size = sum(path.stat().st_size for path in [*media_files, *audio])
     if total_size > MAX_SOURCE_BYTES:
         raise SourceError("The downloaded source exceeds the 8 GiB limit.")
 
+    video_metadata: dict[Path, dict[str, Any]] = {}
+    if max_resolution := DOWNLOAD_QUALITIES[validate_download_quality(quality)]:
+        for video in videos:
+            details = probe_media(video, process_callback=process_callback)
+            width = int(details.get("width", 0) or 0)
+            height = int(details.get("height", 0) or 0)
+            if not width or not height or min(width, height) > max_resolution:
+                raise SourceError(
+                    "This post only exposes a video above the selected source "
+                    "quality. Choose Best to keep the original without re-encoding."
+                )
+            video_metadata[video] = details
+
     item_count = len(media_files)
-    preview = images[0] if images else videos[0]
-    preview_type = "image" if images else "video"
+    preview = media_files[0]
+    preview_type = (
+        "image" if preview.suffix.lower() in IMAGE_EXTENSIONS else "video"
+    )
     if item_count == 1:
         path = preview
         operation = "direct"
@@ -653,7 +676,8 @@ def _package_media(
     for extra in audio[1:] if audio_path else audio:
         extra.unlink()
     media = (
-        probe_media(preview, process_callback=process_callback)
+        video_metadata.get(preview)
+        or probe_media(preview, process_callback=process_callback)
         if media_type == "video"
         else {"size": path.stat().st_size}
     )
@@ -803,14 +827,13 @@ def _download_instagram_image_source(
             "instagram",
             images,
             [],
-            [],
             format_id="instagram-original-images",
             process_callback=process_callback,
         )
     except SourceError:
         _remove_new_entries(destination, existing)
         raise
-    except (OSError, URLError, ValueError):
+    except (HTTPException, OSError, URLError, ValueError):
         _remove_new_entries(destination, existing)
         return None
 
@@ -821,11 +844,12 @@ def _download_image_source(
     platform: str,
     *,
     gallery_dl: str,
+    quality: str,
     process_callback: ProcessCallback | None,
 ) -> dict[str, Any] | None:
     existing = {path.name for path in destination.iterdir()}
     command = build_image_download_command(
-        url, destination, gallery_dl=gallery_dl
+        url, destination, gallery_dl=gallery_dl, quality=quality
     )
     try:
         completed = _run_gallery_dl(
@@ -851,19 +875,22 @@ def _download_image_source(
         ),
         key=lambda path: path.name,
     )
-    images = [path for path in files if path.suffix.lower() in IMAGE_EXTENSIONS]
-    videos = [path for path in files if path.suffix.lower() in VIDEO_EXTENSIONS]
+    media_files = [
+        path
+        for path in files
+        if path.suffix.lower() in IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+    ]
     audio = [path for path in files if path.suffix.lower() in AUDIO_EXTENSIONS]
-    if completed.returncode or not images and not videos:
+    if completed.returncode or not media_files:
         _remove_new_entries(destination, existing)
         return None
     try:
         return _package_media(
             destination,
             platform,
-            images,
-            videos,
+            media_files,
             audio,
+            quality=quality,
             process_callback=process_callback,
         )
     except (OSError, SourceError):
@@ -902,6 +929,7 @@ def download_source(
             destination,
             platform,
             gallery_dl=gallery_dl,
+            quality=quality,
             process_callback=process_callback,
         )
         if image_result:
@@ -954,6 +982,7 @@ def download_source(
                 destination,
                 platform,
                 gallery_dl=gallery_dl,
+                quality=quality,
                 process_callback=process_callback,
             )
             if image_result:
@@ -998,6 +1027,7 @@ def download_source(
                 destination,
                 platform,
                 gallery_dl=gallery_dl,
+                quality=quality,
                 process_callback=process_callback,
             )
             if image_result:

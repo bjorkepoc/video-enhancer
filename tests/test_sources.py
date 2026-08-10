@@ -417,6 +417,48 @@ def test_download_source_archives_mixed_image_and_video_post(
         assert archive.namelist() == ["one.mp4", "two.jpg"]
 
 
+def test_download_source_remuxes_facebook_companion_audio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "facebook-video.mp4"
+    audio = tmp_path / "facebook-video.m4a"
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        sources,
+        "_run_yt_dlp",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", ""),
+    )
+
+    def download(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        video.write_bytes(b"video")
+        audio.write_bytes(b"audio")
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    def remux(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"combined")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(sources, "_run_gallery_dl", download)
+    monkeypatch.setattr(sources, "_find_ffmpeg", lambda: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(sources, "run_bounded_process", remux)
+    monkeypatch.setattr(
+        sources,
+        "probe_media",
+        lambda path, **kwargs: {"video_codec": "h264", "audio_codec": "aac"},
+    )
+
+    result = download_source("https://facebook.com/watch/?v=123", tmp_path)
+
+    assert result["path"] == tmp_path / "facebook-video-with-audio.mp4"
+    assert result["audio_path"] is None
+    assert result["operation"] == "remuxed"
+    assert commands[0][commands[0].index("-c") + 1] == "copy"
+    assert not video.exists()
+    assert not audio.exists()
+
+
 def test_download_source_falls_back_to_original_instagram_images(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -544,6 +586,48 @@ def test_instagram_image_fallback_rejects_untrusted_media_host(
 
     with pytest.raises(SourceError, match="did not provide public media"):
         download_source("https://www.instagram.com/p/example/", tmp_path)
+
+
+def test_instagram_image_fallback_rejects_partial_mixed_carousel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {
+        "entries": [
+            {
+                "id": "image",
+                "formats": [],
+                "thumbnails": [
+                    {"url": "https://instagram.test.fbcdn.net/media/image.jpg"}
+                ],
+            },
+            {"id": "video", "formats": [{"url": "https://example.invalid"}]},
+        ]
+    }
+    monkeypatch.setattr(
+        sources,
+        "_run_gallery_dl",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", ""),
+    )
+    monkeypatch.setattr(
+        sources,
+        "_run_yt_dlp",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0 if "--dump-single-json" in command else 1,
+            json.dumps(payload) if "--dump-single-json" in command else "",
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        sources,
+        "urlopen",
+        lambda *args, **kwargs: pytest.fail("partial carousel was downloaded"),
+    )
+
+    with pytest.raises(SourceError, match="did not provide public media"):
+        download_source("https://www.instagram.com/p/example/", tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_instagram_image_fallback_stops_when_cancelled(

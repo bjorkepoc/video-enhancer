@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import signal
+import subprocess
 import threading
 import time
 from collections.abc import Iterator
@@ -15,7 +16,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from video_enhancer import web
+from video_enhancer import sources, web
 from video_enhancer.presets import get_preset
 from video_enhancer.web import (
     HTML,
@@ -1042,6 +1043,38 @@ def test_source_download_route_runs_async_and_reports_saved_media(
     assert payload["preview_type"] == "video"
     assert payload["media"]["width"] == 1080
     assert payload["original_url"] == f"/files/sources/{source_id}/original"
+
+
+def test_nullable_instagram_metadata_leaves_source_job_in_terminal_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {"entries": [{"id": "image", "formats": [], "thumbnails": None}]}
+    monkeypatch.setattr(
+        sources,
+        "_run_gallery_dl",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", ""),
+    )
+    monkeypatch.setattr(
+        sources,
+        "_run_yt_dlp",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0 if "--dump-single-json" in command else 1,
+            json.dumps(payload) if "--dump-single-json" in command else "",
+            "",
+        ),
+    )
+    job = SourceJob(
+        "source1",
+        "https://www.instagram.com/p/example/",
+        tmp_path / "source-source1",
+    )
+
+    web.run_source_download(job)
+
+    assert job.status == "error"
+    assert "did not provide public media" in job.error
+    assert not job.directory.exists()
 
 
 def test_completed_source_is_replaced_to_bound_session_disk_use(

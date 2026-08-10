@@ -622,6 +622,60 @@ def _looks_like_image_post(platform: str, url: str) -> bool:
     )
 
 
+def _remux_companion_audio(
+    destination: Path,
+    video: Path,
+    audio: Path,
+    process_callback: ProcessCallback | None,
+) -> Path:
+    if video.stat().st_size + audio.stat().st_size > MAX_SOURCE_BYTES // 2:
+        raise SourceError("The source is too large to combine safely.")
+    ffmpeg = _find_ffmpeg()
+    if not ffmpeg:
+        raise SourceError("FFmpeg is required to combine the source video and audio.")
+    output = destination / f"{video.stem}-with-audio.mp4"
+    if output.exists():
+        raise SourceError("Could not safely combine the source video and audio.")
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-n",
+        "-nostdin",
+        "-i",
+        str(video),
+        "-i",
+        str(audio),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c",
+        "copy",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        str(output),
+    ]
+    try:
+        completed = run_bounded_process(
+            command,
+            timeout=DOWNLOAD_TIMEOUT_SECONDS,
+            max_output_bytes=MAX_PROCESS_OUTPUT_BYTES,
+            destination=destination,
+            max_directory_growth_bytes=MAX_SOURCE_BYTES // 2,
+            output_limit_error="FFmpeg produced too much output.",
+            directory_limit_error="The combined source exceeds the 8 GiB limit.",
+            process_callback=process_callback,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SourceError("Combining the source video and audio timed out.") from exc
+    if completed.returncode or not output.is_file() or not output.stat().st_size:
+        raise SourceError("Could not combine the source video and audio.")
+    video.unlink()
+    audio.unlink()
+    return output
+
+
 def _package_media(
     destination: Path,
     platform: str,
@@ -650,6 +704,24 @@ def _package_media(
                 )
             video_metadata[video] = details
 
+    remuxed = False
+    if platform == "facebook" and videos and audio:
+        if (
+            len(videos) != 1
+            or len(audio) != 1
+            or videos[0].stem != audio[0].stem
+        ):
+            raise SourceError("Facebook returned media streams that could not be paired.")
+        original = videos[0]
+        combined = _remux_companion_audio(
+            destination, original, audio[0], process_callback
+        )
+        media_files = [combined if path == original else path for path in media_files]
+        videos = [combined]
+        audio = []
+        total_size = sum(path.stat().st_size for path in media_files)
+        remuxed = True
+
     item_count = len(media_files)
     preview = media_files[0]
     preview_type = (
@@ -657,7 +729,7 @@ def _package_media(
     )
     if item_count == 1:
         path = preview
-        operation = "direct"
+        operation = "remuxed" if remuxed else "direct"
         media_type = preview_type
     else:
         if total_size > MAX_SOURCE_BYTES // 2:
@@ -764,15 +836,15 @@ def _download_instagram_image_source(
     candidates: list[tuple[str, str]] = []
     for entry in entries[:51]:
         if not isinstance(entry, dict) or entry.get("formats"):
-            continue
+            return None
         thumbnails = [
             thumbnail
-            for thumbnail in entry.get("thumbnails", ())
+            for thumbnail in entry.get("thumbnails") or ()
             if isinstance(thumbnail, dict)
             and _is_instagram_image_url(str(thumbnail.get("url", "")))
         ]
         if not thumbnails:
-            continue
+            return None
         thumbnail = max(thumbnails, key=_instagram_thumbnail_score)
         identifier = re.sub(r"[^A-Za-z0-9_-]+", "_", str(entry.get("id", "image")))
         candidates.append((str(thumbnail["url"]), identifier[:80] or "image"))

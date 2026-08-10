@@ -530,14 +530,11 @@ HTML = """<!doctype html>
       white-space: nowrap;
     }
     .brand strong { color: var(--accent); font-weight: 760; }
-    .brand-mark { width: 38px; height: 38px; color: var(--accent); }
-    .header-actions, .legal-nav, .engine-status {
+    .header-actions, .engine-status {
       display: flex;
       align-items: center;
     }
     .header-actions { gap: 28px; margin: 0; }
-    .legal-nav { gap: 24px; }
-    .header-actions .header-link,
     .footer-actions button {
       width: auto;
       min-height: 44px;
@@ -549,7 +546,6 @@ HTML = """<!doctype html>
       font-size: 15px;
       font-weight: 650;
     }
-    .header-link:hover,
     .footer-actions button:hover { background: transparent; color: var(--accent); }
     .engine-status {
       gap: 9px;
@@ -652,11 +648,6 @@ HTML = """<!doctype html>
       stroke-linecap: round;
       stroke-linejoin: round;
     }
-    .rights-note {
-      margin-top: 10px;
-      color: var(--muted);
-      font-size: 13px;
-    }
     .trust-line {
       display: flex;
       align-items: center;
@@ -719,8 +710,7 @@ HTML = """<!doctype html>
       border-bottom: 1px solid var(--line);
     }
     .workspace-empty { min-height: 150px; padding: 27px 0 30px; }
-    .workspace h2,
-    .explainer h2 {
+    .workspace h2 {
       color: var(--ink);
       font-size: 24px;
       font-weight: 760;
@@ -915,32 +905,6 @@ HTML = """<!doctype html>
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
 
-    .explainer {
-      max-width: 620px;
-      padding: 30px 0 42px;
-    }
-    .steps ol { margin: 12px 0 0; padding: 0; list-style: none; }
-    .steps li {
-      display: grid;
-      grid-template-columns: 46px minmax(0, 1fr);
-      gap: 15px;
-      align-items: start;
-      padding: 12px 0;
-    }
-    .steps li + li { border-top: 1px solid var(--line); }
-    .steps li > span {
-      display: grid;
-      width: 42px;
-      height: 42px;
-      place-items: center;
-      border: 2px solid var(--accent);
-      border-radius: 50%;
-      color: var(--ink);
-      font-size: 15px;
-      font-weight: 760;
-    }
-    .steps strong { display: block; color: var(--ink); font-size: 15px; }
-    .steps p { margin-top: 2px; color: var(--muted); font-size: 14px; }
     .site-footer {
       display: block;
       max-width: none;
@@ -1039,8 +1003,6 @@ HTML = """<!doctype html>
       .app-container { width: min(calc(100% - 40px), 1260px); }
       .header-inner { min-height: 72px; }
       .brand { gap: 7px; font-size: 20px; }
-      .brand-mark { width: 33px; height: 33px; }
-      .legal-nav { display: none; }
       .engine-status { padding-left: 0; border-left: 0; }
       .status-full { display: none; }
       .status-short { display: inline; }
@@ -1062,7 +1024,6 @@ HTML = """<!doctype html>
       .source-summary-heading, .result { align-items: flex-start; flex-direction: column; }
       .download-actions { width: 100%; justify-content: flex-start; }
       .download-link { width: 100%; }
-      .explainer { padding-block: 34px 42px; }
       .footer-actions { width: 100%; flex-wrap: wrap; justify-content: space-between; gap: 12px 20px; }
       .site-footer button { margin-top: 0; }
     }
@@ -1070,17 +1031,14 @@ HTML = """<!doctype html>
       .app-container { width: calc(100% - 32px); }
       .header-inner { min-height: 68px; }
       .brand { font-size: 18px; }
-      .brand-mark { width: 31px; height: 31px; }
       .engine-status { font-size: 14px; }
       .hero h1 { font-size: 44px; }
       .hero-copy { margin-top: 17px; font-size: 16px; }
       .url-control input { padding-left: 52px; font-size: 15px; }
       .url-control > svg { left: 17px; }
       .primary-button { padding-inline: 18px; font-size: 15px; }
-      .rights-note { font-size: 12px; }
-      .workspace h2, .explainer h2 { font-size: 22px; }
+      .workspace h2 { font-size: 22px; }
       .workspace-empty p { font-size: 16px; }
-      .steps li { grid-template-columns: 44px minmax(0,1fr); gap: 12px; }
       .footer-actions { justify-content: flex-start; }
       .footer-actions .danger-button { flex-basis: 100%; justify-content: flex-start; }
       .dialog-body { padding: 22px; }

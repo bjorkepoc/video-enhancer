@@ -625,6 +625,15 @@ def _looks_like_image_post(platform: str, url: str) -> bool:
     )
 
 
+def _normalize_single_post_url(platform: str, url: str) -> str:
+    if platform != "facebook":
+        return url
+    match = re.fullmatch(
+        r"/[^/]+/photos/(?:a\.\d+/)?(\d+)/?", urlsplit(url).path, re.IGNORECASE
+    )
+    return f"https://www.facebook.com/photo/?fbid={match.group(1)}" if match else url
+
+
 def _is_single_post_url(platform: str, url: str) -> bool:
     try:
         match = gallery_extractor.find(url)
@@ -1023,6 +1032,7 @@ def download_source(
     destination.mkdir(parents=True, exist_ok=True)
     normalized_url = url.strip()
     platform = validate_social_url(normalized_url)
+    normalized_url = _normalize_single_post_url(platform, normalized_url)
     if not _is_single_post_url(platform, normalized_url):
         raise SourceError(
             "Use a public single-post URL, not a profile, feed, or gallery."

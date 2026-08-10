@@ -81,6 +81,28 @@ def test_download_source_rejects_profiles_and_galleries_before_network(
         assert sources._is_single_post_url(validate_social_url(url), url)
 
 
+def test_download_source_normalizes_facebook_photo_permalink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+
+    def download(
+        command: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        (tmp_path / "photo.jpg").write_bytes(b"photo")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(sources, "_run_gallery_dl", download)
+
+    result = download_source(
+        "https://www.facebook.com/user/photos/a.123/456/", tmp_path
+    )
+
+    assert commands[0][-1] == "https://www.facebook.com/photo/?fbid=456"
+    assert result["path"] == tmp_path / "photo.jpg"
+
+
 def test_download_command_uses_best_source_without_recode(tmp_path: Path) -> None:
     command = build_download_command("https://tiktok.com/x", tmp_path)
 

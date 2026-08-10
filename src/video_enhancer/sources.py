@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from gallery_dl import extractor as gallery_extractor
+from yt_dlp.extractor.facebook import FacebookIE
 
 SUPPORTED_HOSTS = {
     "tiktok.com": "tiktok",
@@ -643,15 +644,11 @@ def _is_single_post_url(platform: str, url: str) -> bool:
         return True
     parsed = urlsplit(url)
     path = parsed.path.lower()
-    if (category, subcategory) == ("facebook", "set"):
-        return (
-            "/media/set" not in path
-            and any(marker in path for marker in ("/posts/", "/permalink", "/events/"))
-        )
     host = (parsed.hostname or "").lower().rstrip(".")
     return platform == "facebook" and (
         host == "fb.watch"
         or bool(re.match(r"/(?:reels?|share/[rvp])/[^/]+", path))
+        or FacebookIE.suitable(url)
     )
 
 

@@ -71,6 +71,11 @@ def test_download_source_rejects_profiles_and_galleries_before_network(
         "https://vm.tiktok.com/abc",
         "https://facebook.com/reel/123",
         "https://facebook.com/example/posts/123",
+        "https://facebook.com/video.php?v=123",
+        "https://facebook.com/story.php?story_fbid=123&id=456",
+        "https://facebook.com/video/embed?video_id=123",
+        "https://facebook.com/watch/live/?v=123",
+        "https://facebook.com/events/123/permalink/456",
         "https://fb.watch/abc",
     ):
         assert sources._is_single_post_url(validate_social_url(url), url)

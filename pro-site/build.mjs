@@ -29,5 +29,6 @@ for (const [from, to] of [
 
 await Promise.all([
   writeFile("dist/client/index.html", html),
+  writeFile("dist/client/_routes.json", `${JSON.stringify({ version: 1, include: ["/*"], exclude: [] }, null, 2)}\n`),
   cp("og.png", "dist/client/og.png"),
 ]);

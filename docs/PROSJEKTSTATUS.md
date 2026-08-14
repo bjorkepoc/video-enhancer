@@ -1,6 +1,6 @@
 # Prosjektstatus og beslutningslogg
 
-Sist oppdatert: 10. august 2026
+Sist oppdatert: 14. august 2026
 
 Prosjekt: `video-enhancer` / Media Downloader
 
@@ -22,7 +22,7 @@ Prosjektet består nå av to flater som skal leve videre samtidig:
 
 ## Fysisk prosjektseparasjon
 
-Fra 10. august 2026 er variantene også skilt i to lokale Git-prosjekter:
+Fra 10. august 2026 er variantene skilt i to lokale Git-prosjekter:
 
 - **Media Downloader Lite:** `/Users/po/dev/media-downloader-lite`, commit
   `c3c86b2`, <https://github.com/bjorkepoc/media-downloader-lite>. Dette er den
@@ -31,10 +31,10 @@ Fra 10. august 2026 er variantene også skilt i to lokale Git-prosjekter:
   GitHub-prosjektet er <https://github.com/bjorkepoc/video-enhancer>. Dette er
   den eksisterende Python-, CLI-, desktop- og native FFmpeg-basen.
 
-Ingen filer ble slettet fra den verdifulle Plus-arbeidskopien under utskillingen.
-Pages/Functions-filene finnes derfor fortsatt som lokale, untracked kopier der,
-men de inngår ikke i Plus-committen eller Plus-repoet på GitHub. Lite er pushet
-til eget remote og er den sikre, reproduserbare kilden for disse filene.
+Fra 14. august inneholder `video-enhancer/main` også en sporet kopi av den
+verifiserte Lite-webflaten og en minimal Sites-adapter. Dette gjør en privat
+Sites-deploy reproduserbar uten å flytte Python, native FFmpeg eller Plus-jobber
+til serveren. Det separate Lite-repoet forblir kilden til den eldre Pages-deployen.
 
 Den offentlige siden lar brukeren lime inn en offentlig Instagram-, TikTok-
 eller Facebook-lenke og hente det beste originale mediet kilden faktisk
@@ -318,9 +318,10 @@ skal funksjonen heller feile enn at prosjektet oppgraderes til en betalt løsnin
 uten en ny, uttrykkelig beslutning. Cloudflare-priser og grenser må verifiseres
 på nytt før lansering eller større trafikk.
 
-Produksjonen kan nå gjenskapes fra Lite-committen `c3c86b2`, som finnes både
-lokalt og på <https://github.com/bjorkepoc/media-downloader-lite>.
-`video-enhancer`/`e0156e0` er ikke kilden til den aktive Pages-deployen.
+Den eldre Pages-produksjonen kan gjenskapes fra Lite-committen `c3c86b2`, som
+finnes både lokalt og på <https://github.com/bjorkepoc/media-downloader-lite>.
+En separat privat Sites-deploy bygges fra den sporbare webflaten på
+`video-enhancer/main`; Plus-appen kjører fortsatt bare lokalt.
 
 ## Layoutfeilen som ble rettet
 
@@ -342,8 +343,8 @@ applikasjonsfeil ble registrert i konsollen.
 
 ## Endringer i arbeidskopien
 
-Lite-områdene er nå kildekode i `/Users/po/dev/media-downloader-lite` og det
-separate GitHub-repoet:
+Lite-områdene er kildekode i `/Users/po/dev/media-downloader-lite`, det separate
+GitHub-repoet og som en deploybar kopi på `video-enhancer/main`:
 
 - `public-site/`: hosted frontend og lokal WebAssembly-behandling;
 - `functions/`: resolver, extractors, SSRF-kontroller og range-proxy;
@@ -359,10 +360,8 @@ Eksisterende områder som er videreutviklet:
 - Python-testene, release-testene, dokumentasjonen, tredjepartsnotiser og
   dependency lock.
 
-Per 10. august 2026 er Plus-endringene lagt på branch `codex/plus-split` for
-sikker review og GitHub-backup. De lokale Pages/Functions-kopiene er fortsatt
-untracked og skal ikke stages i Plus. Det finnes ingen stash. `origin/main` står
-fortsatt på `e0156e0`. En separat worktree finnes i
+Per 14. august 2026 er Plus-endringene og den deploybare webflaten samlet på
+`video-enhancer/main`. En separat worktree finnes fortsatt i
 `/Users/po/dev/video-enhancer-task-1` på branch `task-1` og skal ikke endres eller
 slettes uten egen kontroll.
 
@@ -424,7 +423,7 @@ Prioritert gjenstående arbeid:
 - Fjerne lokal app, CLI, presets eller eksisterende enhancement-funksjoner.
 - Påstå at annonseplassholderne allerede gir inntekt.
 - Påstå at tjenesten har absolutt juridisk ansvarsfrihet.
-- Legge Lite-filene inn i Plus-repoet igjen.
+- Flytte Python, native FFmpeg eller Plus-mediejobber til Sites/Worker.
 
 ## Nyttige kommandoer
 

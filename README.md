@@ -7,20 +7,22 @@ with a local Python/FFmpeg app after explicit confirmation.
 Original images and videos are not re-encoded. Multi-media posts are packaged
 as ZIP files, audio export requires separate local-processing consent, and every
 converted, trimmed, or enhanced result remains a separate file. Python, gallery-dl,
-yt-dlp, and FFmpeg all run locally on the user's machine; this repository has
-no hosted backend.
+yt-dlp, and native FFmpeg all run locally on the user's machine. The tracked
+Lite web surface uses only a small edge resolver; optional FFmpeg WebAssembly
+processing runs in the visitor's browser.
 
 ## Separate Lite edition
 
-The zero-cost Cloudflare edition now lives in its own repository:
+The zero-cost Cloudflare edition also lives in its own repository:
 
 - source: <https://github.com/bjorkepoc/media-downloader-lite>
 - production: <https://media-downloader-4y5.pages.dev/>
 - local checkout: `/Users/po/dev/media-downloader-lite`
 
-Lite and Plus share product decisions but not deployable source. No Cloudflare
-Pages, Worker, JavaScript frontend, or sponsor-placement file is required to
-build this Plus app. Lite does not run Python or native FFmpeg on its server.
+`main` includes the current Lite web surface and a minimal Sites Worker adapter
+so the page can be built and deployed without packaging the local Python app.
+The standalone Lite repository remains the source for the legacy Pages deploy.
+Lite does not run Python or native FFmpeg on its server.
 
 Release status: `v0.1.0` is an unpublished cross-platform Python beta candidate,
 with self-contained macOS packages planned for both Apple Silicon and Intel

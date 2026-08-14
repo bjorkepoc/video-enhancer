@@ -8,8 +8,7 @@ await Promise.all([
 await Promise.all([
   cp("../public-site", "dist/client", { recursive: true }),
   cp("../functions", "dist/server/functions", { recursive: true }),
-  cp("../site-worker.js", "dist/server/base-worker.js"),
-  cp("worker.js", "dist/server/index.js"),
+  cp("../site-worker.js", "dist/server/index.js"),
   cp(".openai/hosting.json", "dist/.openai/hosting.json"),
 ]);
 
@@ -27,10 +26,9 @@ for (const [from, to] of [
   if (!html.includes(from)) throw new Error(`Missing source copy: ${from}`);
   html = html.replaceAll(from, to);
 }
+html = html.replaceAll("__SITE_ORIGIN__", "https://media-downloader-pro.bjorke-poc.chatgpt.site");
 
 await Promise.all([
-  writeFile("dist/server/app-html.js", `export const HTML = ${JSON.stringify(html)};\n`),
-  rm("dist/client/index.html"),
-  writeFile("dist/client/_routes.json", `${JSON.stringify({ version: 1, include: ["/", "/index.html", "/api/*"], exclude: [] }, null, 2)}\n`),
+  writeFile("dist/client/index.html", html),
   cp("og.png", "dist/client/og.png"),
 ]);

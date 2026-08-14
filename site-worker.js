@@ -2,7 +2,7 @@ import { json } from "./functions/_shared.js";
 import { onRequest as mediaRequest } from "./functions/api/media.js";
 import { onRequest as resolveRequest, onRequestPost } from "./functions/api/resolve.js";
 
-export const STATIC_HEADERS = {
+const STATIC_HEADERS = {
   "content-security-policy": "default-src 'self'; base-uri 'none'; connect-src 'self' https://cdn.jsdelivr.net https://*.tiktok.com https://*.tiktokcdn.com https://*.tiktokcdn-eu.com https://*.tiktokcdn-us.com https://*.tiktokv.com https://*.byteoversea.com https://*.ibytedtos.com https://*.muscdn.com https://*.bytecdn.cn https://*.cdninstagram.com https://*.fbcdn.net; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' blob: data: https://*.tiktok.com https://*.tiktokcdn.com https://*.tiktokcdn-eu.com https://*.tiktokcdn-us.com https://*.tiktokv.com https://*.byteoversea.com https://*.ibytedtos.com https://*.muscdn.com https://*.bytecdn.cn https://*.cdninstagram.com https://*.fbcdn.net; media-src 'self' blob: https://*.tiktok.com https://*.tiktokcdn.com https://*.tiktokcdn-eu.com https://*.tiktokcdn-us.com https://*.tiktokv.com https://*.byteoversea.com https://*.ibytedtos.com https://*.muscdn.com https://*.bytecdn.cn https://*.cdninstagram.com https://*.fbcdn.net; object-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self' blob:",
   "cross-origin-opener-policy": "same-origin",
   "cross-origin-resource-policy": "same-origin",

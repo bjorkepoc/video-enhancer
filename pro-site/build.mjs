@@ -8,7 +8,8 @@ await Promise.all([
 await Promise.all([
   cp("../public-site", "dist/client", { recursive: true }),
   cp("../functions", "dist/server/functions", { recursive: true }),
-  cp("../site-worker.js", "dist/server/index.js"),
+  cp("../site-worker.js", "dist/server/base-worker.js"),
+  cp("worker.js", "dist/server/index.js"),
   cp(".openai/hosting.json", "dist/.openai/hosting.json"),
 ]);
 
@@ -28,7 +29,8 @@ for (const [from, to] of [
 }
 
 await Promise.all([
-  writeFile("dist/client/index.html", html),
-  writeFile("dist/client/_routes.json", `${JSON.stringify({ version: 1, include: ["/*"], exclude: [] }, null, 2)}\n`),
+  writeFile("dist/server/app-html.js", `export const HTML = ${JSON.stringify(html)};\n`),
+  rm("dist/client/index.html"),
+  writeFile("dist/client/_routes.json", `${JSON.stringify({ version: 1, include: ["/", "/index.html", "/api/*"], exclude: [] }, null, 2)}\n`),
   cp("og.png", "dist/client/og.png"),
 ]);

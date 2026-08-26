@@ -21,6 +21,7 @@ const JOB_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
 let engine;
 let enginePromise;
+let engineGeneration = 0;
 let running = false;
 let runToken = 0;
 
@@ -66,27 +67,33 @@ export async function loadLocalProcessor({ onProgress, onStatus } = {}) {
   if (engine?.loaded) return engine;
   if (enginePromise) return enginePromise;
 
-  enginePromise = (async () => {
+  const generation = engineGeneration;
+  let candidate;
+  const promise = (async () => {
     onStatus?.("Downloading the local processing engine (about 31 MB)…");
     const coreURL = await downloadCoreFile(CORE_FILES.js, (ratio) => onProgress?.(ratio * 0.02));
     const wasmURL = await downloadCoreFile(CORE_FILES.wasm, (ratio) => onProgress?.(0.02 + ratio * 0.08));
     try {
-      engine = new FFmpeg();
-      await engine.load({ coreURL, wasmURL });
+      candidate = new FFmpeg();
+      await candidate.load({ coreURL, wasmURL });
+      if (generation !== engineGeneration) {
+        throw new Error("The local processing engine load was cancelled.");
+      }
+      engine = candidate;
       onProgress?.(0.1);
-      return engine;
+      return candidate;
     } finally {
       URL.revokeObjectURL(coreURL);
       URL.revokeObjectURL(wasmURL);
     }
-  })().catch((error) => {
-    enginePromise = undefined;
-    engine?.terminate();
-    engine = undefined;
+  })();
+  enginePromise = promise;
+  return promise.catch((error) => {
+    candidate?.terminate();
+    if (enginePromise === promise) enginePromise = undefined;
+    if (engine === candidate) engine = undefined;
     throw error;
   });
-
-  return enginePromise;
 }
 
 function selectedFilters(mode, filter) {
@@ -166,6 +173,7 @@ export async function processLocally(source, { mode, filter = "none", onProgress
 }
 
 export function terminateLocalProcessor() {
+  engineGeneration += 1;
   engine?.terminate();
   engine = undefined;
   enginePromise = undefined;

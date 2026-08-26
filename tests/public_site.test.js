@@ -374,6 +374,10 @@ test("TikTok proxy retries a signed video inside a fresh anonymous session", asy
 
 test("local processor lock is released by failed loads and cleared only by the owning job", async () => {
   const source = await readFile(new URL("../public-site/local-processor.js", import.meta.url), "utf8");
+  assert.match(source, /const generation = engineGeneration;/);
+  assert.match(source, /if \(enginePromise === promise\) enginePromise = undefined;/);
+  assert.match(source, /if \(engine === candidate\) engine = undefined;/);
+  assert.match(source, /engineGeneration \+= 1;/);
   assert.match(source, /let ffmpeg;\n  try \{\n    ffmpeg = await loadLocalProcessor/);
   assert.match(source, /if \(token !== runToken\) throw new Error\("The local processing job was cancelled\."\);/);
   assert.match(source, /if \(token === runToken\) \{[\s\S]*?running = false;/);

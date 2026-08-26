@@ -56,8 +56,27 @@ def test_release_uses_the_hashed_lock_without_build_isolation() -> None:
     assert f"{publish_sync} --no-install-project" in release_publish
     assert f"{publish_sync} --no-build-isolation" in release_publish
     assert "python -m build --no-isolation" in release_publish
-    assert "--prerelease" in release_publish
+    assert (
+        'gh release create "$GITHUB_REF_NAME" "${assets[@]}" --prerelease'
+        not in release_publish
+    )
+    assert "flags=(--generate-notes --verify-tag)" in release_publish
+    assert "flags+=(--prerelease)" in release_publish
+    assert '"${flags[@]}"' in release_publish
+    assert "gh release view" in release_publish
+    assert "gh release upload" in release_publish
+    assert "--clobber" in release_publish
+    assert "concurrency:" in release_publish
+    assert "group: release-${{ github.ref_name }}" in release_publish
+    assert "cancel-in-progress: false" in release_publish
     assert "pip install" not in release_publish
+
+    security_job_text = workflow.split("\n  security:\n", 1)[1].split(
+        "\n  macos-package-test:\n", 1
+    )[0]
+    assert "audit-macos-extra.txt" in security_job_text
+    assert "audit-default.txt" in security_job_text
+    assert security_job_text.count("pip-audit==2.10.1") == 2
 
     requirements = re.findall(r'"([\w-]+)(?:\[[^]]+\])?[<>=!~]', project)
     lock = (ROOT / "uv.lock").read_text()
@@ -133,6 +152,7 @@ def test_macos_build_script_rejects_architecture_mismatches() -> None:
     assert 'verify_arch "Bundled gallery-dl"' in script
     assert 'verify_arch "App executable"' in script
     assert 'archive="Video-Enhancer-$version-macos-$build_arch.zip"' in script
+    assert "--retry 3 --retry-delay 5 --continue-at -" in script
 
 
 def test_source_archive_manifest_contains_linked_release_files() -> None:

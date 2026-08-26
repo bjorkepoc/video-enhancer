@@ -545,14 +545,25 @@ def test_download_query_serves_a_physical_attachment(tmp_path: Path) -> None:
 
     with running_server(tmp_path) as base:
         SOURCES[source.id] = source
+        _, payload = post_json(
+            base,
+            "/api/files/token",
+            {"path": "/files/sources/source1/original"},
+        )
         with urlopen(
-            f"{base}/files/sources/source1/original?token={TOKEN}&download=1"
+            f"{base}/files/sources/source1/original"
+            f"?token={payload['token']}&download=1"
         ) as response:
             assert response.status == 200
             assert response.headers["content-disposition"] == (
                 'attachment; filename="original.mp4"'
             )
             assert response.read() == b"video"
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(f"{base}/files/sources/source1/original?token={TOKEN}")
+
+    assert error.value.code == 403
 
 
 def test_source_routes_encode_unicode_filenames(tmp_path: Path) -> None:
@@ -566,9 +577,14 @@ def test_source_routes_encode_unicode_filenames(tmp_path: Path) -> None:
     with running_server(tmp_path) as base:
         SOURCES[source.id] = source
         for kind, disposition in (("preview", "inline"), ("original", "attachment")):
+            _, payload = post_json(
+                base,
+                "/api/files/token",
+                {"path": f"/files/sources/source1/{kind}"},
+            )
             request = Request(
                 f"{base}/files/sources/source1/{kind}"
-                f"?token={TOKEN}&download={int(kind == 'original')}"
+                f"?token={payload['token']}&download={int(kind == 'original')}"
             )
             with urlopen(request) as response:
                 assert response.headers["content-disposition"] == (

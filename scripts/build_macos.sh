@@ -57,6 +57,7 @@ verify_arch "FFmpeg" "$ffmpeg"
 if [[ ! -f "$yt_dlp" ]] || ! printf '%s  %s\n' "$yt_dlp_sha256" "$yt_dlp" | shasum -a 256 -c - >/dev/null 2>&1; then
   download="$yt_dlp.download"
   curl --fail --location --silent --show-error \
+    --retry 3 --retry-delay 5 --continue-at - \
     "https://github.com/yt-dlp/yt-dlp/releases/download/$yt_dlp_version/yt-dlp_macos" \
     --output "$download"
   printf '%s  %s\n' "$yt_dlp_sha256" "$download" | shasum -a 256 -c -

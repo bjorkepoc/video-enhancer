@@ -271,6 +271,121 @@ def test_parse_ffprobe_reports_saved_stream() -> None:
     }
 
 
+def test_parse_ffprobe_ignores_attached_cover_art() -> None:
+    with pytest.raises(SourceError, match="no video stream"):
+        parse_ffprobe(
+            {
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "codec_name": "mjpeg",
+                        "width": 600,
+                        "height": 600,
+                        "disposition": {"attached_pic": 1},
+                    },
+                    {"codec_type": "audio", "codec_name": "aac"},
+                ],
+                "format": {"duration": "1"},
+            }
+        )
+
+
+def test_parse_ffmpeg_probe_ignores_attached_pic_stream() -> None:
+    stderr = """
+Duration: 00:00:01.00, start: 0.000000, bitrate: 100 kb/s
+Stream #0:0: Video: mjpeg, yuvj420p(pc), 600x600, attached pic
+Stream #0:1: Audio: aac, 48000 Hz, stereo
+"""
+
+    with pytest.raises(SourceError, match="no video stream"):
+        sources._parse_ffmpeg_probe(stderr)
+
+
+def test_directory_size_tolerates_permission_errors(tmp_path: Path) -> None:
+    def deny(path: object) -> object:
+        raise PermissionError(path)
+
+    import os as real_os
+
+    original_scandir = real_os.scandir
+    real_os.scandir = deny  # type: ignore[assignment]
+    try:
+        assert sources._directory_size(tmp_path) == 0
+    finally:
+        real_os.scandir = original_scandir
+
+
+def test_run_bounded_process_stops_child_when_callback_raises() -> None:
+    stopped: list[object] = []
+    command = [sys.executable, "-c", "import time;time.sleep(5)"]
+    original_stop = sources.stop_process
+    sources.stop_process = lambda process: stopped.append(process)  # type: ignore[assignment]
+    try:
+        with pytest.raises(RuntimeError, match="callback boom"):
+            sources.run_bounded_process(
+                command,
+                timeout=2,
+                max_output_bytes=1024,
+                process_callback=lambda process: (_ for _ in ()).throw(
+                    RuntimeError("callback boom")
+                ),
+            )
+    finally:
+        sources.stop_process = original_stop  # type: ignore[assignment]
+
+    assert len(stopped) == 1
+
+
+def test_probe_media_falls_back_to_ffmpeg_when_ffprobe_output_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"video")
+    stderr = """
+Duration: 00:00:01.00, start: 0.000000, bitrate: 100 kb/s
+Stream #0:0: Video: h264, yuv420p, 16x16, 90 kb/s, 30 fps, 30 tbr
+"""
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[0] == "/usr/bin/ffprobe":
+            raise SourceError("Media verification produced too much output.")
+        return subprocess.CompletedProcess(command, 0, "", stderr)
+
+    monkeypatch.setattr(sources.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(sources, "run_bounded_process", run)
+
+    assert probe_media(video)["fps"] == 30.0
+    assert calls[0][0].startswith("/usr/bin/ffprobe")
+    assert calls[1][:2] == ["/usr/bin/ffmpeg", "-hide_banner"]
+
+
+def test_probe_media_rejects_failing_ffmpeg_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"video")
+    stderr = """
+Duration: 00:00:01.00, start: 0.000000, bitrate: 100 kb/s
+Stream #0:0: Video: h264, yuv420p, 16x16, 90 kb/s, 30 fps, 30 tbr
+"""
+    monkeypatch.setattr(sources.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        sources,
+        "_find_ffmpeg",
+        lambda name="ffmpeg": "/usr/bin/ffmpeg",
+    )
+    monkeypatch.setattr(
+        sources,
+        "run_bounded_process",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", stderr),
+    )
+
+    with pytest.raises(SourceError, match="could not be decoded"):
+        probe_media(video)
+
+
 def test_probe_media_uses_ffprobe_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

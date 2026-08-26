@@ -8,6 +8,8 @@ export async function onRequest({ request }) {
   try {
     return await proxyMedia(request);
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "The media could not be streamed." }, 400);
+    const status = typeof error?.status === "number" ? error.status : 502;
+    const headers = status >= 500 ? { "retry-after": "30" } : {};
+    return json({ error: "The media could not be streamed. Try again shortly." }, status, headers);
   }
 }

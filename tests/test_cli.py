@@ -119,6 +119,22 @@ def test_list_encoders_does_not_require_input_or_output(
     assert "qsv" not in captured.out.lower()
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_scale_factor_rejects_non_finite_values(value: str) -> None:
+    with pytest.raises(SystemExit):
+        run(["in.mp4", "out.mp4", "--scale-factor", value])
+
+
+def test_list_encoders_matches_supported_codecs(capsys: pytest.CaptureFixture[str]) -> None:
+    from video_enhancer.ffmpeg import SUPPORTED_VIDEO_CODECS
+
+    _invoke_main(["--list-encoders"])
+
+    captured = capsys.readouterr()
+    for codec in SUPPORTED_VIDEO_CODECS:
+        assert codec in captured.out
+
+
 @pytest.mark.parametrize("option", ["--gpu", "--filter-backend", "--filter-device"])
 def test_gpu_options_are_not_part_of_the_cli(option: str, tmp_path: Path) -> None:
     input_path, output_path = _sample_paths(tmp_path)

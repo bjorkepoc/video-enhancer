@@ -1,5 +1,6 @@
 import {
   TERMS_VERSION,
+  UserFacingError,
   anonymousRateKey,
   checkRateLimit,
   json,
@@ -17,7 +18,7 @@ export async function onRequestPost({ request }) {
     if (body.termsAccepted !== true || body.termsVersion !== TERMS_VERSION) return json({ error: "Accept the current Terms of Use before resolving media." }, 400);
     return json(await resolveSource(body.url));
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "The source could not be resolved." }, 400);
+    return json({ error: error instanceof UserFacingError ? error.message : "The source could not be resolved." }, 400);
   }
 }
 

@@ -13,6 +13,7 @@ import {
   validateMediaUrl,
   validateSourceUrl,
 } from "../functions/_shared.js";
+import { onRequest as mediaRequest } from "../functions/api/media.js";
 import { onRequestPost as resolveRequest } from "../functions/api/resolve.js";
 import { buildLocalCommand } from "../public-site/local-processor.js";
 import worker from "../site-worker.js";
@@ -61,6 +62,11 @@ test("meta parser handles attribute order and entities", () => {
   const meta = parseMetaTags('<meta content="A &amp; B" property="og:title"><meta name="twitter:image" content="https://cdninstagram.com/x.jpg">');
   assert.equal(meta["og:title"], "A & B");
   assert.equal(meta["twitter:image"], "https://cdninstagram.com/x.jpg");
+});
+
+test("meta parser survives out-of-range numeric entities", () => {
+  const meta = parseMetaTags('<meta content="bad &#1114112; &#x110000; &#65;" property="og:title">');
+  assert.match(meta["og:title"], /bad .* A/u);
 });
 
 test("TikTok parser chooses the highest exposed bitrate and includes photo audio", () => {
@@ -150,6 +156,45 @@ test("resolver pauses VSCO without making an upstream request", async () => {
   }
 });
 
+test("resolver does not echo internal upstream failures", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("getaddrinfo ENOTFOUND internal-resolver-host");
+  };
+  try {
+    const request = new Request("https://site.example/api/resolve", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://site.example", "cf-connecting-ip": "192.0.2.22" },
+      body: JSON.stringify({ url: "https://www.tiktok.com/@a/video/1", termsAccepted: true, termsVersion: "2026-08-10.2" }),
+    });
+    const response = await resolveRequest({ request });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "The source could not be resolved." });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("media endpoint reports upstream failures without echoing internals", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("getaddrinfo ENOTFOUND internal-upstream-host");
+  };
+  try {
+    const params = new URLSearchParams({ platform: "tiktok", kind: "video", url: "https://v16.tiktokcdn.com/source.mp4" });
+    const request = new Request(`https://site.example/api/media?${params}`, {
+      headers: { origin: "https://site.example", "cf-connecting-ip": "192.0.2.77" },
+    });
+    const response = await mediaRequest({ request });
+    assert.equal(response.status, 502);
+    assert.equal(response.headers.get("retry-after"), "30");
+    const body = await response.json();
+    assert.doesNotMatch(body.error, /ENOTFOUND|internal-upstream-host/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("range proxy forwards the byte range and emits a safe attachment", async () => {
   const originalFetch = globalThis.fetch;
   let upstreamRange;
@@ -192,6 +237,44 @@ test("range proxy restores a missing Content-Range for open-ended requests", asy
   }
 });
 
+test("range proxy accepts suffix ranges and rejects inverted ones", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new Uint8Array([8, 9]), {
+    status: 206,
+    headers: { "content-type": "video/mp4", "content-length": "2" },
+  });
+  try {
+    const params = new URLSearchParams({ platform: "tiktok", kind: "video", url: "https://v16.tiktokcdn.com/source.mp4" });
+    const suffix = await proxyMedia(new Request(`https://site.example/api/media?${params}`, { headers: { range: "bytes=-2" } }));
+    assert.equal(suffix.status, 206);
+    assert.equal(suffix.headers.get("content-range"), null);
+    assert.equal([...new Uint8Array(await suffix.arrayBuffer())].length, 2);
+
+    const inverted = await proxyMedia(new Request(`https://site.example/api/media?${params}`, { headers: { range: "bytes=100-50" } }));
+    assert.equal(inverted.status, 416);
+
+    const empty = await proxyMedia(new Request(`https://site.example/api/media?${params}`, { headers: { range: "bytes=-" } }));
+    assert.equal(empty.status, 416);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("proxy filenames drop leading and trailing dots", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new Uint8Array([1]), {
+    status: 200,
+    headers: { "content-type": "video/mp4", "content-length": "1" },
+  });
+  try {
+    const params = new URLSearchParams({ platform: "tiktok", kind: "video", url: "https://v16.tiktokcdn.com/source.mp4", name: "..hidden..mp4" });
+    const response = await proxyMedia(new Request(`https://site.example/api/media?${params}`));
+    assert.equal(response.headers.get("content-disposition"), 'inline; filename="hidden..mp4"');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("TikTok proxy retries a signed video inside a fresh anonymous session", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
@@ -228,6 +311,13 @@ test("TikTok proxy retries a signed video inside a fresh anonymous session", asy
   }
 });
 
+test("local processor lock is released by failed loads and cleared only by the owning job", async () => {
+  const source = await readFile(new URL("../public-site/local-processor.js", import.meta.url), "utf8");
+  assert.match(source, /try \{\n    const ffmpeg = await loadLocalProcessor/);
+  assert.match(source, /if \(token !== runToken\) throw new Error\("The local processing job was cancelled\."\);/);
+  assert.doesNotMatch(source, /terminateLocalProcessor[\s\S]*?running = false;/);
+});
+
 test("browser-local commands keep 60 FPS, 90 FPS, 2x upscale, filters, and MP3", () => {
   assert.match(buildLocalCommand("60").join(" "), /minterpolate=fps=60/);
   assert.match(buildLocalCommand("90").join(" "), /minterpolate=fps=90/);
@@ -257,6 +347,7 @@ test("public UI is ad-funded, payment-free, consentful, and API-only on Function
   assert.match(html, /No login, account, or payment/);
   assert.match(html, /mandatory rights under applicable law/);
   assert.match(html, /VSCO links are recognized, but automated resolution is paused/);
+  assert.match(html, /<label for="terms-accepted">[^<]+<\/label>\s*<button[^>]+data-dialog="terms-dialog">Terms of Use<\/button>/);
   assert.doesNotMatch(`${html}\n${app}`, /Stripe|subscription|checkout|billing/i);
   assert.doesNotMatch(html, /300 × 600|970 × 90/);
   assert.doesNotMatch(app, /localStorage|indexedDB/i);

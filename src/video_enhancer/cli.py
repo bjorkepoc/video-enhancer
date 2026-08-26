@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -23,6 +24,8 @@ def positive_float(value: str) -> float:
         parsed = float(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("must be a number greater than 0") from exc
+    if not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError("must be a finite number greater than 0")
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than 0")
     return parsed
@@ -131,11 +134,9 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.list_encoders:
-        print(
-            "Supported video encoders:\n"
-            "  libx264  H.264, most compatible\n"
-            "  libx265  HEVC, smaller files, slower"
-        )
+        print("Supported video encoders:")
+        for codec in SUPPORTED_VIDEO_CODECS:
+            print(f"  {codec}")
         return 0
     if args.input is None or args.output is None:
         parser.error("input and output are required unless --list-encoders is used")

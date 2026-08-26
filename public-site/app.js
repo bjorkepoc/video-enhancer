@@ -9,6 +9,7 @@ const state = {
   enhancedURL: null,
   zoom: 1,
   oneFpsTimer: null,
+  gen: 0,
 };
 
 function setStatus(message, isError = false) {
@@ -30,8 +31,10 @@ function formatBytes(value) {
 }
 
 function resetMedia() {
+  state.gen += 1;
   clearInterval(state.oneFpsTimer);
   state.oneFpsTimer = null;
+  $("one-fps").setAttribute("aria-pressed", "false");
   state.sourceBlob = null;
   state.primary = null;
   state.resolved = null;
@@ -84,20 +87,35 @@ function addMeta(term, value) {
   $("result-meta").append(dt, dd);
 }
 
+function safeUrl(value) {
+  try {
+    const url = new URL(value, location.origin);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function downloadButton(media, label, primary = false) {
   const link = document.createElement("a");
   link.className = `button${primary ? " button-primary" : ""}`;
-  link.href = media.downloadUrl;
-  link.download = media.filename || "media";
+  const href = safeUrl(media.downloadUrl);
+  if (href) {
+    link.href = href;
+    link.download = media.filename || "media";
+  } else {
+    link.setAttribute("aria-disabled", "true");
+  }
   link.textContent = label;
   return link;
 }
 
 function setPreviewSource(element, media) {
-  const direct = media.directUrl || media.previewUrl;
-  element.onerror = direct === media.previewUrl ? null : () => {
+  const preview = safeUrl(media.previewUrl);
+  const direct = safeUrl(media.directUrl) || preview;
+  element.onerror = direct === preview ? null : () => {
     element.onerror = null;
-    element.src = media.previewUrl;
+    element.src = preview;
   };
   element.src = direct;
 }
@@ -233,7 +251,7 @@ $("one-fps").addEventListener("click", () => {
   $("one-fps").setAttribute("aria-pressed", "true");
 });
 
-async function fetchSourceBlob() {
+async function fetchSourceBlob(gen) {
   if (state.sourceBlob) return state.sourceBlob;
   for (const url of new Set([state.primary.directUrl, state.primary.previewUrl].filter(Boolean))) {
     try {
@@ -243,7 +261,7 @@ async function fetchSourceBlob() {
       if (declared > 500 * 1024 * 1024) throw new Error("This file is too large for safe in-browser processing. Download the original or use the desktop app.");
       const blob = await response.blob();
       if (blob.size > 500 * 1024 * 1024) throw new Error("This file is too large for safe in-browser processing. Download the original or use the desktop app.");
-      state.sourceBlob = blob;
+      if (gen === state.gen) state.sourceBlob = blob;
       return blob;
     } catch (error) {
       if (/too large/i.test(error.message || "")) throw error;
@@ -265,9 +283,10 @@ async function runEnhancement(mode, button) {
   button.textContent = "Working…";
   const filter = document.querySelector('input[name="filter"]:checked')?.value || "none";
   $("enhance-progress").value = 0;
+  const gen = state.gen;
 
   try {
-    const source = await fetchSourceBlob();
+    const source = await fetchSourceBlob(gen);
     const result = await processLocally(source, {
       mode,
       filter,
@@ -278,6 +297,7 @@ async function runEnhancement(mode, button) {
       },
       onStatus: (message) => { $("enhance-status").textContent = message; },
     });
+    if (gen !== state.gen || !state.primary) return;
 
     if (state.enhancedURL) URL.revokeObjectURL(state.enhancedURL);
     state.enhancedURL = URL.createObjectURL(result.blob);
@@ -288,8 +308,13 @@ async function runEnhancement(mode, button) {
     download.download = `${title}-${suffix}.${result.extension}`;
     download.textContent = mode === "audio" ? "Download extracted MP3" : "Download enhanced video";
     const outputVideo = $("enhanced-video");
+    if (mode === "audio") {
+      outputVideo.pause();
+      outputVideo.removeAttribute("src");
+    } else {
+      outputVideo.src = state.enhancedURL;
+    }
     outputVideo.hidden = mode === "audio";
-    if (mode !== "audio") outputVideo.src = state.enhancedURL;
     $("enhanced-result").hidden = false;
     $("enhance-status").textContent = "Local file ready. It is not saved until you choose Download.";
   } catch (error) {

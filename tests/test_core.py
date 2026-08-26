@@ -14,6 +14,7 @@ from video_enhancer.ffmpeg import (
     SUPPORTED_VIDEO_CODECS,
     EnhancementOptions,
     FFmpegExecutionError,
+    FFmpegNotFoundError,
     ValidationError,
     build_export_command,
     build_ffmpeg_command,
@@ -55,14 +56,21 @@ def _build(tmp_path: Path, preset: str = "balanced", **overrides: object) -> lis
     )
 
 
-@pytest.mark.parametrize("preset", ALL_PRESETS)
-def test_public_presets_build_ffmpeg_commands(tmp_path: Path, preset: str) -> None:
-    command = _command_text(_build(tmp_path, preset=preset, scale_factor=2.0, fps=30))
+@pytest.mark.parametrize(
+    ("preset", "filter_signature"),
+    [
+        ("fast", "mi_mode=blend"),
+        ("balanced", "mc_mode=obmc"),
+        ("quality", "mc_mode=aobmc"),
+        ("ultra", "nlmeans=s=1.0"),
+    ],
+)
+def test_public_presets_build_distinct_filter_chains(
+    tmp_path: Path, preset: str, filter_signature: str
+) -> None:
+    parts = _command_parts(_build(tmp_path, preset=preset))
 
-    assert "ffmpeg" in command.lower()
-    assert "-i" in command
-    assert "input.mp4" in command
-    assert "output.mp4" in command
+    assert filter_signature in parts[parts.index("-vf") + 1]
 
 
 def test_supported_video_codecs_are_cpu_only() -> None:
@@ -109,7 +117,10 @@ def test_local_export_formats_support_clipping(
     assert command[-1] == str(output_path)
 
 
-def test_local_export_rejects_reversed_clip(tmp_path: Path) -> None:
+@pytest.mark.parametrize("end_seconds", [4, 8])
+def test_local_export_rejects_non_positive_clip(
+    tmp_path: Path, end_seconds: float
+) -> None:
     input_path, output_path = _sample_paths(tmp_path)
 
     with pytest.raises(ValidationError, match="end must be later"):
@@ -118,7 +129,7 @@ def test_local_export_rejects_reversed_clip(tmp_path: Path) -> None:
             output_path,
             "mp4",
             start_seconds=8,
-            end_seconds=4,
+            end_seconds=end_seconds,
             check_executable=False,
         )
 
@@ -128,9 +139,18 @@ def test_packaged_ffmpeg_override_is_resolved(
 ) -> None:
     packaged = tmp_path / "ffmpeg"
     packaged.write_bytes(b"binary")
+    packaged.chmod(0o755)
     monkeypatch.setenv("VIDEO_ENHANCER_FFMPEG", str(packaged))
 
     assert resolve_ffmpeg() == str(packaged)
+
+
+def test_resolve_ffmpeg_rejects_non_executable_file(tmp_path: Path) -> None:
+    packaged = tmp_path / "ffmpeg"
+    packaged.write_bytes(b"binary")
+
+    with pytest.raises(FFmpegNotFoundError, match="not an executable"):
+        resolve_ffmpeg(str(packaged))
 
 
 def test_macos_app_uses_bundled_tools(
@@ -199,13 +219,32 @@ def test_scale_factor_and_fps_are_added_to_video_filter_chain(tmp_path: Path) ->
     assert "fps=60" in command
 
 
-def test_no_upscale_guards_scale_with_input_dimensions(tmp_path: Path) -> None:
-    command = _command_text(_build(tmp_path, scale_factor=2.0, no_upscale=True))
+def _top_level_filter(filters: str, name: str) -> str:
+    """Return one filter from a chain, ignoring commas nested in parentheses."""
 
-    assert "scale=" in command
-    assert "min(" in command
-    assert "iw" in command
-    assert "ih" in command
+    start = filters.index(f"{name}=")
+    depth = 0
+    for index in range(start, len(filters)):
+        char = filters[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            return filters[start:index]
+    return filters[start:]
+
+
+def test_no_upscale_guards_scale_with_input_dimensions(tmp_path: Path) -> None:
+    parts = _command_parts(_build(tmp_path, scale_factor=2.0, no_upscale=True))
+    filters = parts[parts.index("-vf") + 1]
+    scale = _top_level_filter(filters, "scale")
+
+    assert "min(" in scale
+    guarded = scale.split("min(", 1)[1]
+    assert "iw" in guarded
+    assert "ih" in guarded
+    assert "trunc(iw*2/2)*2:trunc(ih*2/2)*2" not in filters
 
 
 def test_no_interpolate_disables_motion_interpolation_filter(tmp_path: Path) -> None:
@@ -252,7 +291,12 @@ def test_run_ffmpeg_has_a_runtime_limit(monkeypatch: pytest.MonkeyPatch) -> None
     assert calls == [
         (
             ["ffmpeg"],
-            {"check": False, "timeout": ffmpeg.ENHANCEMENT_TIMEOUT_SECONDS},
+            {
+                "check": False,
+                "timeout": ffmpeg.ENHANCEMENT_TIMEOUT_SECONDS,
+                "capture_output": True,
+                "text": True,
+            },
         )
     ]
 

@@ -14,6 +14,7 @@ import stat
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 import webbrowser
 from collections.abc import Callable
@@ -52,6 +53,8 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_JSON_BODY = 20_000
 REQUEST_TIMEOUT_SECONDS = 60
+DOWNLOAD_TOKEN_TTL_SECONDS = 300
+DOWNLOAD_TOKENS: dict[tuple[str, str], float] = {}
 API_TOKEN_HEADER = "x-video-enhancer-token"  # nosec B105
 TERMS_VERSION = "2026-08-10"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -1855,9 +1858,10 @@ HTML = """<!doctype html>
       return fetch(path, { ...options, headers });
     }
 
-    function localFileUrl(path, download = false) {
+    async function localFileUrl(path, download = false) {
+      const { token } = await postJSON("/api/files/token", { path });
       const url = new URL(path, window.location.origin);
-      url.searchParams.set("token", sessionToken);
+      url.searchParams.set("token", token);
       if (download) url.searchParams.set("download", "1");
       return `${url.pathname}${url.search}`;
     }
@@ -2226,14 +2230,14 @@ HTML = """<!doctype html>
            : source.operation === "remuxed" ? "Remuxed without video re-encoding" : "Original platform stream";
          $("source-quality").textContent = label;
          $("source-result-name").textContent = source.original_name;
-         $("source-download").href = localFileUrl(source.original_url, true);
+         $("source-download").href = await localFileUrl(source.original_url, true);
          $("source-download-label").textContent = archive
            ? "Download all media (.zip)"
            : image
            ? source.item_count > 1 ? "Download all images (.zip)" : "Download image"
            : "Download video";
          if (source.audio_url) {
-           $("source-audio").href = localFileUrl(source.audio_url, true);
+           $("source-audio").href = await localFileUrl(source.audio_url, true);
            $("source-audio").hidden = false;
          }
          $("source-result").hidden = false;
@@ -2245,11 +2249,11 @@ HTML = """<!doctype html>
          $("source-image").hidden = !image;
          if (image) {
            sourceFrames.reset();
-           $("source-image").src = localFileUrl(source.preview_url);
+           $("source-image").src = await localFileUrl(source.preview_url);
            $("input-meta").textContent = `${source.item_count} image${source.item_count === 1 ? "" : "s"}`;
          } else {
            sourceFrames.setFps(source.media.fps);
-           $("source-video").src = localFileUrl(source.preview_url);
+           $("source-video").src = await localFileUrl(source.preview_url);
            $("source-video").load();
            $("input-meta").textContent = archive
              ? `${source.item_count} original files`
@@ -2400,17 +2404,17 @@ HTML = """<!doctype html>
          $("result-path").textContent = job.kind === "enhancement"
            ? "Enhanced synthetic copy"
            : audio ? "Local audio export" : "Local converted or trimmed copy";
-         $("download").href = localFileUrl(job.output_url, true);
+         $("download").href = await localFileUrl(job.output_url, true);
          $("output-player").hidden = !gif && !video;
          $("output-video").hidden = !video;
          $("output-image").hidden = !gif;
          $("output-advanced").hidden = !video;
          if (gif) {
-           $("output-image").src = localFileUrl(job.output_url);
+           $("output-image").src = await localFileUrl(job.output_url);
            $("output-empty").hidden = true;
          } else if (video) {
            outputFrames.setFps(state.outputFps);
-           $("output-video").src = localFileUrl(job.output_url);
+           $("output-video").src = await localFileUrl(job.output_url);
            $("output-video").load();
            $("output-empty").hidden = true;
          }
@@ -2961,14 +2965,31 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if not token_required:
             return True
+        supplied = self.headers.get(API_TOKEN_HEADER, "")
+        if supplied:
+            if not self.session_token or not secrets.compare_digest(
+                supplied, self.session_token
+            ):
+                self.send_json(HTTPStatus.FORBIDDEN, {"error": "Invalid local session."})
+                return False
+            return True
         query_token = parse_qs(parsed.query).get("token", [""])[0]
-        supplied = self.headers.get(API_TOKEN_HEADER, "") or query_token
-        if not self.session_token or not secrets.compare_digest(
-            supplied, self.session_token
-        ):
+        now = time.monotonic()
+        for key, expiry in list(DOWNLOAD_TOKENS.items()):
+            if expiry <= now:
+                del DOWNLOAD_TOKENS[key]
+        if not DOWNLOAD_TOKENS.get((query_token, parsed.path)):
             self.send_json(HTTPStatus.FORBIDDEN, {"error": "Invalid local session."})
             return False
         return True
+
+    def mint_download_token(self, body: dict[str, Any]) -> dict[str, str]:
+        path = str(body.get("path", ""))
+        if not path.startswith("/files/") or urlparse(path).path != path:
+            raise ValueError("Invalid file path.")
+        token = secrets.token_urlsafe(32)
+        DOWNLOAD_TOKENS[(token, path)] = time.monotonic() + DOWNLOAD_TOKEN_TTL_SECONDS
+        return {"token": token}
 
     def send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -3070,6 +3091,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.read_json()
                 clear_session(self.work_dir)
                 self.send_json(HTTPStatus.OK, {"cleared": True})
+                return
+            if parsed.path == "/api/files/token":
+                self.send_json(HTTPStatus.OK, self.mint_download_token(self.read_json()))
                 return
             if parsed.path == "/api/sources/download":
                 self.send_json(

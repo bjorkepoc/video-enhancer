@@ -22,6 +22,7 @@ const JOB_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 let engine;
 let enginePromise;
 let running = false;
+let runToken = 0;
 
 function hex(bytes) {
   return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -134,12 +135,14 @@ export async function processLocally(source, { mode, filter = "none", onProgress
   if (running) throw new Error("A local processing job is already running.");
 
   running = true;
-  const ffmpeg = await loadLocalProcessor({ onProgress, onStatus });
-  const outputName = mode === "audio" ? "output.mp3" : "output.mp4";
-  const progressHandler = ({ progress }) => onProgress?.(0.1 + Math.max(0, Math.min(1, progress)) * 0.9);
-  ffmpeg.on("progress", progressHandler);
-
+  const token = ++runToken;
   try {
+    const ffmpeg = await loadLocalProcessor({ onProgress, onStatus });
+    if (token !== runToken) throw new Error("The local processing job was cancelled.");
+    const outputName = mode === "audio" ? "output.mp3" : "output.mp4";
+    const progressHandler = ({ progress }) => onProgress?.(0.1 + Math.max(0, Math.min(1, progress)) * 0.9);
+    ffmpeg.on("progress", progressHandler);
+
     onStatus?.("Copying the source into temporary browser memory…");
     await ffmpeg.writeFile("input.media", new Uint8Array(await source.arrayBuffer()));
     onStatus?.(mode === "audio" ? "Extracting MP3 on this device…" : "Enhancing video on this device…");
@@ -150,9 +153,11 @@ export async function processLocally(source, { mode, filter = "none", onProgress
     onProgress?.(1);
     return { blob: new Blob([output.buffer], { type }), extension: mode === "audio" ? "mp3" : "mp4" };
   } finally {
-    ffmpeg.off("progress", progressHandler);
-    await ffmpeg.deleteFile("input.media").catch(() => {});
-    await ffmpeg.deleteFile(outputName).catch(() => {});
+    if (token === runToken) {
+      ffmpeg.off("progress", progressHandler);
+      await ffmpeg.deleteFile("input.media").catch(() => {});
+      await ffmpeg.deleteFile(outputName).catch(() => {});
+    }
     running = false;
   }
 }
@@ -161,5 +166,5 @@ export function terminateLocalProcessor() {
   engine?.terminate();
   engine = undefined;
   enginePromise = undefined;
-  running = false;
+  runToken += 1;
 }

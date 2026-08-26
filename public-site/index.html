@@ -45,10 +45,10 @@
               <button class="button button-primary" id="get-media" type="submit">Get media</button>
             </div>
             <p class="trust-line">Public posts only. No login, account, or payment. Media resolution uses a tiny edge resolver; enhancement runs on your device.</p>
-            <label class="check-row" for="terms-accepted">
+            <div class="check-row">
               <input id="terms-accepted" type="checkbox" required>
-              <span>I will only download content I have the right to access and use, and I agree to the <button type="button" class="text-button" data-dialog="terms-dialog">Terms of Use</button>.</span>
-            </label>
+              <span><label for="terms-accepted">I will only download content I have the right to access and use, and I agree to the</label> <button type="button" class="text-button" data-dialog="terms-dialog">Terms of Use</button>.</span>
+            </div>
             <p class="form-status" id="form-status" role="alert" aria-live="polite"></p>
           </form>
         </section>

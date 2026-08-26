@@ -80,7 +80,7 @@ def _directory_size(directory: Path) -> int:
         try:
             with os.scandir(current) as iterator:
                 entries = list(iterator)
-        except FileNotFoundError:
+        except OSError:
             continue
         for entry in entries:
             try:
@@ -88,7 +88,7 @@ def _directory_size(directory: Path) -> int:
                     pending.append(Path(entry.path))
                 elif entry.is_file(follow_symlinks=False):
                     total += entry.stat(follow_symlinks=False).st_size
-            except FileNotFoundError:
+            except OSError:
                 continue
     return total
 
@@ -100,15 +100,17 @@ def stop_process(process: subprocess.Popen[bytes]) -> None:
         if os.name == "posix":
             os.killpg(process.pid, signal.SIGTERM)
         elif os.name == "nt":
-            if taskkill := shutil.which("taskkill.exe"):
-                subprocess.run(
-                    [taskkill, "/PID", str(process.pid), "/T", "/F"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            else:
-                process.kill()
+            taskkill = shutil.which("taskkill.exe") or str(
+                Path(os.environ.get("WINDIR", r"C:\Windows"))
+                / "System32"
+                / "taskkill.exe"
+            )
+            subprocess.run(
+                [taskkill, "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         else:
             process.terminate()
         process.wait(timeout=PROCESS_STOP_SECONDS)
@@ -146,7 +148,12 @@ def run_bounded_process(
         start_new_session=os.name == "posix",
     )
     if process_callback:
-        process_callback(process)
+        try:
+            process_callback(process)
+        except BaseException:
+            stop_process(process)
+            process_callback(None)
+            raise
     stdout, stderr = process.stdout, process.stderr
     if capture_output and (stdout is None or stderr is None):
         stop_process(process)
@@ -182,28 +189,36 @@ def run_bounded_process(
     for reader in readers:
         reader.start()
 
-    deadline = time.monotonic() + timeout
-    failure: BaseException | None = None
-    while process.poll() is None:
-        if output_limit_reached.is_set():
-            failure = SourceError(output_limit_error)
-        elif (
-            destination
-            and max_directory_growth_bytes is not None
-            and _directory_size(destination) - baseline_size
-            > max_directory_growth_bytes
-        ):
-            failure = SourceError(directory_limit_error)
-        elif time.monotonic() >= deadline:
-            failure = subprocess.TimeoutExpired(command, timeout)
-        if failure:
-            stop_process(process)
-            break
-        time.sleep(PROCESS_POLL_SECONDS)
+    try:
+        deadline = time.monotonic() + timeout
+        failure: BaseException | None = None
+        while process.poll() is None:
+            if output_limit_reached.is_set():
+                failure = SourceError(output_limit_error)
+            elif (
+                destination
+                and max_directory_growth_bytes is not None
+                and _directory_size(destination) - baseline_size
+                > max_directory_growth_bytes
+            ):
+                failure = SourceError(directory_limit_error)
+            elif time.monotonic() >= deadline:
+                failure = subprocess.TimeoutExpired(command, timeout)
+            if failure:
+                stop_process(process)
+                break
+            time.sleep(PROCESS_POLL_SECONDS)
 
-    return_code = process.wait()
-    for reader in readers:
-        reader.join()
+        return_code = process.wait()
+        for reader in readers:
+            reader.join(PROCESS_STOP_SECONDS)
+    except BaseException:
+        stop_process(process)
+        for reader in readers:
+            reader.join(PROCESS_STOP_SECONDS)
+        if process_callback:
+            process_callback(None)
+        raise
     if process_callback:
         process_callback(None)
     if failure:
@@ -476,7 +491,13 @@ def _fps(value: Any) -> float | None:
 def parse_ffprobe(payload: dict[str, Any]) -> dict[str, Any]:
     streams = payload.get("streams") if isinstance(payload.get("streams"), list) else []
     video = next(
-        (stream for stream in streams if stream.get("codec_type") == "video"), {}
+        (
+            stream
+            for stream in streams
+            if stream.get("codec_type") == "video"
+            and not stream.get("disposition", {}).get("attached_pic")
+        ),
+        {},
     )
     audio = next(
         (stream for stream in streams if stream.get("codec_type") == "audio"), {}
@@ -500,7 +521,14 @@ def parse_ffprobe(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _parse_ffmpeg_probe(stderr: str) -> dict[str, Any]:
-    video_line = next((line for line in stderr.splitlines() if " Video: " in line), "")
+    video_line = next(
+        (
+            line
+            for line in stderr.splitlines()
+            if " Video: " in line and "attached pic" not in line.lower()
+        ),
+        "",
+    )
     if not video_line:
         raise SourceError("The downloaded file has no video stream.")
     audio_line = next((line for line in stderr.splitlines() if " Audio: " in line), "")
@@ -564,7 +592,7 @@ def probe_media(
             )
         except subprocess.TimeoutExpired as exc:
             raise SourceError("Media verification timed out.") from exc
-        except OSError:
+        except (OSError, SourceError):
             completed = None
         if completed and completed.returncode == 0:
             try:
@@ -601,6 +629,8 @@ def probe_media(
         raise SourceError("Media verification timed out.") from exc
     except OSError as exc:
         raise SourceError(f"Could not start FFmpeg: {exc}") from exc
+    if completed.returncode:
+        raise SourceError("The downloaded file could not be decoded.")
     media = _parse_ffmpeg_probe(completed.stderr)
     media["size"] = path.stat().st_size
     return media

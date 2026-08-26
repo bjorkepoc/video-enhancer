@@ -38,6 +38,8 @@ const INSTAGRAM_HEADERS = {
 const rateWindows = new Map();
 const RATE_SALT = "media-downloader-lite-rate-limit-v1";
 
+export class UserFacingError extends Error {}
+
 function hostMatches(hostname, allowed) {
   const host = hostname.toLowerCase().replace(/\.$/, "");
   return allowed.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
@@ -48,15 +50,15 @@ function isIpLiteral(hostname) {
 }
 
 function cleanHttpsURL(value, maxLength) {
-  if (typeof value !== "string" || !value.trim() || value.length > maxLength) throw new Error("The URL is invalid or too long.");
+  if (typeof value !== "string" || !value.trim() || value.length > maxLength) throw new UserFacingError("The URL is invalid or too long.");
   let url;
   try {
     url = new URL(value.trim());
   } catch {
-    throw new Error("Enter a complete HTTPS link.");
+    throw new UserFacingError("Enter a complete HTTPS link.");
   }
   if (url.protocol !== "https:" || url.username || url.password || url.port || isIpLiteral(url.hostname)) {
-    throw new Error("Only normal HTTPS links without credentials or custom ports are accepted.");
+    throw new UserFacingError("Only normal HTTPS links without credentials or custom ports are accepted.");
   }
   url.hash = "";
   return url;
@@ -67,7 +69,7 @@ export function validateSourceUrl(value) {
   for (const [platform, hosts] of Object.entries(SOURCE_HOSTS)) {
     if (hostMatches(url.hostname, hosts)) return { platform, url };
   }
-  throw new Error("Use a public VSCO, Instagram, TikTok, or Facebook link.");
+  throw new UserFacingError("Use a public VSCO, Instagram, TikTok, or Facebook link.");
 }
 
 export function validateMediaUrl(value, platform) {
@@ -82,10 +84,11 @@ export function checkRateLimit(key, now = Date.now(), maximum = 15) {
   const current = rateWindows.get(key);
   if (!current || now - current.startedAt >= windowMs) {
     rateWindows.set(key, { startedAt: now, count: 1 });
-    if (rateWindows.size > 5000) {
-      for (const [storedKey, value] of rateWindows) {
-        if (now - value.startedAt >= windowMs) rateWindows.delete(storedKey);
-      }
+    for (const [storedKey, value] of rateWindows) {
+      if (now - value.startedAt >= windowMs) rateWindows.delete(storedKey);
+    }
+    while (rateWindows.size > 10_000) {
+      rateWindows.delete(rateWindows.keys().next().value);
     }
     return true;
   }
@@ -100,6 +103,10 @@ export async function anonymousRateKey(request, scope) {
   return `${scope}:${[...digest.slice(0, 12)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
+function decodeCodePoint(code, original) {
+  return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : original;
+}
+
 function decodeEntities(value) {
   return String(value || "")
     .replace(/&amp;/gi, "&")
@@ -107,8 +114,8 @@ function decodeEntities(value) {
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
-    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)))
-    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)));
+    .replace(/&#x([0-9a-f]+);/gi, (match, code) => decodeCodePoint(parseInt(code, 16), match))
+    .replace(/&#(\d+);/g, (match, code) => decodeCodePoint(Number(code), match));
 }
 
 function decodeEscaped(value) {
@@ -188,7 +195,7 @@ function extensionFor(url, kind) {
 }
 
 function safeFilename(value, fallback) {
-  const cleaned = String(value || fallback).normalize("NFKD").replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "");
+  const cleaned = String(value || fallback).normalize("NFKD").replace(/[^a-z0-9._-]+/gi, "-").replace(/^[.-]+|[.-]+$/g, "");
   return (cleaned || fallback).slice(0, 100);
 }
 
@@ -428,7 +435,7 @@ export function parseFacebook(html, sourceUrl) {
   };
 }
 
-async function readTextLimited(response, maximum = MAX_PAGE_BYTES) {
+async function readTextLimited(response, maximum = MAX_PAGE_BYTES, deadlineController = null) {
   if (!response.body) return "";
   const declared = Number(response.headers.get("content-length")) || 0;
   if (declared > maximum) {
@@ -439,7 +446,11 @@ async function readTextLimited(response, maximum = MAX_PAGE_BYTES) {
   const chunks = [];
   let total = 0;
   while (true) {
-    const { done, value } = await reader.read();
+    // Aborting the fetch signal errors this stream, bounding stalled bodies.
+    const { done, value } = await Promise.race([
+      reader.read(),
+      deadlineController ? new Promise((_, reject) => deadlineController.addEventListener("abort", () => reject(new Error("The source page took too long to load.")), { once: true })) : null,
+    ]);
     if (done) break;
     total += value.byteLength;
     if (total > maximum) {
@@ -482,7 +493,14 @@ async function fetchPage(startUrl, platform, maximumRedirects = 4, headers = BRO
   let current = validateSourceUrl(startUrl).url;
   for (let redirects = 0; redirects <= maximumRedirects; redirects += 1) {
     const requestHeaders = cookieJar?.size ? { ...headers, cookie: [...cookieJar.values()].join("; ") } : headers;
-    const response = await fetchWithTimeout(current, { headers: requestHeaders, redirect: "manual" });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    let response;
+    try {
+      response = await fetch(current, { headers: requestHeaders, redirect: "manual", signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
     rememberResponseCookies(response, cookieJar);
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
@@ -504,7 +522,13 @@ async function fetchPage(startUrl, platform, maximumRedirects = 4, headers = BRO
       }
       throw new Error(`The source platform returned HTTP ${response.status}.`);
     }
-    return { url: current.href, html: await readTextLimited(response) };
+    const bodyController = new AbortController();
+    const bodyTimeout = setTimeout(() => bodyController.abort(), 15_000);
+    try {
+      return { url: current.href, html: await readTextLimited(response, MAX_PAGE_BYTES, bodyController) };
+    } finally {
+      clearTimeout(bodyTimeout);
+    }
   }
   throw new Error("The source could not be resolved.");
 }
@@ -517,7 +541,7 @@ async function instagramPage(sourceUrl, cookieJar) {
     finalUrl = resolved.url;
     shortcode = instagramShortcode(finalUrl);
   }
-  if (!shortcode) throw new Error("Use an Instagram post, reel, or video link.");
+  if (!shortcode) throw new UserFacingError("Use an Instagram post, reel, or video link.");
   const embed = `https://www.instagram.com/p/${shortcode}/embed/captioned/`;
   const page = await fetchPage(embed, "instagram", 4, INSTAGRAM_HEADERS, cookieJar);
   return { url: finalUrl, html: page.html };
@@ -526,7 +550,7 @@ async function instagramPage(sourceUrl, cookieJar) {
 export async function resolveSource(input) {
   const { platform, url } = validateSourceUrl(input);
   if (platform === "vsco") {
-    throw new Error("VSCO links are recognized, but automated resolution is paused. We do not bypass platform protections or automate access without permission.");
+    throw new UserFacingError("VSCO links are recognized, but automated resolution is paused. We do not bypass platform protections or automate access without permission.");
   }
   const cookieJar = new Map();
   let page;
@@ -545,7 +569,7 @@ export async function resolveSource(input) {
     }
   } else throw new Error("Unsupported source platform.");
 
-  if (!result.media?.length) throw new Error("The public source did not expose a supported original file. It may be private, unavailable, or login-only.");
+  if (!result.media?.length) throw new UserFacingError("The public source did not expose a supported original file. It may be private, unavailable, or login-only.");
   if (result.media.every((item) => item.kind !== "video") && platform === "instagram") result.note = "Original image media ready. Reels that Instagram exposes only after login are intentionally not bypassed.";
   return result;
 }
@@ -575,13 +599,31 @@ export function requestOriginIsAllowed(request) {
 
 export async function readJSONBody(request) {
   const declared = Number(request.headers.get("content-length")) || 0;
-  if (declared > MAX_JSON_BYTES) throw new Error("The request body is too large.");
-  const text = await request.text();
-  if (new TextEncoder().encode(text).byteLength > MAX_JSON_BYTES) throw new Error("The request body is too large.");
+  if (declared > MAX_JSON_BYTES) throw new UserFacingError("The request body is too large.");
+  const reader = request.body?.getReader();
+  const chunks = [];
+  let total = 0;
+  while (reader) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_JSON_BYTES) {
+      await reader.cancel();
+      throw new UserFacingError("The request body is too large.");
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const text = new TextDecoder().decode(bytes);
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error("Send a valid JSON request.");
+    throw new UserFacingError("Send a valid JSON request.");
   }
 }
 
@@ -649,9 +691,10 @@ function limitedStream(body, maximum, abort) {
 function contentTypeFor(kind, upstream) {
   const type = upstream?.split(";", 1)[0]?.trim().toLowerCase() || "";
   const prefixes = { video: "video/", audio: "audio/", image: "image/" };
+  if (!type) return { video: "video/mp4", audio: "audio/mpeg", image: "image/jpeg" }[kind];
   if (type.startsWith(prefixes[kind])) return type;
   if (kind === "audio" && type.startsWith("video/")) return type;
-  return { video: "video/mp4", audio: "audio/mpeg", image: "image/jpeg" }[kind];
+  throw new Error("The media host did not return the requested media type.");
 }
 
 export async function proxyMedia(request) {
@@ -665,7 +708,13 @@ export async function proxyMedia(request) {
   if (sourcePage && validateSourceUrl(sourcePage).platform !== platform) throw new Error("The media source platform does not match.");
 
   const range = request.headers.get("range");
-  if (range && !/^bytes=\d{1,20}-\d{0,20}$/.test(range)) return json({ error: "Invalid byte range." }, 416);
+  if (range) {
+    const bounds = /^bytes=(\d{1,20})?-(\d{1,20})?$/.exec(range);
+    if (!bounds || (!bounds[1] && !bounds[2])) return json({ error: "Invalid byte range." }, 416);
+    if (bounds[1] !== undefined && bounds[2] !== undefined && Number(bounds[1]) > Number(bounds[2])) {
+      return json({ error: "Invalid byte range." }, 416);
+    }
+  }
   let response = await fetchMedia(source, platform, range);
   if (response.status === 403 && platform === "tiktok" && sourcePage) {
     await response.body?.cancel();
@@ -698,7 +747,8 @@ export async function proxyMedia(request) {
     if (value) headers.set(name, value);
   }
   if (range && response.status === 206 && !headers.has("content-range") && declared) {
-    const start = Number(range.match(/^bytes=(\d+)-/)?.[1]);
+    const bounds = range.match(/^bytes=(\d+)?-(\d+)?$/);
+    const start = bounds && bounds[1] !== undefined ? Number(bounds[1]) : NaN;
     if (Number.isSafeInteger(start)) headers.set("content-range", `bytes ${start}-${start + declared - 1}/*`);
   }
   headers.set("access-control-expose-headers", "content-length, content-range, content-disposition");

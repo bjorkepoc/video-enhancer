@@ -111,6 +111,14 @@ def validate_options(options: EnhancementOptions) -> None:
         raise ValidationError(
             f"Unknown video codec '{options.video_codec}'. Choose one of: {valid}."
         )
+    if options.encoder_preset is not None and (
+        not options.encoder_preset
+        or "\x00" in options.encoder_preset
+        or options.encoder_preset.startswith("-")
+    ):
+        raise ValidationError(
+            "--encoder-preset must be a named x264/x265 preset such as 'medium'."
+        )
 
 
 def resolve_ffmpeg(ffmpeg_path: str = "ffmpeg") -> str:
@@ -119,10 +127,12 @@ def resolve_ffmpeg(ffmpeg_path: str = "ffmpeg") -> str:
     if ffmpeg_path == "ffmpeg":
         ffmpeg_path = os.environ.get("VIDEO_ENHANCER_FFMPEG", ffmpeg_path)
     candidate = Path(ffmpeg_path)
-    if candidate.parent != Path(".") and candidate.exists():
-        if candidate.is_file():
-            return str(candidate)
-        raise FFmpegNotFoundError(f"FFmpeg path is not a file: {ffmpeg_path}")
+    if candidate.parent != Path(".") and os.path.lexists(candidate):
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            raise FFmpegNotFoundError(
+                f"FFmpeg path is not an executable file: {ffmpeg_path}"
+            )
+        return str(candidate)
 
     resolved = shutil.which(ffmpeg_path)
     if resolved:
@@ -145,6 +155,11 @@ def build_ffmpeg_command(
 
     validate_options(options)
     validate_paths(input_path, output_path, overwrite=options.overwrite)
+    if output_path.suffix.lower().lstrip(".") in AUDIO_EXPORT_FORMATS | {"gif"}:
+        raise ValidationError(
+            "Enhancement requires a video output format such as mp4, mov, or avi: "
+            f"{output_path}"
+        )
     ffmpeg = (
         resolve_ffmpeg(options.ffmpeg_path) if check_executable else options.ffmpeg_path
     )
@@ -155,10 +170,18 @@ def build_ffmpeg_command(
         no_interpolate=options.no_interpolate,
     )
     quality = options.quality if options.quality is not None else options.preset.crf
+    # MP4-family containers cannot mux many common source audio codecs (PCM,
+    # WMA2, ...), so re-encode there instead of failing at mux time.
+    audio_args = (
+        ["aac", "-b:a", "256k"]
+        if output_path.suffix.lower() in {".mp4", ".mov", ".m4a"}
+        else ["copy"]
+    )
 
     return [
         ffmpeg,
         "-hide_banner",
+        "-nostdin",
         "-y" if options.overwrite else "-n",
         "-i",
         str(input_path),
@@ -173,7 +196,7 @@ def build_ffmpeg_command(
         "-pix_fmt",
         "yuv420p",
         "-c:a",
-        "copy",
+        *audio_args,
         "-movflags",
         "+faststart",
         str(output_path),
@@ -188,6 +211,7 @@ def build_export_command(
     start_seconds: float | None = None,
     end_seconds: float | None = None,
     check_executable: bool = True,
+    overwrite: bool = False,
 ) -> list[str]:
     """Build a local conversion or trim command without changing the source."""
 
@@ -203,9 +227,9 @@ def build_export_command(
     if end_seconds is not None and end_seconds <= (start_seconds or 0):
         raise ValidationError("Clip end must be later than clip start.")
 
-    validate_paths(input_path, output_path, overwrite=True)
+    validate_paths(input_path, output_path, overwrite=overwrite)
     ffmpeg = resolve_ffmpeg() if check_executable else "ffmpeg"
-    command = [ffmpeg, "-hide_banner", "-y", "-nostdin"]
+    command = [ffmpeg, "-hide_banner", "-nostdin", "-y" if overwrite else "-n"]
     if start_seconds:
         command.extend(["-ss", f"{start_seconds:g}"])
     command.extend(["-i", str(input_path)])
@@ -220,7 +244,7 @@ def build_export_command(
         "wav": ["-c:a", "pcm_s16le"],
         "aiff": ["-c:a", "pcm_s16be"],
         "flac": ["-c:a", "flac"],
-        "wma": ["-c:a", "wmav2", "-b:a", "256k"],
+        "wma": ["-c:a", "wmav2", "-b:a", "192k"],
     }
     if output_format in AUDIO_EXPORT_FORMATS:
         command.extend(["-map", "0:a:0", "-vn", *audio_codecs[output_format]])
@@ -293,11 +317,19 @@ def format_command(command: Sequence[str]) -> str:
 def run_ffmpeg(command: Sequence[str]) -> None:
     """Run FFmpeg and convert low-level failures into clear CLI errors."""
 
+    def discard_partial_output() -> None:
+        try:
+            Path(command[-1]).unlink(missing_ok=True)
+        except OSError:
+            pass
+
     try:
         completed = subprocess.run(
             command,
             check=False,
             timeout=ENHANCEMENT_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
         )
     except FileNotFoundError as exc:
         raise FFmpegNotFoundError(
@@ -305,11 +337,15 @@ def run_ffmpeg(command: Sequence[str]) -> None:
             "'ffmpeg' is on PATH, or pass --ffmpeg with the full path to the executable."
         ) from exc
     except subprocess.TimeoutExpired as exc:
+        discard_partial_output()
         raise FFmpegExecutionError("FFmpeg exceeded the six-hour time limit.") from exc
 
     if completed.returncode != 0:
+        discard_partial_output()
+        stderr_tail = (completed.stderr or "").strip()[-2000:]
+        detail = f": {stderr_tail}" if stderr_tail else ""
         raise FFmpegExecutionError(
-            f"FFmpeg failed with exit code {completed.returncode}."
+            f"FFmpeg failed with exit code {completed.returncode}{detail}."
         )
 
 

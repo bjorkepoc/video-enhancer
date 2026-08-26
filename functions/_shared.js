@@ -435,7 +435,19 @@ export function parseFacebook(html, sourceUrl) {
   };
 }
 
-async function readTextLimited(response, maximum = MAX_PAGE_BYTES, deadlineController = null) {
+function readWithDeadline(reader, signal) {
+  if (!signal) return reader.read();
+  if (signal.aborted) return Promise.reject(new Error("The source page took too long to load."));
+  let onAbort;
+  const deadline = new Promise((_, reject) => {
+    onAbort = () => reject(new Error("The source page took too long to load."));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  return Promise.race([reader.read(), deadline])
+    .finally(() => signal.removeEventListener("abort", onAbort));
+}
+
+async function readTextLimited(response, maximum = MAX_PAGE_BYTES, deadlineSignal = null) {
   if (!response.body) return "";
   const declared = Number(response.headers.get("content-length")) || 0;
   if (declared > maximum) {
@@ -445,19 +457,20 @@ async function readTextLimited(response, maximum = MAX_PAGE_BYTES, deadlineContr
   const reader = response.body.getReader();
   const chunks = [];
   let total = 0;
-  while (true) {
-    // Aborting the fetch signal errors this stream, bounding stalled bodies.
-    const { done, value } = await Promise.race([
-      reader.read(),
-      deadlineController ? new Promise((_, reject) => deadlineController.addEventListener("abort", () => reject(new Error("The source page took too long to load.")), { once: true })) : null,
-    ]);
-    if (done) break;
-    total += value.byteLength;
-    if (total > maximum) {
-      await reader.cancel();
-      throw new Error("The source page was too large to inspect safely.");
+  try {
+    while (true) {
+      const { done, value } = await readWithDeadline(reader, deadlineSignal);
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximum) {
+        await reader.cancel();
+        throw new Error("The source page was too large to inspect safely.");
+      }
+      chunks.push(value);
     }
-    chunks.push(value);
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
   }
   const bytes = new Uint8Array(total);
   let offset = 0;
@@ -525,7 +538,7 @@ async function fetchPage(startUrl, platform, maximumRedirects = 4, headers = BRO
     const bodyController = new AbortController();
     const bodyTimeout = setTimeout(() => bodyController.abort(), 15_000);
     try {
-      return { url: current.href, html: await readTextLimited(response, MAX_PAGE_BYTES, bodyController) };
+      return { url: current.href, html: await readTextLimited(response, MAX_PAGE_BYTES, bodyController.signal) };
     } finally {
       clearTimeout(bodyTimeout);
     }

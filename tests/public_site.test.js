@@ -15,7 +15,11 @@ import {
 } from "../functions/_shared.js";
 import { onRequest as mediaRequest } from "../functions/api/media.js";
 import { onRequestPost as resolveRequest } from "../functions/api/resolve.js";
-import { buildLocalCommand } from "../public-site/local-processor.js";
+import {
+  buildLocalCommand,
+  processLocally,
+  terminateLocalProcessor,
+} from "../public-site/local-processor.js";
 import worker from "../site-worker.js";
 
 test("source URL validation is HTTPS-only and platform allowlisted", () => {
@@ -175,6 +179,37 @@ test("resolver does not echo internal upstream failures", async () => {
   }
 });
 
+test("resolver reads a delayed streamed response before its deadline", async () => {
+  const originalFetch = globalThis.fetch;
+  const state = { scope: { "webapp.video-detail": { itemInfo: { itemStruct: {
+    id: "streamed",
+    desc: "Streamed response",
+    author: { uniqueId: "creator" },
+    video: { playAddr: "https://v16.tiktokcdn.com/streamed.mp4" },
+  } } } } };
+  const html = `<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">${JSON.stringify(state)}</script>`;
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      setTimeout(() => {
+        controller.enqueue(new TextEncoder().encode(html));
+        controller.close();
+      }, 5);
+    },
+  }), { headers: { "content-type": "text/html" } });
+  try {
+    const request = new Request("https://site.example/api/resolve", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://site.example", "cf-connecting-ip": "192.0.2.23" },
+      body: JSON.stringify({ url: "https://www.tiktok.com/@creator/video/streamed", termsAccepted: true, termsVersion: "2026-08-10.2" }),
+    });
+    const response = await resolveRequest({ request });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).media[0].directUrl, "https://v16.tiktokcdn.com/streamed.mp4");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("media endpoint reports upstream failures without echoing internals", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
@@ -313,9 +348,54 @@ test("TikTok proxy retries a signed video inside a fresh anonymous session", asy
 
 test("local processor lock is released by failed loads and cleared only by the owning job", async () => {
   const source = await readFile(new URL("../public-site/local-processor.js", import.meta.url), "utf8");
-  assert.match(source, /try \{\n    const ffmpeg = await loadLocalProcessor/);
+  assert.match(source, /let ffmpeg;\n  try \{\n    ffmpeg = await loadLocalProcessor/);
   assert.match(source, /if \(token !== runToken\) throw new Error\("The local processing job was cancelled\."\);/);
   assert.doesNotMatch(source, /terminateLocalProcessor[\s\S]*?running = false;/);
+});
+
+test("local processing always releases its lock and temporary files", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWorker = globalThis.Worker;
+  const originalDigest = crypto.subtle.digest;
+  const hashes = [
+    "67a48f11645f85439f3fde4f2119042c16b374b910206b7a7a24f342e28dcae3",
+    "9f57947a5bd530d8f00c5b3f2cb2a3492faa7e5d823315342d6a8656d0a6b7b7",
+  ];
+  const exitCodes = [0, 1, 0];
+  const deleted = [];
+  let digestIndex = 0;
+
+  class FakeWorker {
+    onmessage;
+    postMessage({ id, type, data }) {
+      let result = true;
+      if (type === "EXEC") result = exitCodes.shift();
+      if (type === "READ_FILE") result = new Uint8Array([1, 2, 3]);
+      if (type === "DELETE_FILE") deleted.push(data.path);
+      queueMicrotask(() => this.onmessage?.({ data: { id, type, data: result } }));
+    }
+    terminate() {}
+  }
+
+  globalThis.Worker = FakeWorker;
+  globalThis.fetch = async () => new Response(new Uint8Array([1]), { headers: { "content-length": "1" } });
+  crypto.subtle.digest = async () => Uint8Array.from(Buffer.from(hashes[digestIndex++], "hex")).buffer;
+  try {
+    const source = new Blob([new Uint8Array([1])]);
+    assert.equal((await processLocally(source, { mode: "audio" })).extension, "mp3");
+    await assert.rejects(processLocally(source, { mode: "audio" }), /exit code 1/);
+    assert.equal((await processLocally(source, { mode: "audio" })).extension, "mp3");
+    assert.deepEqual(deleted, [
+      "input.media", "output.mp3",
+      "input.media", "output.mp3",
+      "input.media", "output.mp3",
+    ]);
+  } finally {
+    terminateLocalProcessor();
+    globalThis.fetch = originalFetch;
+    globalThis.Worker = originalWorker;
+    crypto.subtle.digest = originalDigest;
+  }
 });
 
 test("browser-local commands keep 60 FPS, 90 FPS, 2x upscale, filters, and MP3", () => {

@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ from .presets import EnhancementPreset
 MAX_SCALE_FACTOR = 2.0
 MAX_TARGET_FPS = 240
 ENHANCEMENT_TIMEOUT_SECONDS = 6 * 60 * 60
+MAX_FFMPEG_DIAGNOSTIC_MEMORY_BYTES = 64 * 1024
 SUPPORTED_VIDEO_CODECS = ("libx264", "libx265")
 EXPORT_FORMATS = (
     "mp4",
@@ -323,30 +325,34 @@ def run_ffmpeg(command: Sequence[str]) -> None:
         except OSError:
             pass
 
-    try:
-        completed = subprocess.run(
-            command,
-            check=False,
-            timeout=ENHANCEMENT_TIMEOUT_SECONDS,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as exc:
-        raise FFmpegNotFoundError(
-            "FFmpeg was not found while starting the process. Install FFmpeg and ensure "
-            "'ffmpeg' is on PATH, or pass --ffmpeg with the full path to the executable."
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        discard_partial_output()
-        raise FFmpegExecutionError("FFmpeg exceeded the six-hour time limit.") from exc
+    with tempfile.SpooledTemporaryFile(
+        max_size=MAX_FFMPEG_DIAGNOSTIC_MEMORY_BYTES
+    ) as diagnostics:
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                timeout=ENHANCEMENT_TIMEOUT_SECONDS,
+                stdout=subprocess.DEVNULL,
+                stderr=diagnostics,
+            )
+        except FileNotFoundError as exc:
+            raise FFmpegNotFoundError(
+                "FFmpeg was not found while starting the process. Install FFmpeg and ensure "
+                "'ffmpeg' is on PATH, or pass --ffmpeg with the full path to the executable."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            discard_partial_output()
+            raise FFmpegExecutionError("FFmpeg exceeded the six-hour time limit.") from exc
 
-    if completed.returncode != 0:
-        discard_partial_output()
-        stderr_tail = (completed.stderr or "").strip()[-2000:]
-        detail = f": {stderr_tail}" if stderr_tail else ""
-        raise FFmpegExecutionError(
-            f"FFmpeg failed with exit code {completed.returncode}{detail}."
-        )
+        if completed.returncode != 0:
+            discard_partial_output()
+            diagnostics.seek(max(0, diagnostics.tell() - 2000))
+            stderr_tail = diagnostics.read().decode("utf-8", "replace").strip()
+            detail = f": {stderr_tail}" if stderr_tail else ""
+            raise FFmpegExecutionError(
+                f"FFmpeg failed with exit code {completed.returncode}{detail}."
+            )
 
 
 def enhance_video(

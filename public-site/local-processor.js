@@ -136,11 +136,12 @@ export async function processLocally(source, { mode, filter = "none", onProgress
 
   running = true;
   const token = ++runToken;
+  const outputName = mode === "audio" ? "output.mp3" : "output.mp4";
+  const progressHandler = ({ progress }) => onProgress?.(0.1 + Math.max(0, Math.min(1, progress)) * 0.9);
+  let ffmpeg;
   try {
-    const ffmpeg = await loadLocalProcessor({ onProgress, onStatus });
+    ffmpeg = await loadLocalProcessor({ onProgress, onStatus });
     if (token !== runToken) throw new Error("The local processing job was cancelled.");
-    const outputName = mode === "audio" ? "output.mp3" : "output.mp4";
-    const progressHandler = ({ progress }) => onProgress?.(0.1 + Math.max(0, Math.min(1, progress)) * 0.9);
     ffmpeg.on("progress", progressHandler);
 
     onStatus?.("Copying the source into temporary browser memory…");
@@ -153,7 +154,7 @@ export async function processLocally(source, { mode, filter = "none", onProgress
     onProgress?.(1);
     return { blob: new Blob([output.buffer], { type }), extension: mode === "audio" ? "mp3" : "mp4" };
   } finally {
-    if (token === runToken) {
+    if (token === runToken && ffmpeg) {
       ffmpeg.off("progress", progressHandler);
       await ffmpeg.deleteFile("input.media").catch(() => {});
       await ffmpeg.deleteFile(outputName).catch(() => {});

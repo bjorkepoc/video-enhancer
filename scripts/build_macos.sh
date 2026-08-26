@@ -31,6 +31,7 @@ yt_dlp_version="2026.07.04"
 yt_dlp_sha256="498bd0dae17855c599d371d68ec5bafc439a9d8640e838be25c765a9792f261b"
 vendor_dir="$project_dir/build/vendor"
 yt_dlp="$vendor_dir/yt-dlp"
+gallery_dl="$vendor_dir/gallery-dl"
 ffmpeg="$vendor_dir/ffmpeg"
 dist_dir="$project_dir/dist/macos"
 app="$dist_dir/Video Enhancer.app"
@@ -42,7 +43,7 @@ verify_arch() {
   fi
 }
 
-"$python_bin" -c "import imageio_ffmpeg, PyInstaller" 2>/dev/null || {
+"$python_bin" -c "import gallery_dl, imageio_ffmpeg, PyInstaller" 2>/dev/null || {
   echo "Install the macOS build extra first: python -m pip install -e '.[macos]'" >&2
   exit 1
 }
@@ -56,6 +57,7 @@ verify_arch "FFmpeg" "$ffmpeg"
 if [[ ! -f "$yt_dlp" ]] || ! printf '%s  %s\n' "$yt_dlp_sha256" "$yt_dlp" | shasum -a 256 -c - >/dev/null 2>&1; then
   download="$yt_dlp.download"
   curl --fail --location --silent --show-error \
+    --retry 3 --retry-delay 5 --continue-at - \
     "https://github.com/yt-dlp/yt-dlp/releases/download/$yt_dlp_version/yt-dlp_macos" \
     --output "$download"
   printf '%s  %s\n' "$yt_dlp_sha256" "$download" | shasum -a 256 -c -
@@ -63,6 +65,29 @@ if [[ ! -f "$yt_dlp" ]] || ! printf '%s  %s\n' "$yt_dlp_sha256" "$yt_dlp" | shas
 fi
 chmod 755 "$yt_dlp"
 verify_arch "yt-dlp" "$yt_dlp"
+
+gallery_dl_entry="$($python_bin -c 'import gallery_dl.__main__; print(gallery_dl.__main__.__file__)')"
+gallery_dl_args=(
+  --clean
+  --noconfirm
+  --onefile
+  --console
+  --name gallery-dl
+  --collect-all gallery_dl
+  --collect-all yt_dlp
+)
+if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+  gallery_dl_args+=(--codesign-identity "$CODESIGN_IDENTITY")
+fi
+gallery_dl_args+=(
+  --distpath "$vendor_dir"
+  --workpath "$project_dir/build/gallery-dl"
+  --specpath "$project_dir/build/gallery-dl"
+  "$gallery_dl_entry"
+)
+"$python_bin" -m PyInstaller "${gallery_dl_args[@]}"
+chmod 755 "$gallery_dl"
+verify_arch "gallery-dl" "$gallery_dl"
 
 pyinstaller_args=(
   --clean
@@ -73,7 +98,9 @@ pyinstaller_args=(
   --icon "$project_dir/assets/VideoEnhancer.icns"
   --osx-bundle-identifier com.bjorkepoc.videoenhancer
   --paths "$project_dir/src"
+  --collect-submodules gallery_dl.extractor
   --add-binary "$yt_dlp:bin"
+  --add-binary "$gallery_dl:bin"
   --add-binary "$ffmpeg:bin"
   --add-data "$project_dir/LICENSE:."
   --add-data "$project_dir/THIRD_PARTY_NOTICES.md:."
@@ -90,6 +117,7 @@ pyinstaller_args+=("$project_dir/src/video_enhancer/macos_app.py")
 verify_arch "App executable" "$app/Contents/MacOS/Video Enhancer"
 verify_arch "Bundled FFmpeg" "$app/Contents/Frameworks/bin/ffmpeg"
 verify_arch "Bundled yt-dlp" "$app/Contents/Frameworks/bin/yt-dlp"
+verify_arch "Bundled gallery-dl" "$app/Contents/Frameworks/bin/gallery-dl"
 
 plist="$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$plist"
@@ -103,6 +131,8 @@ if [[ "$signing_identity" != "-" ]]; then
 fi
 codesign "${codesign_args[@]}" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
+VIDEO_ENHANCER_SMOKE_TEST=1 "$app/Contents/MacOS/Video Enhancer"
+"$app/Contents/Frameworks/bin/gallery-dl" --version >/dev/null
 
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then

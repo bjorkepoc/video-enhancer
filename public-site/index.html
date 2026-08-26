@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Media Downloader Lite previews original public media from Instagram, TikTok, and Facebook, with optional enhancement performed locally in your browser.">
+    <link rel="canonical" href="__SITE_ORIGIN__/">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Media Downloader Lite">
+    <meta property="og:description" content="Preview original public media and enhance video locally on your own device.">
+    <meta property="og:url" content="__SITE_ORIGIN__/">
+    <meta property="og:image" content="__SITE_ORIGIN__/og.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Media Downloader Lite">
+    <meta name="twitter:description" content="Preview original public media and enhance video locally on your own device.">
+    <meta name="twitter:image" content="__SITE_ORIGIN__/og.png">
+    <title>Media Downloader Lite</title>
+    <link rel="stylesheet" href="/styles.css?v=20260810-1">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Media Downloader Lite home">Media <strong>Downloader Lite</strong></a>
+      <nav aria-label="Legal information">
+        <button type="button" data-dialog="privacy-dialog">Privacy</button>
+        <button type="button" data-dialog="terms-dialog">Terms</button>
+      </nav>
+    </header>
+
+    <div class="page-grid">
+      <aside class="ad-rail ad-rail-left" aria-label="Available advertisement">
+        <a class="ad ad-vertical" href="https://github.com/bjorkepoc/media-downloader-lite/issues/new?template=sponsor.yml" target="_blank" rel="sponsored noopener noreferrer">
+          <span>Available advertisement</span><strong>Sponsor this placement</strong><small>Static, clearly labelled, no tracking</small><i>Open a public sponsor inquiry</i>
+        </a>
+      </aside>
+
+      <main>
+        <section class="intro" aria-labelledby="page-title">
+          <h1 id="page-title">Paste an image or video link. Keep the files.</h1>
+          <p>Paste a public Instagram, TikTok, or Facebook link to preview the best original media the source exposes. Nothing is saved to Downloads until you choose it. VSCO links are recognized, but automated resolution is paused rather than bypassing platform protections.</p>
+
+          <form id="source-form">
+            <label class="sr-only" for="source-url">Image or video URL</label>
+            <div class="source-row">
+              <input id="source-url" name="url" type="url" inputmode="url" autocomplete="url" maxlength="2048" required placeholder="Paste an Instagram, TikTok or Facebook link">
+              <button class="button button-primary" id="get-media" type="submit">Get media</button>
+            </div>
+            <p class="trust-line">Public posts only. No login, account, or payment. Media resolution uses a tiny edge resolver; enhancement runs on your device.</p>
+            <div class="check-row">
+              <input id="terms-accepted" type="checkbox" required>
+              <span><label for="terms-accepted">I will only download content I have the right to access and use, and I agree to the</label> <button type="button" class="text-button" data-dialog="terms-dialog">Terms of Use</button>.</span>
+            </div>
+            <p class="form-status" id="form-status" role="alert" aria-live="polite"></p>
+          </form>
+        </section>
+
+        <section class="mobile-ad" aria-label="Available advertisement">
+          <a class="ad ad-horizontal" href="https://github.com/bjorkepoc/media-downloader-lite/issues/new?template=sponsor.yml" target="_blank" rel="sponsored noopener noreferrer">
+            <span>Available advertisement</span><strong>Sponsor this placement</strong><small>Static, clearly labelled, no tracking</small>
+          </a>
+        </section>
+
+        <section class="workspace" id="workspace" aria-label="Media workspace">
+          <div class="empty-state" id="empty-state">
+            <span class="empty-mark" aria-hidden="true">↗</span>
+            <h2 id="workspace-title">Paste a supported link</h2>
+            <p>Your original image, video, or audio will appear here to preview and download.</p>
+          </div>
+
+          <div class="result" id="result" hidden>
+            <div class="media-column">
+              <div class="media-stage" id="media-stage">
+                <video id="source-video" controls playsinline preload="metadata" hidden></video>
+                <img id="source-image" alt="Resolved source media" hidden>
+              </div>
+              <div class="viewer-controls" id="viewer-controls" hidden>
+                <button type="button" id="frame-back" aria-label="Previous frame">|◀</button>
+                <button type="button" id="frame-forward" aria-label="Next frame">▶|</button>
+                <button type="button" id="one-fps" aria-pressed="false">1 FPS</button>
+                <label>Step FPS <input id="step-fps" type="number" min="1" max="240" step="0.001" value="30"></label>
+                <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
+                <output id="zoom-output" for="zoom-range">1×</output>
+                <input id="zoom-range" class="sr-only" type="range" min="1" max="8" step="0.5" value="1" aria-label="Zoom level">
+                <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
+                <button type="button" id="zoom-reset">Reset</button>
+              </div>
+            </div>
+
+            <div class="result-info">
+              <p class="platform-name" id="platform-name"></p>
+              <h2 id="result-title"></h2>
+              <p class="result-author" id="result-author"></p>
+              <dl id="result-meta"></dl>
+              <div class="download-actions" id="download-actions"></div>
+            </div>
+
+            <div class="carousel" id="carousel" hidden></div>
+
+            <section class="enhance" id="enhance-section" hidden aria-labelledby="enhance-title">
+              <div class="enhance-copy">
+                <h3 id="enhance-title">Enhance on this device</h3>
+                <p>After consent, your browser loads a local FFmpeg engine and uses this device's CPU, memory, battery, and temporary browser storage. The original remains unchanged.</p>
+              </div>
+              <label class="check-row" for="processing-accepted">
+                <input id="processing-accepted" type="checkbox">
+                <span>I understand this creates a separate synthetic file on this device.</span>
+              </label>
+              <div class="enhance-options">
+                <fieldset>
+                  <legend>Mode</legend>
+                  <button type="button" data-mode="60">60 FPS</button>
+                  <button type="button" data-mode="90">90 FPS</button>
+                  <button type="button" data-mode="upscale">2× upscale</button>
+                  <button type="button" data-mode="audio">Extract MP3</button>
+                </fieldset>
+                <fieldset>
+                  <legend>Filter</legend>
+                  <label><input type="radio" name="filter" value="none" checked> None</label>
+                  <label><input type="radio" name="filter" value="clean"> Clean</label>
+                  <label><input type="radio" name="filter" value="sharpen"> Sharpen</label>
+                </fieldset>
+              </div>
+              <div class="progress-row">
+                <progress id="enhance-progress" max="1" value="0"></progress>
+                <output id="enhance-percent">0%</output>
+              </div>
+              <p class="enhance-status" id="enhance-status" aria-live="polite">Ready to enhance. No processing has started.</p>
+              <div class="enhanced-result" id="enhanced-result" hidden>
+                <video id="enhanced-video" controls playsinline hidden></video>
+                <a class="button button-primary" id="enhanced-download" download>Download enhanced file</a>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="bottom-ad" aria-label="Available advertisement">
+          <a class="ad ad-horizontal" href="https://github.com/bjorkepoc/media-downloader-lite/issues/new?template=sponsor.yml" target="_blank" rel="sponsored noopener noreferrer">
+            <span>Available advertisement</span><strong>Sponsor this placement</strong><small>Static, clearly labelled, no tracking</small>
+          </a>
+        </section>
+      </main>
+
+      <aside class="ad-rail ad-rail-right" aria-label="Available advertisement">
+        <a class="ad ad-vertical" href="https://github.com/bjorkepoc/media-downloader-lite/issues/new?template=sponsor.yml" target="_blank" rel="sponsored noopener noreferrer">
+          <span>Available advertisement</span><strong>Sponsor this placement</strong><small>Static, clearly labelled, no tracking</small><i>Open a public sponsor inquiry</i>
+        </a>
+      </aside>
+    </div>
+
+    <footer>
+      <div>
+        <a href="https://github.com/bjorkepoc/media-downloader-lite/issues/new?title=Contact" target="_blank" rel="noopener noreferrer">Contact</a>
+        <a href="https://github.com/bjorkepoc/media-downloader-lite/security/advisories/new" target="_blank" rel="noopener noreferrer">Private rights request</a>
+        <button type="button" data-dialog="privacy-dialog">Privacy</button>
+        <button type="button" data-dialog="terms-dialog">Terms</button>
+      </div>
+      <p>We do not run accounts or first-party analytics. Static sponsor placements use no tracking.</p>
+    </footer>
+
+    <dialog id="privacy-dialog" aria-labelledby="privacy-title">
+      <form method="dialog" class="dialog-card">
+        <div class="dialog-head"><h2 id="privacy-title">Privacy notice</h2><button aria-label="Close privacy notice">×</button></div>
+        <p>The page sends the public link you submit to a minimal Cloudflare Pages Function. The Function fetches only supported public pages, returns short-lived source-media links, and does not intentionally persist the submitted URL or media. For TikTok's signed video CDN, it may replay anonymous platform session headers inside one request; they are discarded and never set in your browser.</p>
+        <p>Cloudflare, the source platform, its media CDN, and your network provider may process ordinary connection data such as IP address and browser information under their own terms. The application does not enable first-party analytics or application logging. Cloudflare and other infrastructure providers may retain security and service logs under their own policies.</p>
+        <p>The application derives a salted, short-lived in-memory rate-limit key from the connection IP address. It does not store the raw address itself. Submitted links may still appear in infrastructure request data controlled by Cloudflare or the source provider.</p>
+        <p>Previewing or processing media transfers bytes into temporary browser memory or cache. A file appears in Downloads only when you choose a download action. Closing or reloading the page clears in-memory results.</p>
+        <p>Optional enhancement starts only after separate consent. The FFmpeg WebAssembly engine is fetched from the version-pinned jsDelivr CDN, so jsDelivr receives an ordinary network request. Source media and output are processed inside your browser, not by our Worker.</p>
+        <p>The visible sponsor placements are static and tracking-free. The application sets no first-party browser cookies, localStorage, IndexedDB, advertising identifiers, or personalized-ad scripts. This notice and a suitable consent flow must be updated before any ad network or analytics is enabled.</p>
+        <button class="button" value="close">Done</button>
+      </form>
+    </dialog>
+
+    <dialog id="terms-dialog" aria-labelledby="terms-title">
+      <form method="dialog" class="dialog-card">
+        <div class="dialog-head"><h2 id="terms-title">Terms of Use</h2><button aria-label="Close terms">×</button></div>
+        <p>Version 2026-08-10.2. Public availability does not itself grant permission to download or reuse content. Submit only content you own, or content for which you have explicit permission from the relevant rights holder and platform. Private accounts, login, user cookies, DRM bypass, and access-control circumvention are not supported.</p>
+        <p>This independent service is not affiliated with, endorsed by, or authorized by VSCO, Meta, Instagram, Facebook, or TikTok. Your acceptance of these Terms does not replace any permission required from a platform or rights holder.</p>
+        <p>Source quality and availability are controlled by third parties. We do not guarantee a resolution, frame rate, codec, uninterrupted platform support, or that a link will remain available. When video and audio are exposed as separate streams, the public version does not merge them on the server.</p>
+        <p>Local enhancement can be slow, use substantial CPU, memory, temporary storage and battery, make a device warm, or fail on large or unsupported files. Enhanced frames and pixels are synthetic and may contain artifacts.</p>
+        <p>To the extent permitted by law, the service is provided as available without warranties and the operator is not responsible for user-selected content or third-party platform changes. Nothing in these Terms limits liability that cannot lawfully be limited or your mandatory rights under applicable law.</p>
+        <button class="button" value="close">Done</button>
+      </form>
+    </dialog>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

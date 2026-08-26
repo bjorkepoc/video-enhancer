@@ -56,8 +56,27 @@ def test_release_uses_the_hashed_lock_without_build_isolation() -> None:
     assert f"{publish_sync} --no-install-project" in release_publish
     assert f"{publish_sync} --no-build-isolation" in release_publish
     assert "python -m build --no-isolation" in release_publish
-    assert "--prerelease" in release_publish
+    assert (
+        'gh release create "$GITHUB_REF_NAME" "${assets[@]}" --prerelease'
+        not in release_publish
+    )
+    assert "flags=(--generate-notes --verify-tag)" in release_publish
+    assert "flags+=(--prerelease)" in release_publish
+    assert '"${flags[@]}"' in release_publish
+    assert "gh release view" in release_publish
+    assert "gh release upload" in release_publish
+    assert "--clobber" in release_publish
+    assert "concurrency:" in release_publish
+    assert "group: release-${{ github.ref_name }}" in release_publish
+    assert "cancel-in-progress: false" in release_publish
     assert "pip install" not in release_publish
+
+    security_job_text = workflow.split("\n  security:\n", 1)[1].split(
+        "\n  macos-package-test:\n", 1
+    )[0]
+    assert "audit-macos-extra.txt" in security_job_text
+    assert "audit-default.txt" in security_job_text
+    assert security_job_text.count("pip-audit==2.10.1") == 2
 
     requirements = re.findall(r'"([\w-]+)(?:\[[^]]+\])?[<>=!~]', project)
     lock = (ROOT / "uv.lock").read_text()
@@ -123,8 +142,17 @@ def test_macos_build_script_rejects_architecture_mismatches() -> None:
     assert 'lipo "$2" -verify_arch "$build_arch"' in script
     assert 'verify_arch "FFmpeg" "$ffmpeg"' in script
     assert 'verify_arch "yt-dlp" "$yt_dlp"' in script
+    assert 'verify_arch "gallery-dl" "$gallery_dl"' in script
+    assert "--collect-all gallery_dl" in script
+    assert "--collect-all yt_dlp" in script
+    assert "--collect-submodules gallery_dl.extractor" in script
+    assert 'gallery_dl_args+=(--codesign-identity "$CODESIGN_IDENTITY")' in script
+    assert 'VIDEO_ENHANCER_SMOKE_TEST=1 "$app/Contents/MacOS/Video Enhancer"' in script
+    assert '"$app/Contents/Frameworks/bin/gallery-dl" --version' in script
+    assert 'verify_arch "Bundled gallery-dl"' in script
     assert 'verify_arch "App executable"' in script
     assert 'archive="Video-Enhancer-$version-macos-$build_arch.zip"' in script
+    assert "--retry 3 --retry-delay 5 --continue-at -" in script
 
 
 def test_source_archive_manifest_contains_linked_release_files() -> None:
@@ -133,4 +161,5 @@ def test_source_archive_manifest_contains_linked_release_files() -> None:
     assert "include THIRD_PARTY_NOTICES.md" in manifest
     assert "include assets/VideoEnhancer.icns" in manifest
     assert "include docs/launch-privacy-security.md" in manifest
+    assert "include docs/snapdownloader-parity.md" in manifest
     assert "include scripts/build_macos.sh" in manifest

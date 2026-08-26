@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import math
+import os
 import shlex
-import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -10,10 +11,13 @@ import pytest
 
 from video_enhancer import ffmpeg, macos_app
 from video_enhancer.ffmpeg import (
+    EXPORT_FORMATS,
     SUPPORTED_VIDEO_CODECS,
     EnhancementOptions,
     FFmpegExecutionError,
+    FFmpegNotFoundError,
     ValidationError,
+    build_export_command,
     build_ffmpeg_command,
     resolve_ffmpeg,
 )
@@ -53,28 +57,118 @@ def _build(tmp_path: Path, preset: str = "balanced", **overrides: object) -> lis
     )
 
 
-@pytest.mark.parametrize("preset", ALL_PRESETS)
-def test_public_presets_build_ffmpeg_commands(tmp_path: Path, preset: str) -> None:
-    command = _command_text(_build(tmp_path, preset=preset, scale_factor=2.0, fps=30))
+@pytest.mark.parametrize(
+    ("preset", "filter_signature"),
+    [
+        ("fast", "mi_mode=blend"),
+        ("balanced", "mc_mode=obmc"),
+        ("quality", "mc_mode=aobmc"),
+        ("ultra", "nlmeans=s=1.0"),
+    ],
+)
+def test_public_presets_build_distinct_filter_chains(
+    tmp_path: Path, preset: str, filter_signature: str
+) -> None:
+    parts = _command_parts(_build(tmp_path, preset=preset))
 
-    assert "ffmpeg" in command.lower()
-    assert "-i" in command
-    assert "input.mp4" in command
-    assert "output.mp4" in command
+    assert filter_signature in parts[parts.index("-vf") + 1]
 
 
 def test_supported_video_codecs_are_cpu_only() -> None:
     assert SUPPORTED_VIDEO_CODECS == ("libx264", "libx265")
 
 
+@pytest.mark.parametrize(
+    ("output_format", "expected"),
+    [
+        ("mp4", "libx264"),
+        ("mov", "libx264"),
+        ("avi", "mpeg4"),
+        ("mp3", "libmp3lame"),
+        ("aac", "aac"),
+        ("m4a", "aac"),
+        ("wav", "pcm_s16le"),
+        ("aiff", "pcm_s16be"),
+        ("flac", "flac"),
+        ("wma", "wmav2"),
+        ("gif", "paletteuse"),
+    ],
+)
+def test_local_export_formats_support_clipping(
+    tmp_path: Path, output_format: str, expected: str
+) -> None:
+    input_path, _ = _sample_paths(tmp_path)
+    output_path = tmp_path / f"output.{output_format}"
+
+    command = build_export_command(
+        input_path,
+        output_path,
+        output_format,
+        start_seconds=2.5,
+        end_seconds=6.5,
+        check_executable=False,
+    )
+    text = " ".join(command)
+
+    assert output_format in EXPORT_FORMATS
+    assert command[command.index("-ss") + 1] == "2.5"
+    assert command[command.index("-t") + 1] == "4"
+    assert "-map_metadata" in command
+    assert expected in text
+    assert command[-1] == str(output_path)
+
+
+@pytest.mark.parametrize("end_seconds", [4, 8])
+def test_local_export_rejects_non_positive_clip(
+    tmp_path: Path, end_seconds: float
+) -> None:
+    input_path, output_path = _sample_paths(tmp_path)
+
+    with pytest.raises(ValidationError, match="end must be later"):
+        build_export_command(
+            input_path,
+            output_path,
+            "mp4",
+            start_seconds=8,
+            end_seconds=end_seconds,
+            check_executable=False,
+        )
+
+
 def test_packaged_ffmpeg_override_is_resolved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    packaged = tmp_path / "ffmpeg"
+    packaged = tmp_path / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
     packaged.write_bytes(b"binary")
+    packaged.chmod(0o755)
     monkeypatch.setenv("VIDEO_ENHANCER_FFMPEG", str(packaged))
 
     assert resolve_ffmpeg() == str(packaged)
+
+
+def test_resolve_ffmpeg_rejects_non_executable_file(tmp_path: Path) -> None:
+    packaged = tmp_path / ("ffmpeg.txt" if os.name == "nt" else "ffmpeg")
+    packaged.write_bytes(b"binary")
+
+    with pytest.raises(FFmpegNotFoundError, match="not an executable"):
+        resolve_ffmpeg(str(packaged))
+
+
+@pytest.mark.parametrize(
+    ("resolved", "accepted"),
+    [(r"C:\tools\ffmpeg.cmd", False), (r"C:\tools\ffmpeg.EXE", True)],
+)
+def test_windows_path_resolution_requires_exe(
+    monkeypatch: pytest.MonkeyPatch, resolved: str, accepted: bool
+) -> None:
+    monkeypatch.setattr(ffmpeg, "WINDOWS", True)
+    monkeypatch.setattr(ffmpeg.shutil, "which", lambda _: resolved)
+
+    if accepted:
+        assert resolve_ffmpeg("ffmpeg") == resolved
+    else:
+        with pytest.raises(FFmpegNotFoundError):
+            resolve_ffmpeg("ffmpeg")
 
 
 def test_macos_app_uses_bundled_tools(
@@ -82,7 +176,7 @@ def test_macos_app_uses_bundled_tools(
 ) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name in ("ffmpeg", "yt-dlp"):
+    for name in ("ffmpeg", "gallery-dl", "yt-dlp"):
         (bin_dir / name).write_bytes(b"binary")
     called: dict[str, object] = {}
     monkeypatch.setattr(macos_app.sys, "_MEIPASS", str(tmp_path), raising=False)
@@ -93,6 +187,7 @@ def test_macos_app_uses_bundled_tools(
     )
     monkeypatch.setenv("VIDEO_ENHANCER_FFMPEG", "")
     monkeypatch.setenv("VIDEO_ENHANCER_YT_DLP", "")
+    monkeypatch.setenv("VIDEO_ENHANCER_GALLERY_DL", "")
     monkeypatch.setenv("PATH", "/usr/bin")
 
     macos_app.main()
@@ -100,6 +195,9 @@ def test_macos_app_uses_bundled_tools(
     assert called == {"port": 0, "open_browser": True}
     assert macos_app.os.environ["VIDEO_ENHANCER_FFMPEG"] == str(bin_dir / "ffmpeg")
     assert macos_app.os.environ["VIDEO_ENHANCER_YT_DLP"] == str(bin_dir / "yt-dlp")
+    assert macos_app.os.environ["VIDEO_ENHANCER_GALLERY_DL"] == str(
+        bin_dir / "gallery-dl"
+    )
     assert macos_app.os.environ["PATH"].split(macos_app.os.pathsep)[0] == str(bin_dir)
 
 
@@ -139,13 +237,32 @@ def test_scale_factor_and_fps_are_added_to_video_filter_chain(tmp_path: Path) ->
     assert "fps=60" in command
 
 
-def test_no_upscale_guards_scale_with_input_dimensions(tmp_path: Path) -> None:
-    command = _command_text(_build(tmp_path, scale_factor=2.0, no_upscale=True))
+def _top_level_filter(filters: str, name: str) -> str:
+    """Return one filter from a chain, ignoring commas nested in parentheses."""
 
-    assert "scale=" in command
-    assert "min(" in command
-    assert "iw" in command
-    assert "ih" in command
+    start = filters.index(f"{name}=")
+    depth = 0
+    for index in range(start, len(filters)):
+        char = filters[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            return filters[start:index]
+    return filters[start:]
+
+
+def test_no_upscale_guards_scale_with_input_dimensions(tmp_path: Path) -> None:
+    parts = _command_parts(_build(tmp_path, scale_factor=2.0, no_upscale=True))
+    filters = parts[parts.index("-vf") + 1]
+    scale = _top_level_filter(filters, "scale")
+
+    assert "min(" in scale
+    guarded = scale.split("min(", 1)[1]
+    assert "iw" in guarded
+    assert "ih" in guarded
+    assert "trunc(iw*2/2)*2:trunc(ih*2/2)*2" not in filters
 
 
 def test_no_interpolate_disables_motion_interpolation_filter(tmp_path: Path) -> None:
@@ -176,37 +293,39 @@ def test_invalid_fps_is_rejected(tmp_path: Path, bad_fps: int) -> None:
         _build(tmp_path, fps=bad_fps)
 
 
-def test_run_ffmpeg_has_a_runtime_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[Sequence[str], dict[str, object]]] = []
-
-    def run(
-        command: Sequence[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0)
-
-    monkeypatch.setattr(ffmpeg.subprocess, "run", run)
-
-    ffmpeg.run_ffmpeg(["ffmpeg"])
-
-    assert calls == [
-        (
-            ["ffmpeg"],
-            {"check": False, "timeout": ffmpeg.ENHANCEMENT_TIMEOUT_SECONDS},
-        )
-    ]
-
-
-def test_run_ffmpeg_reports_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    def run(
-        command: Sequence[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
-
-    monkeypatch.setattr(ffmpeg.subprocess, "run", run)
+def test_run_ffmpeg_has_a_runtime_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ffmpeg, "ENHANCEMENT_TIMEOUT_SECONDS", 0.01)
+    output = tmp_path / "partial.mp4"
+    output.write_bytes(b"partial")
 
     with pytest.raises(FFmpegExecutionError, match="six-hour"):
-        ffmpeg.run_ffmpeg(["ffmpeg"])
+        ffmpeg.run_ffmpeg(
+            [sys.executable, "-c", "import time; time.sleep(10)", str(output)]
+        )
+
+    assert not output.exists()
+
+
+def test_run_ffmpeg_bounds_large_diagnostics_and_reports_only_the_tail(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "partial.mp4"
+    output.write_bytes(b"partial")
+    command = [
+        sys.executable,
+        "-c",
+        "import sys;sys.stderr.write('x'*(2*1024*1024)+'final diagnostic');sys.exit(1)",
+        str(output),
+    ]
+
+    with pytest.raises(FFmpegExecutionError) as failure:
+        ffmpeg.run_ffmpeg(command)
+
+    assert "final diagnostic" in str(failure.value)
+    assert len(str(failure.value)) < 2100
+    assert not output.exists()
 
 
 def test_missing_input_path_is_rejected(tmp_path: Path) -> None:

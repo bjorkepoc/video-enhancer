@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -13,21 +14,26 @@ import stat
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 import webbrowser
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from .ffmpeg import (
+    AUDIO_EXPORT_FORMATS,
     ENHANCEMENT_TIMEOUT_SECONDS,
+    EXPORT_FORMATS,
     SUPPORTED_VIDEO_CODECS,
     EnhancementOptions,
     FFmpegNotFoundError,
     VideoEnhancerError,
+    build_export_command,
     build_ffmpeg_command,
     resolve_ffmpeg,
 )
@@ -39,6 +45,7 @@ from .sources import (
     download_source,
     run_bounded_process,
     stop_process,
+    validate_download_quality,
     validate_social_url,
 )
 
@@ -46,7 +53,10 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_JSON_BODY = 20_000
 REQUEST_TIMEOUT_SECONDS = 60
+DOWNLOAD_TOKEN_TTL_SECONDS = 12 * 60 * 60
+DOWNLOAD_TOKENS: dict[tuple[str, str], float] = {}
 API_TOKEN_HEADER = "x-video-enhancer-token"  # nosec B105
+TERMS_VERSION = "2026-08-10"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 BIND_HOSTS = {"127.0.0.1", "localhost"}
 MODES = {
@@ -65,7 +75,7 @@ HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Video Enhancer</title>
+  <title>Image &amp; Video Downloader</title>
   <style nonce="__CSP_NONCE__">
     :root {
       color-scheme: light;
@@ -274,7 +284,8 @@ HTML = """<!doctype html>
     }
     .video-stage[data-zoomed="true"] { cursor: grab; }
     .video-stage.dragging { cursor: grabbing; }
-    .video-stage video {
+    .video-stage video,
+    .video-stage img {
       width: 100%;
       height: 100%;
       object-fit: contain;
@@ -522,14 +533,11 @@ HTML = """<!doctype html>
       white-space: nowrap;
     }
     .brand strong { color: var(--accent); font-weight: 760; }
-    .brand-mark { width: 38px; height: 38px; color: var(--accent); }
-    .header-actions, .legal-nav, .engine-status {
+    .header-actions, .engine-status {
       display: flex;
       align-items: center;
     }
     .header-actions { gap: 28px; margin: 0; }
-    .legal-nav { gap: 24px; }
-    .header-actions .header-link,
     .footer-actions button {
       width: auto;
       min-height: 44px;
@@ -541,7 +549,6 @@ HTML = """<!doctype html>
       font-size: 15px;
       font-weight: 650;
     }
-    .header-link:hover,
     .footer-actions button:hover { background: transparent; color: var(--accent); }
     .engine-status {
       gap: 9px;
@@ -644,11 +651,6 @@ HTML = """<!doctype html>
       stroke-linecap: round;
       stroke-linejoin: round;
     }
-    .rights-note {
-      margin-top: 10px;
-      color: var(--muted);
-      font-size: 13px;
-    }
     .trust-line {
       display: flex;
       align-items: center;
@@ -676,6 +678,7 @@ HTML = """<!doctype html>
 
     .house-ad {
       display: flex;
+      position: relative;
       align-items: center;
       justify-content: space-between;
       gap: 24px;
@@ -710,8 +713,7 @@ HTML = """<!doctype html>
       border-bottom: 1px solid var(--line);
     }
     .workspace-empty { min-height: 150px; padding: 27px 0 30px; }
-    .workspace h2,
-    .explainer h2 {
+    .workspace h2 {
       color: var(--ink);
       font-size: 24px;
       font-weight: 760;
@@ -742,6 +744,7 @@ HTML = """<!doctype html>
       font-weight: 650;
     }
     .preview-grid { grid-template-columns: 1fr 1fr; gap: 18px; }
+    .preview-grid[data-single="true"] { grid-template-columns: 1fr; }
     .video-preview {
       min-width: 0;
       padding: 0;
@@ -856,6 +859,7 @@ HTML = """<!doctype html>
       white-space: nowrap;
     }
     .download-link:hover { background: var(--accent-soft); }
+    .download-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
     .media-meta {
       grid-template-columns: repeat(6, minmax(0, 1fr));
       margin-top: 20px;
@@ -863,6 +867,7 @@ HTML = """<!doctype html>
       border-radius: 10px;
       background: var(--line);
     }
+    .media-meta[data-kind="image"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .media-meta div { background: #fff; }
     .enhancement-actions { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
     .enhancement-actions h3 { margin-bottom: 12px; color: var(--ink); font-size: 15px; }
@@ -903,32 +908,6 @@ HTML = """<!doctype html>
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
 
-    .explainer {
-      max-width: 620px;
-      padding: 30px 0 42px;
-    }
-    .steps ol { margin: 12px 0 0; padding: 0; list-style: none; }
-    .steps li {
-      display: grid;
-      grid-template-columns: 46px minmax(0, 1fr);
-      gap: 15px;
-      align-items: start;
-      padding: 12px 0;
-    }
-    .steps li + li { border-top: 1px solid var(--line); }
-    .steps li > span {
-      display: grid;
-      width: 42px;
-      height: 42px;
-      place-items: center;
-      border: 2px solid var(--accent);
-      border-radius: 50%;
-      color: var(--ink);
-      font-size: 15px;
-      font-weight: 760;
-    }
-    .steps strong { display: block; color: var(--ink); font-size: 15px; }
-    .steps p { margin-top: 2px; color: var(--muted); font-size: 14px; }
     .site-footer {
       display: block;
       max-width: none;
@@ -1027,8 +1006,6 @@ HTML = """<!doctype html>
       .app-container { width: min(calc(100% - 40px), 1260px); }
       .header-inner { min-height: 72px; }
       .brand { gap: 7px; font-size: 20px; }
-      .brand-mark { width: 33px; height: 33px; }
-      .legal-nav { display: none; }
       .engine-status { padding-left: 0; border-left: 0; }
       .status-full { display: none; }
       .status-short { display: inline; }
@@ -1048,8 +1025,8 @@ HTML = """<!doctype html>
       .action-grid { grid-template-columns: 1fr; }
       .media-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .source-summary-heading, .result { align-items: flex-start; flex-direction: column; }
+      .download-actions { width: 100%; justify-content: flex-start; }
       .download-link { width: 100%; }
-      .explainer { padding-block: 34px 42px; }
       .footer-actions { width: 100%; flex-wrap: wrap; justify-content: space-between; gap: 12px 20px; }
       .site-footer button { margin-top: 0; }
     }
@@ -1057,20 +1034,451 @@ HTML = """<!doctype html>
       .app-container { width: calc(100% - 32px); }
       .header-inner { min-height: 68px; }
       .brand { font-size: 18px; }
-      .brand-mark { width: 31px; height: 31px; }
       .engine-status { font-size: 14px; }
       .hero h1 { font-size: 44px; }
       .hero-copy { margin-top: 17px; font-size: 16px; }
       .url-control input { padding-left: 52px; font-size: 15px; }
       .url-control > svg { left: 17px; }
       .primary-button { padding-inline: 18px; font-size: 15px; }
-      .rights-note { font-size: 12px; }
-      .workspace h2, .explainer h2 { font-size: 22px; }
+      .workspace h2 { font-size: 22px; }
       .workspace-empty p { font-size: 16px; }
-      .steps li { grid-template-columns: 44px minmax(0,1fr); gap: 12px; }
       .footer-actions { justify-content: flex-start; }
       .footer-actions .danger-button { flex-basis: 100%; justify-content: flex-start; }
       .dialog-body { padding: 22px; }
+    }
+
+    /* V2: one quiet, sharp product surface. */
+    :root {
+      --bg: #ffffff;
+      --panel: #ffffff;
+      --surface: #f7f8fa;
+      --ink: #101114;
+      --muted: #667085;
+      --line: #d9dde5;
+      --line-strong: #b8c0cc;
+      --accent: #2457f5;
+      --accent-dark: #1743cc;
+      --accent-soft: #f1f4ff;
+      --success: #168455;
+      --danger: #b42318;
+      --log: #0d1117;
+    }
+    body { min-width: 320px; background: #fff; color: var(--ink); }
+    .app-container { width: min(calc(100% - 40px), 1040px); margin-inline: auto; }
+    .site-header {
+      display: block;
+      position: static;
+      padding: 0;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      backdrop-filter: none;
+    }
+    .header-inner {
+      display: flex;
+      min-height: 60px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+    .brand { gap: 0; color: var(--ink); font-size: 17px; font-weight: 650; letter-spacing: -.025em; }
+    .brand strong { color: var(--accent); font-weight: 650; }
+    .header-actions { margin-left: auto; }
+    .engine-status {
+      gap: 8px;
+      padding: 0;
+      border: 0;
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .status-dot { width: 8px; height: 8px; box-shadow: none; }
+    main { display: block; max-width: none; margin: 0; padding: 0; }
+    .hero { padding: 46px 0 25px; }
+    .hero h1 {
+      max-width: none;
+      color: var(--ink);
+      font-size: clamp(34px, 4vw, 44px);
+      font-weight: 720;
+      line-height: 1.08;
+      letter-spacing: -.045em;
+    }
+    .hero-copy {
+      max-width: 640px;
+      margin-top: 11px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    .source-form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 184px;
+      gap: 10px;
+      max-width: none;
+      margin-top: 23px;
+    }
+    .terms-acceptance {
+      display: flex;
+      grid-column: 1 / -1;
+      align-items: flex-start;
+      gap: 9px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .terms-acceptance input {
+      width: 17px;
+      min-height: 17px;
+      margin: 1px 0 0;
+      flex: 0 0 17px;
+    }
+    .policy-links {
+      display: flex;
+      grid-column: 1 / -1;
+      gap: 14px;
+      margin-top: -3px;
+    }
+    .policy-links button {
+      width: auto;
+      min-height: 0;
+      padding: 0;
+      background: transparent;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 650;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .policy-links button:hover { background: transparent; color: var(--accent-dark); }
+    .download-settings {
+      display: flex;
+      grid-column: 1 / -1;
+      align-items: end;
+      gap: 14px;
+    }
+    .download-settings label { width: min(220px, 100%); }
+    .download-settings select,
+    .export-grid input,
+    .export-grid select {
+      min-height: 40px;
+      margin-top: 5px;
+      border-radius: 3px;
+      font-size: 13px;
+    }
+    .download-settings .hint { margin: 0 0 9px; }
+    .url-control { position: relative; }
+    .url-control > svg { left: 17px; width: 19px; height: 19px; color: var(--muted); }
+    .url-control input {
+      min-height: 52px;
+      margin: 0;
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      padding: 0 16px 0 49px;
+      background: #fff;
+      color: var(--ink);
+      font-size: 15px;
+      box-shadow: none;
+    }
+    .url-control input::placeholder { color: #8b93a1; opacity: 1; }
+    .url-control input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(36,87,245,.14); }
+    .primary-button {
+      width: 100%;
+      min-height: 52px;
+      border: 1px solid var(--accent);
+      border-radius: 4px;
+      padding: 0 18px;
+      background: var(--accent);
+      box-shadow: none;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 650;
+    }
+    .primary-button:hover { border-color: var(--accent-dark); background: var(--accent-dark); box-shadow: none; transform: none; }
+    .primary-button svg { width: 18px; height: 18px; }
+    .source-error { min-height: 0; margin-top: 8px; font-size: 13px; line-height: 1.4; }
+    .source-error:empty { display: none; }
+    .trust-line {
+      align-items: center;
+      gap: 8px;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .trust-line svg { width: 18px; height: 18px; flex: 0 0 18px; color: var(--accent); }
+    .workspace { padding: 20px 0 32px; border-top: 1px solid var(--line); border-bottom: 0; }
+    .workspace-empty {
+      display: grid;
+      min-height: 300px;
+      place-content: center;
+      justify-items: center;
+      padding: 36px 24px;
+      border: 1px dashed var(--line-strong);
+      border-radius: 4px;
+      text-align: center;
+    }
+    .workspace-empty > svg {
+      width: 34px;
+      height: 34px;
+      margin-bottom: 16px;
+      fill: none;
+      stroke: var(--muted);
+      stroke-width: 1.6;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .workspace h2 { margin: 0; color: var(--ink); font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
+    .workspace-empty p { max-width: 360px; margin-top: 7px; color: var(--muted); font-size: 14px; line-height: 1.5; }
+    .workspace-active { padding: 4px 0 0; }
+    .workspace-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 14px;
+    }
+    .workspace-status { min-height: 32px; font-size: 13px; font-weight: 500; }
+    .workspace-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.65fr) minmax(280px, .9fr);
+      gap: 20px;
+      align-items: start;
+    }
+    .preview-grid,
+    .preview-grid[data-single="true"] { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+    .video-preview { min-width: 0; padding: 0; border-radius: 0; }
+    .video-title { margin-bottom: 8px; color: var(--ink); font-size: 13px; font-weight: 650; }
+    .meta { margin-left: 6px; color: var(--muted); font-size: 12px; font-weight: 450; }
+    .video-stage {
+      aspect-ratio: 16 / 10;
+      border: 1px solid #242934;
+      border-radius: 4px;
+      background: #0d1117;
+      box-shadow: none;
+    }
+    .video-empty { color: #aeb7c5; font-size: 13px; }
+    .advanced-controls { margin-top: 7px; }
+    .advanced-controls summary,
+    .activity-log summary {
+      min-height: 40px;
+      border-radius: 0;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .advanced-controls summary::before { margin-right: 7px; font-size: 15px; }
+    .frame-controls button,
+    .zoom-controls button,
+    .frame-fps input { min-height: 42px; border-radius: 3px; }
+    .workspace-panel { min-width: 0; border: 1px solid var(--line); border-radius: 4px; padding: 20px; background: #fff; }
+    .source-summary { margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
+    .source-summary-heading,
+    .result { display: block; }
+    .quality-label { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+    .source-summary-heading strong,
+    .result strong {
+      display: block;
+      max-width: 100%;
+      margin-top: 5px;
+      overflow: hidden;
+      color: var(--ink);
+      font-size: 15px;
+      font-weight: 650;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .hint { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .media-meta,
+    .media-meta[data-kind="image"] {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0;
+      margin-top: 18px;
+      overflow: visible;
+      border: solid var(--line);
+      border-width: 1px 0;
+      border-radius: 0;
+      background: transparent;
+    }
+    .media-meta div { min-width: 0; padding: 13px 10px; background: #fff; }
+    .media-meta div:first-child { padding-left: 0; }
+    .media-meta div:last-child { padding-right: 0; }
+    .media-meta div + div { border-left: 1px solid var(--line); }
+    .media-meta dt { color: var(--muted); font-size: 10px; font-weight: 600; }
+    .media-meta dd { margin-top: 4px; font-size: 12px; font-weight: 650; }
+    .download-actions { display: grid; justify-content: stretch; gap: 8px; margin-top: 18px; }
+    .download-link {
+      width: 100%;
+      min-height: 46px;
+      border: 1px solid var(--accent);
+      border-radius: 3px;
+      padding: 0 13px;
+      background: #fff;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .download-link:hover { background: var(--accent-soft); }
+    .download-primary { background: var(--accent); color: #fff; }
+    .download-primary:hover { background: var(--accent-dark); color: #fff; }
+    .download-link svg { width: 17px; height: 17px; }
+    .enhancement-actions { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+    .enhancement-actions h3 { margin: 0 0 10px; color: var(--ink); font-size: 13px; font-weight: 650; }
+    .action-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 0; }
+    .choice-button {
+      min-height: 44px;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 3px;
+      padding: 0 8px;
+      background: #fff;
+      color: var(--accent);
+      text-align: center;
+    }
+    .choice-button:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .choice-button strong { font-size: 12px; font-weight: 650; white-space: nowrap; }
+    .export-actions { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
+    .export-grid { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 8px; }
+    .export-grid label { font-size: 11px; font-weight: 650; }
+    .export-submit { grid-column: 1 / -1; min-height: 44px; margin-top: 2px; }
+    .result { margin-top: 20px; padding: 18px 0 0; border: solid var(--line); border-width: 1px 0 0; border-radius: 0; background: transparent; }
+    .result .download-link { margin-top: 15px; }
+    .activity-log { margin-top: 16px; border: 1px solid var(--line); border-radius: 3px; }
+    .activity-log summary { display: flex; align-items: center; padding: 0 14px; }
+    pre { min-height: 84px; margin: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 14px; background: var(--log); color: #c8d1dc; }
+    .house-ad {
+      display: flex;
+      min-height: 56px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin: 0 auto 26px;
+      padding: 0;
+      border: solid var(--line);
+      border-width: 1px 0;
+      border-radius: 0;
+      background: #fff;
+    }
+    .house-ad > div { display: flex; align-items: center; gap: 10px; }
+    .ad-label { color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: .08em; }
+    .house-ad strong { font-size: 13px; font-weight: 600; }
+    .house-ad p { display: none; }
+    .house-ad button {
+      width: auto;
+      min-height: 40px;
+      border: 0;
+      border-radius: 0;
+      padding: 0;
+      background: transparent;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .house-ad button:hover { background: transparent; text-decoration: underline; }
+    .ad-bait {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .site-footer { border-top: 1px solid var(--line); background: var(--surface); }
+    .footer-inner { min-height: 76px; gap: 24px; }
+    .footer-inner > p { max-width: 560px; font-size: 12px; line-height: 1.5; }
+    .footer-actions { gap: 18px; }
+    .site-footer button {
+      width: auto;
+      min-height: 40px;
+      padding: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .site-footer button:hover { background: transparent; color: var(--ink); }
+    .footer-actions .danger-button { color: var(--danger); }
+    .danger-button svg { width: 17px; height: 17px; }
+    dialog { border-radius: 6px; box-shadow: 0 22px 70px rgba(16,17,20,.18); }
+    dialog::backdrop { background: rgba(16,17,20,.52); backdrop-filter: none; }
+    .dialog-body { padding: 26px; }
+    .policy-content h2 { font-size: 26px; }
+    .icon-button { border-radius: 3px; }
+    .dialog-actions button,
+    .contact-link { border-radius: 3px; }
+    .adblock-content { max-width: 560px; }
+    .adblock-content > p { margin-top: 16px; color: var(--muted); font-size: 15px; line-height: 1.6; }
+    .adblock-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .dialog-actions .secondary-dialog-button {
+      border: 1px solid var(--line-strong);
+      background: #fff;
+      color: var(--ink);
+    }
+    .dialog-actions .secondary-dialog-button:hover { border-color: var(--accent); background: var(--accent-soft); }
+    :where(a, button, input, summary):focus-visible {
+      outline: 3px solid rgba(36,87,245,.28);
+      outline-offset: 2px;
+    }
+
+    @media (max-width: 820px) {
+      .app-container { width: calc(100% - 32px); }
+      .header-inner { min-height: 58px; }
+      .brand { font-size: 16px; }
+      .status-full { display: none; }
+      .status-short { display: inline; }
+      .hero { padding: 31px 0 20px; }
+      .hero h1 { font-size: clamp(30px, 9vw, 36px); line-height: 1.12; }
+      .hero-copy { margin-top: 9px; font-size: 15px; }
+      .source-form { grid-template-columns: 1fr; gap: 9px; margin-top: 20px; }
+      .download-settings { align-items: stretch; flex-direction: column; gap: 4px; }
+      .download-settings label { width: 100%; }
+      .download-settings .hint { margin: 0; }
+      .url-control input,
+      .primary-button { min-height: 52px; }
+      .primary-button { width: 100%; }
+      .trust-line { align-items: flex-start; margin-top: 13px; font-size: 12px; }
+      .workspace { padding: 18px 0 24px; }
+      .workspace-empty { min-height: 300px; padding: 32px 20px; }
+      .workspace-layout { grid-template-columns: 1fr; gap: 16px; }
+      .workspace-heading { align-items: flex-start; flex-direction: column; gap: 4px; }
+      .workspace-status { min-height: 26px; }
+      .video-stage { aspect-ratio: 4 / 3; }
+      .workspace-panel { padding: 18px; }
+      .media-meta,
+      .media-meta[data-kind="image"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .source-summary-heading,
+      .result { display: block; }
+      .download-actions { width: 100%; }
+      .download-link { width: 100%; }
+      .action-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .export-grid { grid-template-columns: 1fr; }
+      .export-submit { grid-column: 1; }
+      .house-ad { align-items: center; flex-direction: row; gap: 12px; }
+      .house-ad > div { min-width: 0; }
+      .house-ad strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .house-ad button { width: auto; white-space: nowrap; }
+      .footer-inner { align-items: flex-start; flex-direction: column; gap: 12px; padding-block: 20px; }
+      .footer-actions { width: 100%; flex-wrap: wrap; justify-content: flex-start; gap: 8px 18px; }
+      .footer-actions .danger-button { flex-basis: 100%; }
+      .adblock-actions { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 430px) {
+      .header-inner { min-height: 56px; }
+      .hero { padding-top: 27px; }
+      .hero h1 { font-size: 31px; }
+      .url-control input { padding-left: 45px; font-size: 14px; }
+      .url-control > svg { left: 15px; }
+      .workspace-empty { min-height: 285px; }
+      .workspace h2 { font-size: 17px; }
+      .workspace-empty p { font-size: 13px; }
+      .frame-controls { grid-template-columns: 38px minmax(64px, 1fr) 38px minmax(78px, 94px) 38px; gap: 6px; }
+      .action-grid { gap: 5px; }
+      .choice-button { padding-inline: 5px; }
+      .choice-button strong { font-size: 11px; }
+      .house-ad { min-height: 52px; }
+      .ad-label { display: none; }
+      .dialog-body { padding: 20px; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
@@ -1080,19 +1488,10 @@ HTML = """<!doctype html>
 <body>
   <header class="site-header">
     <div class="header-inner app-container">
-      <div class="brand" aria-label="Video Enhancer home">
-        <svg class="brand-mark" viewBox="0 0 44 44" aria-hidden="true">
-          <path d="M9 5.5 36 22 9 38.5Z" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linejoin="round"/>
-          <path d="m16 15 12 7-12 7Z" fill="currentColor"/>
-        </svg>
-        <span>Video <strong>Enhancer</strong></span>
+      <div class="brand" aria-label="Image and Video Downloader home">
+        <span>Media <strong>Downloader</strong></span>
       </div>
       <div class="header-actions">
-        <nav class="legal-nav" aria-label="Legal information">
-          <button class="header-link" type="button" data-dialog="contact-dialog">Contact</button>
-          <button class="header-link" type="button" data-dialog="privacy-dialog">Privacy</button>
-          <button class="header-link" type="button" data-dialog="terms-dialog">Terms</button>
-        </nav>
         <div class="engine-status" id="ffmpeg-status" aria-live="polite">
           <span class="status-dot" aria-hidden="true"></span>
           <span class="status-full">Checking local engine...</span>
@@ -1104,156 +1503,202 @@ HTML = """<!doctype html>
 
   <main>
     <section class="hero app-container" aria-labelledby="hero-title">
-      <h1 id="hero-title">Paste a video link.<br>Keep the files.</h1>
-      <p class="hero-copy">Fetch the best available public source to this device.<br> Create optional 60 FPS, 90 FPS, or 2&times; versions locally.</p>
+      <h1 id="hero-title">Image &amp; video downloader</h1>
+      <p class="hero-copy">Paste a public post to preview and download its media.</p>
       <form class="source-form" id="source-form">
-        <label class="sr-only" for="source-url">Video URL</label>
+        <label class="sr-only" for="source-url">Image or video URL</label>
         <div class="url-control">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.4 13.6a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.7 1.7M13.6 10.4a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.7-1.7"/></svg>
-          <input id="source-url" type="url" inputmode="url" autocomplete="url" placeholder="https://www.example.com/video" aria-describedby="url-help" required>
+          <input id="source-url" type="url" inputmode="url" autocomplete="url" placeholder="Paste a VSCO, Instagram, TikTok or Facebook link" aria-describedby="url-help source-error" required>
         </div>
         <button class="primary-button" id="download-original" type="submit">
-          Get best available source
+          Download media
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
         </button>
+        <div class="download-settings">
+          <label for="source-quality-select">Video source quality
+            <select id="source-quality-select">
+              <option value="best">Best available</option>
+              <option value="8k">Up to 8K (4320p)</option>
+              <option value="4k">Up to 4K (2160p)</option>
+              <option value="1440p">Up to QHD (1440p)</option>
+              <option value="1080p">Up to Full HD (1080p)</option>
+              <option value="720p">Up to HD (720p)</option>
+              <option value="480p">Up to 480p</option>
+            </select>
+          </label>
+          <p class="hint">For videos, uses the best source at or below your limit. Images stay at the original resolution exposed by the platform.</p>
+        </div>
+        <label class="terms-acceptance" for="terms-accepted">
+          <input id="terms-accepted" type="checkbox" required>
+          <span>I accept the Terms of Use and confirm that I have read the Privacy Notice.</span>
+        </label>
+        <div class="policy-links" aria-label="Legal information">
+          <button type="button" data-dialog="terms-dialog">Read Terms of Use</button>
+          <button type="button" data-dialog="privacy-dialog">Read Privacy Notice</button>
+        </div>
       </form>
-      <p class="rights-note" id="url-help">Public TikTok and Instagram links only. Use content you own or are allowed to download.</p>
-      <p class="trust-line">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4.5 6v5.5c0 4.7 3.2 7.9 7.5 9.5 4.3-1.6 7.5-4.8 7.5-9.5V6L12 3Z"/><path d="m8.8 12 2 2 4.5-4.5"/></svg>
-        No account. No operator cloud. Temporary processing stays on this device.
-      </p>
       <p class="source-error" id="source-error" role="alert" aria-live="assertive"></p>
+      <p class="trust-line" id="url-help">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4.5 6v5.5c0 4.7 3.2 7.9 7.5 9.5 4.3-1.6 7.5-4.8 7.5-9.5V6L12 3Z"/><path d="m8.8 12 2 2 4.5-4.5"/></svg>
+        <span>Supports VSCO, Instagram, TikTok and Facebook <span aria-hidden="true">&middot;</span> Optional enhancement runs locally only after confirmation</span>
+      </p>
     </section>
 
-    <aside class="house-ad app-container" aria-label="Advertisement">
-      <div>
-        <span class="ad-label">Advertisement</span>
-        <strong>Sponsor Video Enhancer</strong>
-        <p>Reach creators who work with social video through a direct, tracking-free placement.</p>
-      </div>
-      <button type="button" data-dialog="contact-dialog">Advertise here</button>
-    </aside>
-
-    <section class="workspace app-container" aria-labelledby="workspace-title">
+    <section class="workspace app-container" aria-label="Media workspace">
       <div class="workspace-empty" id="workspace-empty">
-        <h2 id="workspace-title">Your workspace</h2>
-        <p>Paste a link above to load the source, choose an enhancement, and download the result.</p>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.4 13.6a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.7 1.7M13.6 10.4a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.7-1.7"/></svg>
+        <h2>Paste a supported link</h2>
+        <p>Your image or video will appear here to preview and download.</p>
       </div>
 
       <div class="workspace-active" id="workspace-active" hidden>
         <div class="workspace-heading">
-          <div>
-            <h2>Preview &amp; enhance</h2>
-            <p>Compare the original with a locally generated copy.</p>
-          </div>
+          <h2>Downloaded media</h2>
           <div class="workspace-status"><span class="status-dot" aria-hidden="true"></span><span id="workspace-status" aria-live="polite">Ready</span></div>
         </div>
 
-        <div class="preview-grid">
-          <article class="video-preview" id="source-player" tabindex="0">
-            <div class="video-title">Original <span class="meta" id="input-meta">Not loaded</span></div>
-            <div class="player-shell" id="source-shell">
-              <div class="video-stage" id="source-stage" data-zoomed="false">
-                <video id="source-video" preload="metadata" playsinline controls></video>
-                <div class="video-empty" id="source-empty">Fetching the best available source...</div>
+        <div class="workspace-layout">
+          <div class="preview-grid" id="preview-grid" data-single="false">
+            <article class="video-preview" id="source-player">
+              <div class="video-title">Source <span class="meta" id="input-meta">Not loaded</span></div>
+              <div class="player-shell" id="source-shell">
+                <div class="video-stage" id="source-stage" data-zoomed="false">
+                  <video id="source-video" preload="metadata" playsinline controls></video>
+                  <img id="source-image" alt="Downloaded source preview" hidden>
+                  <div class="video-empty" id="source-empty">Fetching the best available source...</div>
+                </div>
+                <details class="advanced-controls" id="source-advanced">
+                  <summary>Playback controls</summary>
+                  <div class="frame-controls" id="source-frame-controls" role="group" aria-label="Frame controls for original">
+                    <button id="source-previous-frame" type="button" aria-label="Previous frame" title="Previous frame" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg></button>
+                    <button id="source-one-fps" type="button" aria-label="Play one frame per second" title="Play one frame per second" aria-pressed="false" disabled>1 FPS</button>
+                    <button id="source-next-frame" type="button" aria-label="Next frame" title="Next frame" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 7 5 5-5 5"/></svg></button>
+                    <label class="frame-fps"><span>Step FPS</span><input id="source-frame-fps" type="number" min="1" max="240" step="0.001" value="30" aria-label="Frames per second for original" disabled></label>
+                    <button id="source-fullscreen" type="button" aria-label="Fullscreen with frame controls" title="Fullscreen" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M8 20H4v-4m12 4h4v-4"/></svg></button>
+                  </div>
+                  <div class="zoom-controls" role="group" aria-label="Zoom controls for original">
+                    <button id="source-zoom-out" type="button" aria-label="Zoom out" title="Zoom out" disabled>&minus;</button>
+                    <input id="source-zoom" type="range" min="1" max="8" step="0.1" value="1" aria-label="Zoom level for original" disabled>
+                    <button id="source-zoom-in" type="button" aria-label="Zoom in" title="Zoom in" disabled>+</button>
+                    <button id="source-zoom-reset" type="button" aria-label="Reset zoom" title="Reset zoom" disabled>1&times;</button>
+                  </div>
+                </details>
               </div>
-              <details class="advanced-controls">
-                <summary>Advanced comparison controls</summary>
-                <div class="frame-controls" id="source-frame-controls" role="group" aria-label="Frame controls for original">
-                  <button id="source-previous-frame" type="button" aria-label="Previous frame" title="Previous frame" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg></button>
-                  <button id="source-one-fps" type="button" aria-label="Play one frame per second" title="Play one frame per second" aria-pressed="false" disabled>1 FPS</button>
-                  <button id="source-next-frame" type="button" aria-label="Next frame" title="Next frame" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 7 5 5-5 5"/></svg></button>
-                  <label class="frame-fps"><span>Step FPS</span><input id="source-frame-fps" type="number" min="1" max="240" step="0.001" value="30" aria-label="Frames per second for original" disabled></label>
-                  <button id="source-fullscreen" type="button" aria-label="Fullscreen with frame controls" title="Fullscreen" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M8 20H4v-4m12 4h4v-4"/></svg></button>
-                </div>
-                <div class="zoom-controls" role="group" aria-label="Zoom controls for original">
-                  <button id="source-zoom-out" type="button" aria-label="Zoom out" title="Zoom out" disabled>&minus;</button>
-                  <input id="source-zoom" type="range" min="1" max="8" step="0.1" value="1" aria-label="Zoom level for original" disabled>
-                  <button id="source-zoom-in" type="button" aria-label="Zoom in" title="Zoom in" disabled>+</button>
-                  <button id="source-zoom-reset" type="button" aria-label="Reset zoom" title="Reset zoom" disabled>1&times;</button>
-                </div>
-              </details>
-            </div>
-          </article>
+            </article>
 
-          <article class="video-preview" id="output-player" tabindex="0">
-            <div class="video-title">Enhanced <span class="meta" id="output-meta">Not started</span></div>
-            <div class="player-shell" id="output-shell">
-              <div class="video-stage" id="output-stage" data-zoomed="false">
-                <video id="output-video" preload="metadata" playsinline controls></video>
-                <div class="video-empty" id="output-empty">Choose an enhancement after the source is ready.</div>
+            <article class="video-preview" id="output-player" hidden>
+              <div class="video-title">Processed <span class="meta" id="output-meta">Not started</span></div>
+              <div class="player-shell" id="output-shell">
+                <div class="video-stage" id="output-stage" data-zoomed="false">
+                  <video id="output-video" preload="metadata" playsinline controls></video>
+                  <img id="output-image" alt="Processed GIF preview" hidden>
+                  <div class="video-empty" id="output-empty">Creating the enhanced copy on this device...</div>
+                </div>
+                <details class="advanced-controls" id="output-advanced">
+                  <summary>Playback controls</summary>
+                  <div class="frame-controls" id="output-frame-controls" role="group" aria-label="Frame controls for enhanced copy">
+                    <button id="output-previous-frame" type="button" aria-label="Previous frame" title="Previous frame" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg></button>
+                    <button id="output-one-fps" type="button" aria-label="Play one frame per second" title="Play one frame per second" aria-pressed="false" disabled>1 FPS</button>
+                    <button id="output-next-frame" type="button" aria-label="Next frame" title="Next frame" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 7 5 5-5 5"/></svg></button>
+                    <label class="frame-fps"><span>Step FPS</span><input id="output-frame-fps" type="number" min="1" max="240" step="0.001" value="30" aria-label="Frames per second for enhanced copy" disabled></label>
+                    <button id="output-fullscreen" type="button" aria-label="Fullscreen with frame controls" title="Fullscreen" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M8 20H4v-4m12 4h4v-4"/></svg></button>
+                  </div>
+                  <div class="zoom-controls" role="group" aria-label="Zoom controls for enhanced copy">
+                    <button id="output-zoom-out" type="button" aria-label="Zoom out" title="Zoom out" disabled>&minus;</button>
+                    <input id="output-zoom" type="range" min="1" max="8" step="0.1" value="1" aria-label="Zoom level for enhanced copy" disabled>
+                    <button id="output-zoom-in" type="button" aria-label="Zoom in" title="Zoom in" disabled>+</button>
+                    <button id="output-zoom-reset" type="button" aria-label="Reset zoom" title="Reset zoom" disabled>1&times;</button>
+                  </div>
+                </details>
               </div>
-              <details class="advanced-controls">
-                <summary>Advanced comparison controls</summary>
-                <div class="frame-controls" id="output-frame-controls" role="group" aria-label="Frame controls for enhanced copy">
-                  <button id="output-previous-frame" type="button" aria-label="Previous frame" title="Previous frame" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg></button>
-                  <button id="output-one-fps" type="button" aria-label="Play one frame per second" title="Play one frame per second" aria-pressed="false" disabled>1 FPS</button>
-                  <button id="output-next-frame" type="button" aria-label="Next frame" title="Next frame" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 7 5 5-5 5"/></svg></button>
-                  <label class="frame-fps"><span>Step FPS</span><input id="output-frame-fps" type="number" min="1" max="240" step="0.001" value="30" aria-label="Frames per second for enhanced copy" disabled></label>
-                  <button id="output-fullscreen" type="button" aria-label="Fullscreen with frame controls" title="Fullscreen" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M8 20H4v-4m12 4h4v-4"/></svg></button>
+            </article>
+          </div>
+
+          <div class="workspace-panel">
+            <section class="source-summary" id="source-result" hidden aria-labelledby="source-ready-title">
+              <div class="source-summary-heading">
+                <div>
+                  <span class="quality-label" id="source-ready-title">Source</span>
+                  <strong id="source-result-name"></strong>
+                  <p class="hint" id="source-quality">Original platform stream</p>
                 </div>
-                <div class="zoom-controls" role="group" aria-label="Zoom controls for enhanced copy">
-                  <button id="output-zoom-out" type="button" aria-label="Zoom out" title="Zoom out" disabled>&minus;</button>
-                  <input id="output-zoom" type="range" min="1" max="8" step="0.1" value="1" aria-label="Zoom level for enhanced copy" disabled>
-                  <button id="output-zoom-in" type="button" aria-label="Zoom in" title="Zoom in" disabled>+</button>
-                  <button id="output-zoom-reset" type="button" aria-label="Reset zoom" title="Reset zoom" disabled>1&times;</button>
+              </div>
+              <dl class="media-meta" id="source-media" hidden></dl>
+              <div class="download-actions">
+                <a class="download-link download-primary" id="source-download" href="#" download><span id="source-download-label">Download source</span> <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 20h14"/></svg></a>
+                <a class="download-link" id="source-audio" href="#" download hidden>Download TikTok audio <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 20h14"/></svg></a>
+              </div>
+              <div class="enhancement-actions" id="enhancement-actions">
+                <h3>Enhance video</h3>
+                <p class="hint">Runs on this device after confirmation and may use significant CPU, memory, battery and time.</p>
+                <div class="action-grid">
+                  <button class="choice-button" id="download-60" type="button" disabled><strong>60 FPS</strong></button>
+                  <button class="choice-button" id="download-90" type="button" disabled><strong>90 FPS</strong></button>
+                  <button class="choice-button" id="download-upscale" type="button" disabled><strong>2&times; Upscale</strong></button>
                 </div>
-              </details>
-            </div>
-          </article>
+                <div class="export-actions">
+                  <h3>Convert or trim</h3>
+                  <p class="hint">Creates a separate file locally. Leave the clip fields empty to convert the full video.</p>
+                  <div class="export-grid">
+                    <label for="export-format">Format
+                      <select id="export-format">
+                        <option value="mp4">MP4 video</option>
+                        <option value="mov">MOV video</option>
+                        <option value="avi">AVI video</option>
+                        <option value="mp3">MP3 audio</option>
+                        <option value="aac">AAC audio</option>
+                        <option value="m4a">M4A audio</option>
+                        <option value="wav">WAV audio</option>
+                        <option value="aiff">AIFF audio</option>
+                        <option value="flac">FLAC audio</option>
+                        <option value="wma">WMA audio</option>
+                        <option value="gif">Animated GIF</option>
+                      </select>
+                    </label>
+                    <label for="clip-start">Start (seconds)
+                      <input id="clip-start" type="number" min="0" step="0.1" inputmode="decimal" placeholder="0">
+                    </label>
+                    <label for="clip-end">End (seconds)
+                      <input id="clip-end" type="number" min="0" step="0.1" inputmode="decimal" placeholder="Full length">
+                    </label>
+                    <button class="choice-button export-submit" id="create-export" type="button" disabled><strong>Create local file</strong></button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="result" id="result" hidden aria-labelledby="result-name">
+              <div>
+                <span class="quality-label">Created file</span>
+                <strong id="result-name"></strong>
+                <p class="hint" id="result-path">Enhanced synthetic copy</p>
+              </div>
+              <a class="download-link download-primary" id="download" href="#" download>Download result <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 20h14"/></svg></a>
+            </section>
+          </div>
         </div>
 
-        <section class="source-summary" id="source-result" hidden aria-labelledby="source-ready-title">
-          <div class="source-summary-heading">
-            <div>
-              <span class="quality-label" id="source-ready-title">Source ready</span>
-              <strong id="source-result-name"></strong>
-              <p class="hint" id="source-quality">Original platform stream</p>
-            </div>
-            <a class="download-link" id="source-download" href="#" download>Download source <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 20h14"/></svg></a>
-          </div>
-          <dl class="media-meta" id="source-media" hidden></dl>
-          <div class="enhancement-actions">
-            <h3>Choose an enhancement</h3>
-            <div class="action-grid">
-              <button class="choice-button" id="download-60" type="button" disabled><strong>60 FPS</strong><span>Smoother motion</span></button>
-              <button class="choice-button" id="download-90" type="button" disabled><strong>90 FPS</strong><span>Ultra-smooth motion</span></button>
-              <button class="choice-button" id="download-upscale" type="button" disabled><strong>2&times; Upscale</strong><span>Higher resolution</span></button>
-            </div>
-          </div>
-        </section>
-
-        <section class="result" id="result" hidden aria-labelledby="result-name">
-          <div>
-            <span class="quality-label">Enhanced file ready</span>
-            <strong id="result-name"></strong>
-            <p class="hint" id="result-path">Enhanced synthetic copy</p>
-          </div>
-          <a class="download-link" id="download" href="#" download>Download result <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 20h14"/></svg></a>
-        </section>
-
         <details class="activity-log">
-          <summary>Activity details</summary>
+          <summary>Technical details</summary>
           <pre id="log" aria-live="polite">Ready.</pre>
         </details>
       </div>
     </section>
 
-    <section class="explainer app-container" aria-labelledby="how-title">
-      <div class="steps">
-        <h2 id="how-title">How it works</h2>
-        <ol>
-          <li><span>1</span><div><strong>Load a public link</strong><p>Paste a link to a publicly available video.</p></div></li>
-          <li><span>2</span><div><strong>Choose an enhancement</strong><p>Select 60 FPS, 90 FPS, or 2&times; to process locally.</p></div></li>
-          <li><span>3</span><div><strong>Download your file</strong><p>Save the enhanced file to your device.</p></div></li>
-        </ol>
+    <aside class="house-ad app-container" aria-label="Advertisement">
+      <span class="ad-bait adsbox advertisement" id="ad-bait" aria-hidden="true"></span>
+      <div>
+        <span class="ad-label">Advertisement</span>
+        <strong>Sponsor Media Downloader</strong>
       </div>
-    </section>
+      <button type="button" data-dialog="contact-dialog">Advertise here</button>
+    </aside>
   </main>
 
   <footer class="site-footer">
     <div class="footer-inner app-container">
-      <p>Processing runs through a local app on this device. Working files are temporary and can be cleared at any time.</p>
+      <p>Optional enhancement runs on this device only after confirmation. Working files are temporary and can be cleared at any time.</p>
       <div class="footer-actions">
         <button type="button" data-dialog="contact-dialog">Contact</button>
         <button type="button" data-dialog="privacy-dialog">Privacy</button>
@@ -1266,10 +1711,24 @@ HTML = """<!doctype html>
     </div>
   </footer>
 
+  <dialog id="adblock-dialog" aria-labelledby="adblock-title">
+    <div class="dialog-body adblock-content">
+      <div class="dialog-heading">
+        <div><p class="dialog-kicker">Support the project</p><h2 id="adblock-title">It looks like ads are being blocked</h2></div>
+        <button class="icon-button" type="button" data-close-dialog="adblock-dialog" aria-label="Close ad blocker message">&times;</button>
+      </div>
+      <p>Ads and direct sponsors help keep Media Downloader free. If you want to support the project, allow ads for this local page.</p>
+      <div class="dialog-actions adblock-actions">
+        <button id="retry-adblock" type="button">I&rsquo;ve allowed ads</button>
+        <button class="secondary-dialog-button" type="button" data-close-dialog="adblock-dialog">Continue without ads</button>
+      </div>
+    </div>
+  </dialog>
+
   <dialog id="contact-dialog" aria-labelledby="contact-title">
     <div class="dialog-body policy-content">
       <div class="dialog-heading">
-        <div><p class="dialog-kicker">Public project contact</p><h2 id="contact-title">Contact Video Enhancer</h2></div>
+        <div><p class="dialog-kicker">Public project contact</p><h2 id="contact-title">Contact Media Downloader</h2></div>
         <button class="icon-button" type="button" data-close-dialog="contact-dialog" aria-label="Close contact information">&times;</button>
       </div>
       <section>
@@ -1288,7 +1747,7 @@ HTML = """<!doctype html>
       </section>
       <section>
         <h3>Maintainer</h3>
-        <p>Video Enhancer is maintained publicly by <a href="https://github.com/bjorkepoc" target="_blank" rel="noopener noreferrer">bjorkepoc</a>.</p>
+        <p>Media Downloader is maintained publicly by <a href="https://github.com/bjorkepoc" target="_blank" rel="noopener noreferrer">bjorkepoc</a>.</p>
       </section>
       <div class="dialog-actions"><button type="button" data-close-dialog="contact-dialog">Done</button></div>
     </div>
@@ -1297,17 +1756,18 @@ HTML = """<!doctype html>
   <dialog id="privacy-dialog" aria-labelledby="privacy-title">
     <div class="dialog-body policy-content">
       <div class="dialog-heading">
-        <div><p class="dialog-kicker">Last updated August 7, 2026</p><h2 id="privacy-title">Privacy at a glance</h2></div>
+        <div><p class="dialog-kicker">Last updated August 10, 2026</p><h2 id="privacy-title">Privacy at a glance</h2></div>
         <button class="icon-button" type="button" data-close-dialog="privacy-dialog" aria-label="Close privacy information">&times;</button>
       </div>
       <section>
         <h3>Local processing, no account</h3>
-        <p>Video Enhancer runs through a local app on this device. There is no account, analytics, ad network, or operator-run cloud storage.</p>
-        <p>Submitted links are held in the local app's memory while it is running. Source videos and generated files are written to a temporary folder on this device so they can be processed and previewed.</p>
+        <p>Media Downloader runs through a local app on this device. There is no account, analytics, ad network, or operator-run cloud storage.</p>
+        <p>Submitted links are held in the local app's memory while it is running. Source images, videos, audio, archives, and generated files are written to a temporary folder on this device so they can be processed and previewed.</p>
+        <p>Optional video enhancement starts only after you explicitly confirm it. Enhancement uses this device's processor, memory and battery; source media and the enhanced result are not sent to an operator-run enhancement service.</p>
       </section>
       <section>
         <h3>House advertisement</h3>
-        <p>The app includes a static project notice seeking a direct sponsor. It is bundled with the app and uses no remote creative, cookie, identifier, impression pixel, or click tracking. Opening its contact link takes you to GitHub, which applies its own terms and privacy policy.</p>
+        <p>The app includes a static project notice seeking a direct sponsor. It is bundled with the app and uses no remote creative, cookie, identifier, impression pixel, or click tracking. A local one-pixel marker checks whether an ad blocker hides the placement so the app can show a dismissible support message; the check sends and stores nothing. Opening its contact link takes you to GitHub, which applies its own terms and privacy policy.</p>
       </section>
       <section>
         <h3>Deletion and downloads</h3>
@@ -1315,7 +1775,7 @@ HTML = """<!doctype html>
       </section>
       <section>
         <h3>Source platforms</h3>
-        <p>When you submit a TikTok or Instagram link, this device connects to that platform and its delivery providers. They receive technical request data such as your IP address and apply their own privacy terms. Video Enhancer does not send your link, video, or activity to an operator-run cloud service.</p>
+        <p>When you submit a VSCO, Instagram, TikTok, or Facebook link, this device connects to that platform and its delivery providers. They receive technical request data such as your IP address and apply their own privacy terms. Media Downloader does not send your link, media, or activity to an operator-run cloud service.</p>
       </section>
       <section>
         <h3>Cookies and browser storage</h3>
@@ -1328,36 +1788,68 @@ HTML = """<!doctype html>
   <dialog id="terms-dialog" aria-labelledby="terms-title">
     <div class="dialog-body policy-content">
       <div class="dialog-heading">
-        <div><p class="dialog-kicker">Last updated August 6, 2026</p><h2 id="terms-title">Terms of use</h2></div>
+        <div><p class="dialog-kicker">Last updated August 10, 2026</p><h2 id="terms-title">Terms of use</h2></div>
         <button class="icon-button" type="button" data-close-dialog="terms-dialog" aria-label="Close terms of use">&times;</button>
       </div>
       <section>
         <h3>About this tool</h3>
-        <p>Video Enhancer is a local tool for supported public video links. It does not host, index, publish, recommend, or redistribute videos, and it provides no account or platform access.</p>
+        <p>Media Downloader retrieves media from supported public image and video links. It does not index, publish, recommend, or provide account or platform access. Optional enhancement is initiated by you and runs on your device, not on an operator-run enhancement server.</p>
       </section>
       <section>
         <h3>Your responsibility</h3>
-        <p>Use Video Enhancer only for public content you own or are legally permitted to download and use. Follow applicable law, copyright and privacy rights, and the source platform's terms. Do not use it to access private content, bypass a login or access control, infringe rights, or distribute unlawful content.</p>
+        <p>Use Media Downloader only for public content you own or are legally permitted to download and use. Follow applicable law, copyright and privacy rights, and the source platform's terms. Do not use it to access private content, bypass a login or access control, infringe rights, or distribute unlawful content.</p>
       </section>
       <section>
         <h3>Third-party platforms</h3>
-        <p>TikTok and Instagram are independent services. Video Enhancer is not affiliated with, sponsored by, or approved by them. Platform changes may interrupt support without notice.</p>
+        <p>VSCO, Instagram, TikTok, and Facebook are independent services. Media Downloader is not affiliated with, sponsored by, or approved by them. Platform changes may interrupt support without notice.</p>
       </section>
       <section>
         <h3>Quality and availability</h3>
         <p>The tool is provided as available. It does not guarantee a particular resolution, frame rate, codec, availability, or that a platform will expose a downloadable source. Synthetic enhancement can introduce artifacts.</p>
       </section>
+      <section>
+        <h3>Local resource use</h3>
+        <p>Enhancement may use substantial processor, memory, storage and battery resources and may make your device warm or slow. It starts only after separate confirmation, can be stopped by closing the app, leaves the original unchanged, and creates a separate synthetic copy.</p>
+      </section>
+      <section>
+        <h3>Limits of responsibility</h3>
+        <p>To the fullest extent permitted by applicable law, the operator is not responsible for your selected content, whether you have permission to use it, compliance with third-party platform terms, local device resource use, interruption, unavailable sources, synthetic artifacts, or indirect loss arising from your use of the tool. The tool is provided as available, without guarantees beyond rights that cannot legally be excluded. Nothing in these terms limits mandatory consumer rights or liability that cannot be excluded by law.</p>
+      </section>
       <div class="dialog-actions"><button type="button" data-close-dialog="terms-dialog">Done</button></div>
     </div>
+  </dialog>
+
+  <dialog id="local-processing-dialog" aria-labelledby="local-processing-title">
+    <form class="dialog-body policy-content" id="local-processing-form">
+      <div class="dialog-heading">
+        <div><p class="dialog-kicker">Runs on this device</p><h2 id="local-processing-title">Confirm local processing</h2></div>
+        <button class="icon-button" type="button" data-close-dialog="local-processing-dialog" aria-label="Cancel local processing">&times;</button>
+      </div>
+      <section>
+        <h3>Your device does the work</h3>
+        <p>Conversion, trimming, or enhancement uses your device's processor, memory, storage and battery. It may take time, make the device warm or temporarily reduce performance. The original remains unchanged and the new file stays on this device.</p>
+      </section>
+      <label class="terms-acceptance" for="local-processing-accepted">
+        <input id="local-processing-accepted" type="checkbox" required>
+        <span>I understand and want to start local processing.</span>
+      </label>
+      <div class="dialog-actions">
+        <button class="secondary-dialog-button" type="button" data-close-dialog="local-processing-dialog">Cancel</button>
+        <button type="submit">Start local processing</button>
+      </div>
+    </form>
   </dialog>
 
   <script nonce="__CSP_NONCE__">
     const $ = (id) => document.getElementById(id);
     const sessionToken = new URLSearchParams(window.location.hash.slice(1)).get("token") || "";
+    const TERMS_VERSION = "2026-08-10";
     const state = {
       poll: null,
       sourceId: null,
       outputFps: 30,
+      pendingLocalAction: null,
+      localJobActive: false,
     };
 
     function apiFetch(path, options = {}) {
@@ -1366,9 +1858,10 @@ HTML = """<!doctype html>
       return fetch(path, { ...options, headers });
     }
 
-    function localFileUrl(path, download = false) {
+    async function localFileUrl(path, download = false) {
+      const { token } = await postJSON("/api/files/token", { path });
       const url = new URL(path, window.location.origin);
-      url.searchParams.set("token", sessionToken);
+      url.searchParams.set("token", token);
       if (download) url.searchParams.set("download", "1");
       return `${url.pathname}${url.search}`;
     }
@@ -1621,21 +2114,31 @@ HTML = """<!doctype html>
     }
 
     function setDerivedDisabled(disabled) {
-      ["download-60", "download-90", "download-upscale"].forEach((id) => {
+      ["download-60", "download-90", "download-upscale", "create-export"].forEach((id) => {
         $(id).disabled = disabled;
       });
     }
 
-    $("source-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (!$("source-form").reportValidity()) return;
-      const url = $("source-url").value.trim();
-      state.sourceId = null;
-      $("download-original").disabled = true;
-     $("source-error").textContent = "";
-     $("source-result").hidden = true;
+    function setLocalJobActive(active) {
+      state.localJobActive = active;
+      $("download-original").disabled = active;
+    }
+
+    function showSourceLoading() {
+      $("source-result").hidden = true;
       $("result").hidden = true;
       $("source-media").hidden = true;
+      $("source-audio").hidden = true;
+      $("source-image").hidden = true;
+      $("source-image").removeAttribute("src");
+      $("source-video").hidden = false;
+      $("source-advanced").hidden = false;
+      $("enhancement-actions").hidden = false;
+      $("output-player").hidden = true;
+      $("output-image").hidden = true;
+      $("output-image").removeAttribute("src");
+      $("output-advanced").hidden = false;
+      $("preview-grid").dataset.single = "false";
       $("source-empty").hidden = false;
       $("source-empty").textContent = "Fetching the best available source...";
       $("output-empty").hidden = false;
@@ -1648,33 +2151,54 @@ HTML = """<!doctype html>
       sourceFrames.reset();
       outputFrames.reset();
       showWorkspace(true);
-     setDerivedDisabled(true);
+      setDerivedDisabled(true);
       setLog(["Starting source download..."]);
-     try {
-       const source = await postJSON("/api/sources/download", { url });
-       state.sourceId = source.id;
-       watchSource(source.id).catch(showPollingError);
+    }
+
+    $("source-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (state.localJobActive) return;
+      if (!$("source-form").reportValidity()) return;
+      const url = $("source-url").value.trim();
+      $("download-original").disabled = true;
+      $("source-error").textContent = "";
+      try {
+        const source = await postJSON("/api/sources/download", {
+          url,
+          quality: $("source-quality-select").value,
+          terms_accepted: true,
+          terms_version: TERMS_VERSION,
+        });
+        state.sourceId = source.id;
+        showSourceLoading();
+        watchSource(source.id).catch(showPollingError);
       } catch (error) {
         $("source-error").textContent = error.message;
         $("download-original").disabled = false;
-        showWorkspace(false);
         setLog([error.message]);
       }
-   });
+    });
 
    function mediaValue(value, suffix = "") {
       return value === null || value === undefined ? "Unknown" : `${value}${suffix}`;
    }
 
-   function renderMedia(media) {
-     const values = [
+   function renderMedia(source) {
+     const media = source.media;
+     const size = media.size ? `${(media.size / 1024 / 1024).toFixed(1)} MB` : "Unknown";
+     const values = source.media_type !== "video" ? [
+        ["Type", source.media_type === "archive" ? "Media archive" : source.item_count > 1 ? "Image archive" : "Image"],
+        ["Items", String(source.item_count)],
+        ["Size", size],
+     ] : [
         ["Resolution", media.width && media.height ? `${media.width}x${media.height}` : "Unknown"],
         ["Frame rate", mediaValue(media.fps, " FPS")],
-       ["Video", mediaValue(media.video_codec)],
+        ["Video", mediaValue(media.video_codec)],
         ["Audio", mediaValue(media.audio_codec)],
         ["Bitrate", media.bitrate ? `${Math.round(media.bitrate / 1000)} kbps` : "Unknown"],
-        ["Size", media.size ? `${(media.size / 1024 / 1024).toFixed(1)} MB` : "Unknown"],
+        ["Size", size],
      ];
+      $("source-media").dataset.kind = source.media_type;
       $("source-media").replaceChildren(...values.map(([name, value]) => {
         const box = document.createElement("div");
         const term = document.createElement("dt");
@@ -1696,20 +2220,56 @@ HTML = """<!doctype html>
        setLog(source.logs);
        if (source.status === "done") {
          clearInterval(state.poll);
-         const label = source.operation === "remuxed" ? "Remuxed without video re-encoding" : "Original platform stream";
+         const image = source.preview_type === "image";
+         const archive = source.media_type === "archive";
+         const video = source.media_type === "video";
+         const label = archive
+           ? `${source.item_count} original files`
+           : image
+           ? source.item_count > 1 ? `${source.item_count} original images` : "Original platform image"
+           : source.operation === "remuxed" ? "Remuxed without video re-encoding" : "Original platform stream";
          $("source-quality").textContent = label;
          $("source-result-name").textContent = source.original_name;
-         $("source-download").href = localFileUrl(source.original_url, true);
+         $("source-download").href = await localFileUrl(source.original_url, true);
+         $("source-download-label").textContent = archive
+           ? "Download all media (.zip)"
+           : image
+           ? source.item_count > 1 ? "Download all images (.zip)" : "Download image"
+           : "Download video";
+         if (source.audio_url) {
+           $("source-audio").href = await localFileUrl(source.audio_url, true);
+           $("source-audio").hidden = false;
+         }
          $("source-result").hidden = false;
-         sourceFrames.setFps(source.media.fps);
-         $("source-video").src = localFileUrl(source.original_url);
-         $("source-video").load();
-          $("source-empty").hidden = true;
-         $("input-meta").textContent = `${mediaValue(source.media.width)}x${mediaValue(source.media.height)} · ${mediaValue(source.media.fps, " FPS")}`;
-         renderMedia(source.media);
+         $("preview-grid").dataset.single = String(!video);
+         $("output-player").hidden = true;
+         $("source-advanced").hidden = image;
+         $("enhancement-actions").hidden = !video;
+         $("source-video").hidden = image;
+         $("source-image").hidden = !image;
+         if (image) {
+           sourceFrames.reset();
+           $("source-image").src = await localFileUrl(source.preview_url);
+           $("input-meta").textContent = `${source.item_count} image${source.item_count === 1 ? "" : "s"}`;
+         } else {
+           sourceFrames.setFps(source.media.fps);
+           $("source-video").src = await localFileUrl(source.preview_url);
+           $("source-video").load();
+           $("input-meta").textContent = archive
+             ? `${source.item_count} original files`
+             : `${mediaValue(source.media.width)}x${mediaValue(source.media.height)} · ${mediaValue(source.media.fps, " FPS")}`;
+         }
+         $("source-empty").hidden = true;
+         renderMedia(source);
          $("download-original").disabled = false;
-         setDerivedDisabled(false);
-          $("workspace-status").textContent = "Source ready. Choose an enhancement or download the original.";
+         setDerivedDisabled(!video);
+          $("workspace-status").textContent = archive
+            ? "Media archive ready to download."
+            : image
+            ? "Images ready to download."
+            : source.audio_url
+              ? "Video and TikTok audio ready to download."
+              : "Video ready. Choose an enhancement or download the original.";
        } else if (source.status === "error") {
          clearInterval(state.poll);
          state.sourceId = null;
@@ -1726,31 +2286,102 @@ HTML = """<!doctype html>
      clearInterval(state.poll);
      setLog([error.message]);
       $("source-error").textContent = error.message;
+      $("output-meta").textContent = "Error";
+      $("output-empty").hidden = false;
+      $("output-empty").textContent = error.message;
      $("download-original").disabled = false;
    }
 
    async function startSourceEnhancement(mode) {
      if (!state.sourceId) return;
      state.outputFps = mode === "upscale" ? sourceFrames.fps() : Number(mode);
+     setLocalJobActive(true);
      setDerivedDisabled(true);
      $("result").hidden = true;
+      $("output-player").hidden = false;
       $("output-meta").textContent = "Starting";
       $("output-empty").hidden = false;
       $("output-empty").textContent = "Creating the enhanced copy on this device...";
       $("output-video").removeAttribute("src");
       $("output-video").load();
+      $("output-video").hidden = false;
+      $("output-image").removeAttribute("src");
+      $("output-image").hidden = true;
+      $("output-advanced").hidden = false;
      try {
-        const job = await postJSON(`/api/sources/${state.sourceId}/enhance`, { mode });
-        watchJob(job.id).catch(showPollingError);
+        const job = await postJSON(`/api/sources/${state.sourceId}/enhance`, {
+          mode,
+          local_processing_accepted: true,
+        });
+        watchJob(job.id).catch((error) => {
+          showPollingError(error);
+          setLocalJobActive(false);
+          setDerivedDisabled(false);
+        });
       } catch (error) {
+        setLocalJobActive(false);
         setDerivedDisabled(false);
-        setLog([error.message]);
+        showPollingError(error);
       }
     }
 
-    $("download-60").addEventListener("click", () => startSourceEnhancement("60"));
-   $("download-90").addEventListener("click", () => startSourceEnhancement("90"));
-   $("download-upscale").addEventListener("click", () => startSourceEnhancement("upscale"));
+    async function startSourceExport() {
+      if (!state.sourceId) return;
+      const format = $("export-format").value;
+      const audio = ["mp3", "aac", "m4a", "wav", "aiff", "flac", "wma"].includes(format);
+      const preview = format === "gif" || ["mp4", "m4v", "mov"].includes(format);
+      state.outputFps = format === "gif" ? 15 : sourceFrames.fps();
+      setLocalJobActive(true);
+      setDerivedDisabled(true);
+      $("result").hidden = true;
+      $("output-player").hidden = !preview;
+      $("output-meta").textContent = "Starting";
+      $("output-empty").hidden = false;
+      $("output-empty").textContent = "Creating the converted or trimmed copy on this device...";
+      $("output-video").removeAttribute("src");
+      $("output-video").load();
+      $("output-video").hidden = format === "gif";
+      $("output-image").removeAttribute("src");
+      $("output-image").hidden = true;
+      $("output-advanced").hidden = format === "gif";
+      try {
+        const job = await postJSON(`/api/sources/${state.sourceId}/export`, {
+          format,
+          start: $("clip-start").value,
+          end: $("clip-end").value,
+          local_processing_accepted: true,
+        });
+        watchJob(job.id).catch((error) => {
+          showPollingError(error);
+          setLocalJobActive(false);
+          setDerivedDisabled(false);
+        });
+      } catch (error) {
+        setLocalJobActive(false);
+        setDerivedDisabled(false);
+        showPollingError(error);
+      }
+    }
+
+    function requestLocalProcessing(action) {
+      state.pendingLocalAction = action;
+      $("local-processing-accepted").checked = false;
+      $("local-processing-dialog").showModal();
+    }
+
+    $("local-processing-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!event.currentTarget.reportValidity()) return;
+      const action = state.pendingLocalAction;
+      state.pendingLocalAction = null;
+      $("local-processing-dialog").close();
+      if (action) action();
+    });
+
+    $("download-60").addEventListener("click", () => requestLocalProcessing(() => startSourceEnhancement("60")));
+   $("download-90").addEventListener("click", () => requestLocalProcessing(() => startSourceEnhancement("90")));
+   $("download-upscale").addEventListener("click", () => requestLocalProcessing(() => startSourceEnhancement("upscale")));
+   $("create-export").addEventListener("click", () => requestLocalProcessing(startSourceExport));
 
     async function watchJob(id) {
      clearInterval(state.poll);
@@ -1762,25 +2393,48 @@ HTML = """<!doctype html>
        setLog(job.logs);
        if (job.status === "done") {
          clearInterval(state.poll);
+          setLocalJobActive(false);
           setDerivedDisabled(false);
+         const audio = job.kind === "audio-export";
+         const extension = job.output_name.split(".").pop().toLowerCase();
+         const gif = extension === "gif";
+         const video = ["mp4", "m4v", "mov"].includes(extension);
          $("result").hidden = false;
          $("result-name").textContent = job.output_name;
-         $("result-path").textContent = "Enhanced synthetic copy";
-         $("download").href = localFileUrl(job.output_url, true);
-         outputFrames.setFps(state.outputFps);
-         $("output-video").src = localFileUrl(job.output_url);
-         $("output-video").load();
-          $("output-empty").hidden = true;
-          $("workspace-status").textContent = "Enhanced file ready to download.";
+         $("result-path").textContent = job.kind === "enhancement"
+           ? "Enhanced synthetic copy"
+           : audio ? "Local audio export" : "Local converted or trimmed copy";
+         $("download").href = await localFileUrl(job.output_url, true);
+         $("output-player").hidden = !gif && !video;
+         $("output-video").hidden = !video;
+         $("output-image").hidden = !gif;
+         $("output-advanced").hidden = !video;
+         if (gif) {
+           $("output-image").src = await localFileUrl(job.output_url);
+           $("output-empty").hidden = true;
+         } else if (video) {
+           outputFrames.setFps(state.outputFps);
+           $("output-video").src = await localFileUrl(job.output_url);
+           $("output-video").load();
+           $("output-empty").hidden = true;
+         }
+          $("workspace-status").textContent = audio
+            ? "Audio file ready to download."
+            : job.kind === "enhancement"
+              ? "Enhanced file ready to download."
+              : "Converted or trimmed file ready to download.";
        }
        if (job.status === "error") {
          clearInterval(state.poll);
+          setLocalJobActive(false);
           setDerivedDisabled(false);
           $("output-empty").textContent = job.error || "The enhanced copy could not be created.";
+          $("source-error").textContent = job.error || "The local file could not be created.";
        }
      };
      state.poll = setInterval(() => tick().catch((error) => {
        showPollingError(error);
+        setLocalJobActive(false);
         setDerivedDisabled(false);
      }), 1000);
       await tick();
@@ -1790,15 +2444,32 @@ HTML = """<!doctype html>
      clearInterval(state.poll);
      state.poll = null;
      state.sourceId = null;
+     state.pendingLocalAction = null;
+     setLocalJobActive(false);
      $("source-url").value = "";
      $("source-result").hidden = true;
      $("result").hidden = true;
      $("source-media").hidden = true;
+     $("source-media").removeAttribute("data-kind");
      $("source-error").textContent = "";
       $("input-meta").textContent = "Not loaded";
       $("output-meta").textContent = "Not started";
       $("source-empty").hidden = false;
       $("source-empty").textContent = "Fetching the best available source...";
+      $("source-image").hidden = true;
+      $("source-image").removeAttribute("src");
+      $("source-video").hidden = false;
+      $("source-audio").hidden = true;
+      $("source-audio").removeAttribute("href");
+      $("clip-start").value = "";
+      $("clip-end").value = "";
+      $("source-advanced").hidden = false;
+      $("enhancement-actions").hidden = false;
+      $("output-player").hidden = true;
+      $("output-image").hidden = true;
+      $("output-image").removeAttribute("src");
+      $("output-advanced").hidden = false;
+      $("preview-grid").dataset.single = "false";
       $("output-empty").hidden = false;
       $("output-empty").textContent = "Choose an enhancement after the source is ready.";
      for (const name of ["source", "output"]) {
@@ -1831,6 +2502,19 @@ HTML = """<!doctype html>
     document.querySelectorAll("[data-close-dialog]").forEach((button) => {
       button.addEventListener("click", () => $(button.dataset.closeDialog).close());
     });
+    $("retry-adblock").addEventListener("click", () => window.location.reload());
+    window.requestAnimationFrame(() => {
+      const bait = $("ad-bait");
+      const style = window.getComputedStyle(bait);
+      if (
+        style.display === "none"
+        || style.visibility === "hidden"
+        || bait.offsetWidth === 0
+        || bait.offsetHeight === 0
+      ) {
+        $("adblock-dialog").showModal();
+      }
+    });
 
     loadConfig().catch((error) => {
       setEngineStatus(false, "Local session unavailable");
@@ -1849,6 +2533,7 @@ class Job:
     input_path: Path
     output_path: Path
     command: list[str]
+    kind: str = "enhancement"
     status: str = "queued"
     logs: list[str] = field(default_factory=list)
     error: str = ""
@@ -1862,8 +2547,15 @@ class SourceJob:
     id: str
     url: str
     directory: Path
+    quality: str = "best"
     status: str = "queued"
     original_path: Path | None = None
+    preview_path: Path | None = None
+    audio_path: Path | None = None
+    platform: str = ""
+    media_type: str = ""
+    preview_type: str = ""
+    item_count: int = 0
     media: dict[str, Any] = field(default_factory=dict)
     format_id: str = ""
     operation: str = ""
@@ -1918,7 +2610,7 @@ def clear_session(work_dir: Path, *, force: bool = False) -> None:
         current_thread = threading.current_thread()
         for thread in threads:
             if thread is not current_thread:
-                thread.join()
+                thread.join(timeout=REQUEST_TIMEOUT_SECONDS)
         with LOCK:
             JOBS.clear()
             SOURCES.clear()
@@ -2026,6 +2718,7 @@ def job_payload(job: Job) -> dict[str, Any]:
     return {
         "id": job.id,
         "status": job.status,
+        "kind": job.kind,
         "error": job.error,
         "logs": job.logs,
         "input_name": job.input_path.name,
@@ -2043,12 +2736,26 @@ def source_payload(job: SourceJob) -> dict[str, Any]:
         "media": job.media,
         "format_id": job.format_id,
         "operation": job.operation,
+        "platform": job.platform,
+        "media_type": job.media_type,
+        "preview_type": job.preview_type,
+        "item_count": job.item_count,
+        "quality": job.quality,
     }
     if job.original_path:
         payload.update(
             {
                 "original_name": job.original_path.name,
                 "original_url": f"/files/sources/{job.id}/original",
+            }
+        )
+    if job.preview_path:
+        payload["preview_url"] = f"/files/sources/{job.id}/preview"
+    if job.audio_path:
+        payload.update(
+            {
+                "audio_name": job.audio_path.name,
+                "audio_url": f"/files/sources/{job.id}/audio",
             }
         )
     return payload
@@ -2073,6 +2780,33 @@ def create_enhancement_job(
     params: dict[str, list[str]],
     work_dir: Path,
 ) -> Job:
+    original = safe_filename(original_name)
+    output_name = safe_filename(
+        params.get("output", [f"{Path(original).stem}-enhanced.mp4"])[0],
+        default="enhanced.mp4",
+    )
+    if Path(output_name).suffix.lower() not in {".mp4", ".mkv", ".mov", ".m4v"}:
+        output_name = f"{Path(output_name).stem}.mp4"
+    return _create_local_job(
+        input_path,
+        original,
+        output_name,
+        work_dir,
+        "enhancement",
+        lambda output_path: build_ffmpeg_command(
+            input_path, output_path, build_options(params)
+        ),
+    )
+
+
+def _create_local_job(
+    input_path: Path,
+    original_name: str,
+    output_name: str,
+    work_dir: Path,
+    kind: str,
+    command_builder: Callable[[Path], list[str]],
+) -> Job:
     with LOCK:
         if any(job.status in {"queued", "running"} for job in JOBS.values()):
             raise ValueError("Wait for the active export to finish.")
@@ -2081,29 +2815,20 @@ def create_enhancement_job(
             for source in SOURCES.values()
         ):
             raise ValueError("Wait for the active source download to finish.")
-        original = safe_filename(original_name)
         job_id = uuid.uuid4().hex[:12]
         job_dir = work_dir / job_id
         job_dir.mkdir(parents=True, exist_ok=False)
-        output_name = safe_filename(
-            params.get("output", [f"{Path(original).stem}-enhanced.mp4"])[0],
-            default="enhanced.mp4",
-        )
-        if Path(output_name).suffix.lower() not in {".mp4", ".mkv", ".mov", ".m4v"}:
-            output_name = f"{Path(output_name).stem}.mp4"
         output_path = job_dir / output_name
         try:
-            command = build_ffmpeg_command(
-                input_path, output_path, build_options(params)
-            )
+            command = command_builder(output_path)
         except Exception:
             shutil.rmtree(job_dir, ignore_errors=True)
             raise
         for previous in JOBS.values():
             shutil.rmtree(previous.output_path.parent, ignore_errors=True)
         JOBS.clear()
-        job = Job(job_id, input_path, output_path, command)
-        job.logs.append(f"Loaded {original}.")
+        job = Job(job_id, input_path, output_path, command, kind=kind)
+        job.logs.append(f"Loaded {original_name}.")
         thread = threading.Thread(target=run_job, args=(job,), daemon=True)
         job.thread = thread
         JOBS[job_id] = job
@@ -2116,6 +2841,49 @@ def create_enhancement_job(
     return job
 
 
+def create_export_job(
+    input_path: Path,
+    original_name: str,
+    body: dict[str, Any],
+    work_dir: Path,
+) -> Job:
+    output_format = str(body.get("format", "")).strip().lower()
+    if output_format not in EXPORT_FORMATS:
+        raise ValueError(f"Output format must be one of: {', '.join(EXPORT_FORMATS)}.")
+
+    def seconds(name: str) -> float | None:
+        value = body.get(name)
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Clip {name} must be a number of seconds.") from exc
+
+    start_seconds = seconds("start")
+    end_seconds = seconds("end")
+    original = safe_filename(original_name)
+    output_name = safe_filename(
+        f"{Path(original).stem}-export.{output_format}",
+        default=f"export.{output_format}",
+    )
+    kind = "audio-export" if output_format in AUDIO_EXPORT_FORMATS else "media-export"
+    return _create_local_job(
+        input_path,
+        original,
+        output_name,
+        work_dir,
+        kind,
+        lambda output_path: build_export_command(
+            input_path,
+            output_path,
+            output_format,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+        ),
+    )
+
+
 def run_source_download(job: SourceJob) -> None:
     with LOCK:
         job.status = "downloading"
@@ -2124,7 +2892,9 @@ def run_source_download(job: SourceJob) -> None:
         result = download_source(
             job.url,
             job.directory,
+            quality=job.quality,
             process_callback=lambda process: own_process(job, process),
+            cancel_callback=lambda: job.cancelled,
         )
     except (OSError, SourceError) as exc:
         shutil.rmtree(job.directory, ignore_errors=True)
@@ -2135,6 +2905,12 @@ def run_source_download(job: SourceJob) -> None:
         return
     with LOCK:
         job.original_path = result["path"]
+        job.preview_path = result["preview_path"]
+        job.audio_path = result["audio_path"]
+        job.platform = result["platform"]
+        job.media_type = result["media_type"]
+        job.preview_type = result.get("preview_type", job.media_type)
+        job.item_count = result["item_count"]
         job.media = result["media"]
         job.format_id = result["format_id"]
         job.operation = result["operation"]
@@ -2189,14 +2965,33 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if not token_required:
             return True
+        supplied = self.headers.get(API_TOKEN_HEADER, "")
+        if supplied:
+            if not self.session_token or not secrets.compare_digest(
+                supplied, self.session_token
+            ):
+                self.send_json(HTTPStatus.FORBIDDEN, {"error": "Invalid local session."})
+                return False
+            return True
         query_token = parse_qs(parsed.query).get("token", [""])[0]
-        supplied = self.headers.get(API_TOKEN_HEADER, "") or query_token
-        if not self.session_token or not secrets.compare_digest(
-            supplied, self.session_token
-        ):
+        now = time.monotonic()
+        for key, expiry in list(DOWNLOAD_TOKENS.items()):
+            if expiry <= now:
+                del DOWNLOAD_TOKENS[key]
+        token_key = (query_token, parsed.path)
+        if not DOWNLOAD_TOKENS.get(token_key):
             self.send_json(HTTPStatus.FORBIDDEN, {"error": "Invalid local session."})
             return False
+        DOWNLOAD_TOKENS[token_key] = now + DOWNLOAD_TOKEN_TTL_SECONDS
         return True
+
+    def mint_download_token(self, body: dict[str, Any]) -> dict[str, str]:
+        path = str(body.get("path", ""))
+        if not path.startswith("/files/") or urlparse(path).path != path:
+            raise ValueError("Invalid file path.")
+        token = secrets.token_urlsafe(32)
+        DOWNLOAD_TOKENS[(token, path)] = time.monotonic() + DOWNLOAD_TOKEN_TTL_SECONDS
+        return {"token": token}
 
     def send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -2299,6 +3094,9 @@ class Handler(BaseHTTPRequestHandler):
                 clear_session(self.work_dir)
                 self.send_json(HTTPStatus.OK, {"cleared": True})
                 return
+            if parsed.path == "/api/files/token":
+                self.send_json(HTTPStatus.OK, self.mint_download_token(self.read_json()))
+                return
             if parsed.path == "/api/sources/download":
                 self.send_json(
                     HTTPStatus.ACCEPTED, self.create_source_job(self.read_json())
@@ -2313,11 +3111,23 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND.value)
 
     def create_source_job(self, body: dict[str, Any]) -> dict[str, Any]:
+        if (
+            body.get("terms_accepted") is not True
+            or body.get("terms_version") != TERMS_VERSION
+        ):
+            raise ValueError("Accept the current Terms of Use before downloading media.")
         url = str(body.get("url", "")).strip()
-        validate_social_url(url)
+        platform = validate_social_url(url)
+        quality = validate_download_quality(str(body.get("quality", "best")))
         source_id = uuid.uuid4().hex[:12]
         directory = self.work_dir / f"source-{source_id}"
-        source = SourceJob(source_id, url, directory)
+        source = SourceJob(
+            source_id,
+            url,
+            directory,
+            quality=quality,
+            platform=platform,
+        )
         with LOCK:
             if any(job.status in {"queued", "running"} for job in JOBS.values()):
                 raise ValueError("Wait for the active export to finish.")
@@ -2355,8 +3165,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Source job not found"})
             return
         if action == "enhance":
+            if body.get("local_processing_accepted") is not True:
+                raise ValueError("Confirm local device processing before enhancing.")
             if source.status != "done" or not source.original_path:
                 raise ValueError("Download the original source before enhancing it.")
+            if source.media_type != "video":
+                raise ValueError("Only downloaded videos can be enhanced.")
             mode = str(body.get("mode", "")).strip()
             if mode not in MODES:
                 raise ValueError("Enhancement mode must be 60, 90, or upscale.")
@@ -2371,6 +3185,21 @@ class Handler(BaseHTTPRequestHandler):
             )
             self.send_json(HTTPStatus.ACCEPTED, job_payload(job))
             return
+        if action == "export":
+            if body.get("local_processing_accepted") is not True:
+                raise ValueError("Confirm local device processing before exporting.")
+            if source.status != "done" or not source.original_path:
+                raise ValueError("Download the original source before exporting it.")
+            if source.media_type != "video":
+                raise ValueError("Only downloaded videos can be converted or trimmed.")
+            job = create_export_job(
+                source.original_path,
+                source.original_path.name,
+                body,
+                self.work_dir,
+            )
+            self.send_json(HTTPStatus.ACCEPTED, job_payload(job))
+            return
         self.send_error(HTTPStatus.NOT_FOUND.value)
 
     def serve_source_file(self, request_path: str, *, attachment: bool = False) -> None:
@@ -2380,13 +3209,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         with LOCK:
             source = SOURCES.get(parts[2])
-            if len(parts) == 4 and parts[3] == "original":
-                file = source.original_path if source else None
+            if len(parts) == 4 and source:
+                file = {
+                    "original": source.original_path,
+                    "preview": source.preview_path,
+                    "audio": source.audio_path,
+                }.get(parts[3])
                 content_type = (
-                    "video/mp4"
-                    if file and file.suffix.lower() in {".mp4", ".m4v"}
-                    else "application/octet-stream"
-                )
+                    mimetypes.guess_type(file.name)[0]
+                    if file
+                    else None
+                ) or "application/octet-stream"
             else:
                 file = None
                 content_type = "application/octet-stream"
@@ -2409,11 +3242,12 @@ class Handler(BaseHTTPRequestHandler):
         if not file or not file.is_file() or not file.resolve().is_relative_to(root):
             self.send_error(HTTPStatus.NOT_FOUND.value)
             return
-        content_type = (
-            "video/mp4"
-            if file.suffix.lower() in {".mp4", ".m4v"}
-            else "application/octet-stream"
-        )
+        content_type = {
+            ".avi": "video/x-msvideo",
+            ".gif": "image/gif",
+            ".mov": "video/quicktime",
+        }.get(file.suffix.lower()) or mimetypes.guess_type(file.name)[0]
+        content_type = content_type or "application/octet-stream"
         self.serve_file(file, content_type, attachment=attachment)
 
     def serve_file(
@@ -2469,9 +3303,15 @@ class Handler(BaseHTTPRequestHandler):
             if status is HTTPStatus.PARTIAL_CONTENT:
                 self.send_header("content-range", f"bytes {start}-{end}/{size}")
             disposition = "attachment" if attachment else "inline"
-            self.send_header(
-                "content-disposition", f'{disposition}; filename="{file.name}"'
-            )
+            ascii_name = safe_filename(file.name, default="download")
+            if file.suffix and not Path(ascii_name).suffix:
+                ascii_name = f"download{file.suffix.lower()}"
+            content_disposition = f'{disposition}; filename="{ascii_name}"'
+            if ascii_name != file.name:
+                content_disposition += (
+                    f"; filename*=UTF-8''{quote(file.name, safe='')}"
+                )
+            self.send_header("content-disposition", content_disposition)
             self.end_headers()
             source.seek(start)
             remaining = length

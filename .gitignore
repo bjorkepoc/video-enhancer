@@ -20,6 +20,7 @@ outputs/
 tmp/
 graphify-out/
 .superpowers/
+.wrangler/
 .coverage
 htmlcov/
 *.log

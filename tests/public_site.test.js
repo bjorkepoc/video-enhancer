@@ -230,6 +230,32 @@ test("media endpoint reports upstream failures without echoing internals", async
   }
 });
 
+test("media endpoint returns 400 for permanent client validation errors", async () => {
+  const params = new URLSearchParams({ platform: "tiktok", kind: "bogus", url: "https://v16.tiktokcdn.com/source.mp4" });
+  const request = new Request(`https://site.example/api/media?${params}`, {
+    headers: { origin: "https://site.example", "cf-connecting-ip": "198.51.100.211" },
+  });
+  const response = await mediaRequest({ request });
+  assert.equal(response.status, 400);
+  assert.equal(response.headers.get("retry-after"), null);
+});
+
+test("media proxy cancels an upstream body with the wrong MIME type", async () => {
+  const originalFetch = globalThis.fetch;
+  let cancelled = false;
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array([1])); },
+    cancel() { cancelled = true; },
+  }), { headers: { "content-type": "image/jpeg" } });
+  try {
+    const params = new URLSearchParams({ platform: "tiktok", kind: "video", url: "https://v16.tiktokcdn.com/source.mp4" });
+    await assert.rejects(proxyMedia(new Request(`https://site.example/api/media?${params}`)), /requested media type/);
+    assert.equal(cancelled, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("range proxy forwards the byte range and emits a safe attachment", async () => {
   const originalFetch = globalThis.fetch;
   let upstreamRange;
@@ -350,7 +376,16 @@ test("local processor lock is released by failed loads and cleared only by the o
   const source = await readFile(new URL("../public-site/local-processor.js", import.meta.url), "utf8");
   assert.match(source, /let ffmpeg;\n  try \{\n    ffmpeg = await loadLocalProcessor/);
   assert.match(source, /if \(token !== runToken\) throw new Error\("The local processing job was cancelled\."\);/);
-  assert.doesNotMatch(source, /terminateLocalProcessor[\s\S]*?running = false;/);
+  assert.match(source, /if \(token === runToken\) \{[\s\S]*?running = false;/);
+  assert.match(source, /terminateLocalProcessor\(\)[\s\S]*?runToken \+= 1;\n  running = false;/);
+});
+
+test("stale local-processing callbacks cannot update a replacement source", async () => {
+  const source = await readFile(new URL("../public-site/app.js", import.meta.url), "utf8");
+  assert.match(source, /function resetMedia\(\) \{\n  terminateLocalProcessor\(\);/);
+  assert.match(source, /onProgress: \(ratio\) => \{\n\s+if \(gen !== state\.gen\) return;/);
+  assert.match(source, /onStatus: \(message\) => \{\n\s+if \(gen === state\.gen\)/);
+  assert.match(source, /finally \{\n\s+if \(gen === state\.gen\)/);
 });
 
 test("local processing always releases its lock and temporary files", async () => {

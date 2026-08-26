@@ -716,9 +716,15 @@ export async function proxyMedia(request) {
   const kind = requestUrl.searchParams.get("kind") || "";
   const source = requestUrl.searchParams.get("url") || "";
   const sourcePage = requestUrl.searchParams.get("source") || "";
-  if (!new Set(["video", "audio", "image"]).has(kind)) throw new Error("Unknown media type.");
-  validateMediaUrl(source, platform);
-  if (sourcePage && validateSourceUrl(sourcePage).platform !== platform) throw new Error("The media source platform does not match.");
+  if (!new Set(["video", "audio", "image"]).has(kind)) return json({ error: "Unknown media type." }, 400);
+  try {
+    validateMediaUrl(source, platform);
+    if (sourcePage && validateSourceUrl(sourcePage).platform !== platform) {
+      return json({ error: "The media source platform does not match." }, 400);
+    }
+  } catch {
+    return json({ error: "Invalid media request." }, 400);
+  }
 
   const range = request.headers.get("range");
   if (range) {
@@ -744,6 +750,13 @@ export async function proxyMedia(request) {
     return json({ error: "This source file exceeds the public streaming limit." }, 413);
   }
 
+  let contentType;
+  try {
+    contentType = contentTypeFor(kind, response.headers.get("content-type"));
+  } catch (error) {
+    await response.body?.cancel();
+    throw error;
+  }
   const filename = safeFilename(requestUrl.searchParams.get("name"), `source.${extensionFor(source, kind)}`);
   const disposition = requestUrl.searchParams.get("download") === "1" ? "attachment" : "inline";
   const headers = new Headers({
@@ -751,7 +764,7 @@ export async function proxyMedia(request) {
     "access-control-allow-origin": new URL(request.url).origin,
     "cache-control": "private, no-store",
     "content-disposition": `${disposition}; filename="${filename}"`,
-    "content-type": contentTypeFor(kind, response.headers.get("content-type")),
+    "content-type": contentType,
     "referrer-policy": "no-referrer",
     "x-content-type-options": "nosniff",
   });

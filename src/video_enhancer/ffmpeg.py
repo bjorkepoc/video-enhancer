@@ -7,7 +7,7 @@ import os
 import shlex
 import shutil
 import subprocess
-import tempfile
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +18,7 @@ MAX_SCALE_FACTOR = 2.0
 MAX_TARGET_FPS = 240
 ENHANCEMENT_TIMEOUT_SECONDS = 6 * 60 * 60
 MAX_FFMPEG_DIAGNOSTIC_MEMORY_BYTES = 64 * 1024
+MAX_FFMPEG_ERROR_TAIL_BYTES = 2000
 SUPPORTED_VIDEO_CODECS = ("libx264", "libx265")
 EXPORT_FORMATS = (
     "mp4",
@@ -325,34 +326,59 @@ def run_ffmpeg(command: Sequence[str]) -> None:
         except OSError:
             pass
 
-    with tempfile.SpooledTemporaryFile(
-        max_size=MAX_FFMPEG_DIAGNOSTIC_MEMORY_BYTES
-    ) as diagnostics:
-        try:
-            completed = subprocess.run(
-                command,
-                check=False,
-                timeout=ENHANCEMENT_TIMEOUT_SECONDS,
-                stdout=subprocess.DEVNULL,
-                stderr=diagnostics,
-            )
-        except FileNotFoundError as exc:
-            raise FFmpegNotFoundError(
-                "FFmpeg was not found while starting the process. Install FFmpeg and ensure "
-                "'ffmpeg' is on PATH, or pass --ffmpeg with the full path to the executable."
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            discard_partial_output()
-            raise FFmpegExecutionError("FFmpeg exceeded the six-hour time limit.") from exc
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise FFmpegNotFoundError(
+            "FFmpeg was not found while starting the process. Install FFmpeg and ensure "
+            "'ffmpeg' is on PATH, or pass --ffmpeg with the full path to the executable."
+        ) from exc
 
-        if completed.returncode != 0:
-            discard_partial_output()
-            diagnostics.seek(max(0, diagnostics.tell() - 2000))
-            stderr_tail = diagnostics.read().decode("utf-8", "replace").strip()
-            detail = f": {stderr_tail}" if stderr_tail else ""
-            raise FFmpegExecutionError(
-                f"FFmpeg failed with exit code {completed.returncode}{detail}."
-            )
+    if process.stderr is None:
+        process.kill()
+        process.wait()
+        raise FFmpegExecutionError("FFmpeg diagnostics could not be captured.")
+
+    stderr_tail = bytearray()
+
+    def drain_stderr() -> None:
+        try:
+            while chunk := process.stderr.read(MAX_FFMPEG_DIAGNOSTIC_MEMORY_BYTES):
+                stderr_tail.extend(chunk)
+                if len(stderr_tail) > MAX_FFMPEG_ERROR_TAIL_BYTES:
+                    del stderr_tail[:-MAX_FFMPEG_ERROR_TAIL_BYTES]
+        finally:
+            process.stderr.close()
+
+    reader = threading.Thread(target=drain_stderr, daemon=True)
+    reader.start()
+    try:
+        return_code = process.wait(timeout=ENHANCEMENT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        process.wait()
+        reader.join()
+        discard_partial_output()
+        raise FFmpegExecutionError("FFmpeg exceeded the six-hour time limit.") from exc
+    except BaseException:
+        process.kill()
+        process.wait()
+        reader.join()
+        discard_partial_output()
+        raise
+    reader.join()
+
+    if return_code != 0:
+        discard_partial_output()
+        detail_text = stderr_tail.decode("utf-8", "replace").strip()
+        detail = f": {detail_text}" if detail_text else ""
+        raise FFmpegExecutionError(
+            f"FFmpeg failed with exit code {return_code}{detail}."
+        )
 
 
 def enhance_video(

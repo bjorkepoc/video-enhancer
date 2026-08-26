@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import shlex
-import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -276,34 +275,22 @@ def test_invalid_fps_is_rejected(tmp_path: Path, bad_fps: int) -> None:
         _build(tmp_path, fps=bad_fps)
 
 
-def test_run_ffmpeg_has_a_runtime_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[Sequence[str], dict[str, object]]] = []
+def test_run_ffmpeg_has_a_runtime_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ffmpeg, "ENHANCEMENT_TIMEOUT_SECONDS", 0.01)
+    output = tmp_path / "partial.mp4"
+    output.write_bytes(b"partial")
 
-    def run(
-        command: Sequence[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        calls.append((command, kwargs))
-        assert hasattr(kwargs["stderr"], "fileno")
-        return subprocess.CompletedProcess(command, 0)
-
-    monkeypatch.setattr(ffmpeg.subprocess, "run", run)
-
-    ffmpeg.run_ffmpeg(["ffmpeg"])
-
-    assert calls == [
-        (
-            ["ffmpeg"],
-            {
-                "check": False,
-                "timeout": ffmpeg.ENHANCEMENT_TIMEOUT_SECONDS,
-                "stdout": subprocess.DEVNULL,
-                "stderr": calls[0][1]["stderr"],
-            },
+    with pytest.raises(FFmpegExecutionError, match="six-hour"):
+        ffmpeg.run_ffmpeg(
+            [sys.executable, "-c", "import time; time.sleep(10)", str(output)]
         )
-    ]
+
+    assert not output.exists()
 
 
-def test_run_ffmpeg_spools_large_diagnostics_and_reports_only_the_tail(
+def test_run_ffmpeg_bounds_large_diagnostics_and_reports_only_the_tail(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "partial.mp4"
@@ -311,7 +298,7 @@ def test_run_ffmpeg_spools_large_diagnostics_and_reports_only_the_tail(
     command = [
         sys.executable,
         "-c",
-        "import sys;sys.stderr.write('x'*131072+'final diagnostic');sys.exit(1)",
+        "import sys;sys.stderr.write('x'*(2*1024*1024)+'final diagnostic');sys.exit(1)",
         str(output),
     ]
 
@@ -321,18 +308,6 @@ def test_run_ffmpeg_spools_large_diagnostics_and_reports_only_the_tail(
     assert "final diagnostic" in str(failure.value)
     assert len(str(failure.value)) < 2100
     assert not output.exists()
-
-
-def test_run_ffmpeg_reports_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    def run(
-        command: Sequence[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
-
-    monkeypatch.setattr(ffmpeg.subprocess, "run", run)
-
-    with pytest.raises(FFmpegExecutionError, match="six-hour"):
-        ffmpeg.run_ffmpeg(["ffmpeg"])
 
 
 def test_missing_input_path_is_rejected(tmp_path: Path) -> None:

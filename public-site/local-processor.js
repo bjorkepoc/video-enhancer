@@ -154,12 +154,14 @@ export async function processLocally(source, { mode, filter = "none", onProgress
     onProgress?.(1);
     return { blob: new Blob([output.buffer], { type }), extension: mode === "audio" ? "mp3" : "mp4" };
   } finally {
-    if (token === runToken && ffmpeg) {
-      ffmpeg.off("progress", progressHandler);
-      await ffmpeg.deleteFile("input.media").catch(() => {});
-      await ffmpeg.deleteFile(outputName).catch(() => {});
+    if (token === runToken) {
+      if (ffmpeg) {
+        ffmpeg.off("progress", progressHandler);
+        await ffmpeg.deleteFile("input.media").catch(() => {});
+        await ffmpeg.deleteFile(outputName).catch(() => {});
+      }
+      running = false;
     }
-    running = false;
   }
 }
 
@@ -168,4 +170,5 @@ export function terminateLocalProcessor() {
   engine = undefined;
   enginePromise = undefined;
   runToken += 1;
+  running = false;
 }

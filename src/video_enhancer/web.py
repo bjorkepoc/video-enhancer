@@ -53,7 +53,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_JSON_BODY = 20_000
 REQUEST_TIMEOUT_SECONDS = 60
-DOWNLOAD_TOKEN_TTL_SECONDS = 300
+DOWNLOAD_TOKEN_TTL_SECONDS = 12 * 60 * 60
 DOWNLOAD_TOKENS: dict[tuple[str, str], float] = {}
 API_TOKEN_HEADER = "x-video-enhancer-token"  # nosec B105
 TERMS_VERSION = "2026-08-10"
@@ -2978,9 +2978,11 @@ class Handler(BaseHTTPRequestHandler):
         for key, expiry in list(DOWNLOAD_TOKENS.items()):
             if expiry <= now:
                 del DOWNLOAD_TOKENS[key]
-        if not DOWNLOAD_TOKENS.get((query_token, parsed.path)):
+        token_key = (query_token, parsed.path)
+        if not DOWNLOAD_TOKENS.get(token_key):
             self.send_json(HTTPStatus.FORBIDDEN, {"error": "Invalid local session."})
             return False
+        DOWNLOAD_TOKENS[token_key] = now + DOWNLOAD_TOKEN_TTL_SECONDS
         return True
 
     def mint_download_token(self, body: dict[str, Any]) -> dict[str, str]:

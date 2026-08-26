@@ -45,9 +45,11 @@ LOCAL_PROCESSING_ACCEPTED = {"local_processing_accepted": True}
 def reset_job_state() -> Iterator[None]:
     JOBS.clear()
     SOURCES.clear()
+    web.DOWNLOAD_TOKENS.clear()
     yield
     JOBS.clear()
     SOURCES.clear()
+    web.DOWNLOAD_TOKENS.clear()
 
 
 @contextmanager
@@ -564,6 +566,34 @@ def test_download_query_serves_a_physical_attachment(tmp_path: Path) -> None:
             urlopen(f"{base}/files/sources/source1/original?token={TOKEN}")
 
     assert error.value.code == 403
+
+
+def test_media_token_survives_a_delayed_range_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = tmp_path / "source-source1" / "original.mp4"
+    original.parent.mkdir()
+    original.write_bytes(b"0123456789")
+    source = SourceJob("source1", "https://tiktok.com/x", original.parent)
+    source.original_path = original
+    clock = [100.0]
+    monkeypatch.setattr(web.time, "monotonic", lambda: clock[0])
+
+    with running_server(tmp_path) as base:
+        SOURCES[source.id] = source
+        _, payload = post_json(
+            base,
+            "/api/files/token",
+            {"path": "/files/sources/source1/original"},
+        )
+        clock[0] += 301
+        request = Request(
+            f"{base}/files/sources/source1/original?token={payload['token']}",
+            headers={"Range": "bytes=5-"},
+        )
+        with urlopen(request) as response:
+            assert response.status == 206
+            assert response.read() == b"56789"
 
 
 def test_source_routes_encode_unicode_filenames(tmp_path: Path) -> None:

@@ -31,7 +31,12 @@ function formatBytes(value) {
 }
 
 function resetMedia() {
+  terminateLocalProcessor();
   state.gen += 1;
+  document.querySelectorAll("[data-mode]").forEach((control) => {
+    control.disabled = false;
+    if (control.dataset.idleLabel) control.textContent = control.dataset.idleLabel;
+  });
   clearInterval(state.oneFpsTimer);
   state.oneFpsTimer = null;
   $("one-fps").setAttribute("aria-pressed", "false");
@@ -280,6 +285,7 @@ async function runEnhancement(mode, button) {
   const controls = [...document.querySelectorAll("[data-mode]")];
   controls.forEach((control) => { control.disabled = true; });
   const originalLabel = button.textContent;
+  button.dataset.idleLabel = originalLabel;
   button.textContent = "Working…";
   const filter = document.querySelector('input[name="filter"]:checked')?.value || "none";
   $("enhance-progress").value = 0;
@@ -291,11 +297,14 @@ async function runEnhancement(mode, button) {
       mode,
       filter,
       onProgress: (ratio) => {
+        if (gen !== state.gen) return;
         const progress = Math.max(0, Math.min(1, ratio || 0));
         $("enhance-progress").value = progress;
         $("enhance-percent").value = `${Math.round(progress * 100)}%`;
       },
-      onStatus: (message) => { $("enhance-status").textContent = message; },
+      onStatus: (message) => {
+        if (gen === state.gen) $("enhance-status").textContent = message;
+      },
     });
     if (gen !== state.gen || !state.primary) return;
 
@@ -318,10 +327,14 @@ async function runEnhancement(mode, button) {
     $("enhanced-result").hidden = false;
     $("enhance-status").textContent = "Local file ready. It is not saved until you choose Download.";
   } catch (error) {
-    $("enhance-status").textContent = error.message || "Local processing failed.";
+    if (gen === state.gen) {
+      $("enhance-status").textContent = error.message || "Local processing failed.";
+    }
   } finally {
-    button.textContent = originalLabel;
-    controls.forEach((control) => { control.disabled = false; });
+    if (gen === state.gen) {
+      button.textContent = originalLabel;
+      controls.forEach((control) => { control.disabled = false; });
+    }
   }
 }
 

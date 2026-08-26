@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import shlex
 import sys
 from collections.abc import Sequence
@@ -137,7 +138,7 @@ def test_local_export_rejects_non_positive_clip(
 def test_packaged_ffmpeg_override_is_resolved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    packaged = tmp_path / "ffmpeg"
+    packaged = tmp_path / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
     packaged.write_bytes(b"binary")
     packaged.chmod(0o755)
     monkeypatch.setenv("VIDEO_ENHANCER_FFMPEG", str(packaged))
@@ -146,11 +147,28 @@ def test_packaged_ffmpeg_override_is_resolved(
 
 
 def test_resolve_ffmpeg_rejects_non_executable_file(tmp_path: Path) -> None:
-    packaged = tmp_path / "ffmpeg"
+    packaged = tmp_path / ("ffmpeg.txt" if os.name == "nt" else "ffmpeg")
     packaged.write_bytes(b"binary")
 
     with pytest.raises(FFmpegNotFoundError, match="not an executable"):
         resolve_ffmpeg(str(packaged))
+
+
+@pytest.mark.parametrize(
+    ("resolved", "accepted"),
+    [(r"C:\tools\ffmpeg.cmd", False), (r"C:\tools\ffmpeg.EXE", True)],
+)
+def test_windows_path_resolution_requires_exe(
+    monkeypatch: pytest.MonkeyPatch, resolved: str, accepted: bool
+) -> None:
+    monkeypatch.setattr(ffmpeg, "WINDOWS", True)
+    monkeypatch.setattr(ffmpeg.shutil, "which", lambda _: resolved)
+
+    if accepted:
+        assert resolve_ffmpeg("ffmpeg") == resolved
+    else:
+        with pytest.raises(FFmpegNotFoundError):
+            resolve_ffmpeg("ffmpeg")
 
 
 def test_macos_app_uses_bundled_tools(

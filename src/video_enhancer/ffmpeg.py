@@ -34,6 +34,7 @@ EXPORT_FORMATS = (
     "gif",
 )
 AUDIO_EXPORT_FORMATS = frozenset({"mp3", "aac", "m4a", "wav", "aiff", "flac", "wma"})
+WINDOWS = os.name == "nt"
 
 
 class VideoEnhancerError(Exception):
@@ -131,14 +132,19 @@ def resolve_ffmpeg(ffmpeg_path: str = "ffmpeg") -> str:
         ffmpeg_path = os.environ.get("VIDEO_ENHANCER_FFMPEG", ffmpeg_path)
     candidate = Path(ffmpeg_path)
     if candidate.parent != Path(".") and os.path.lexists(candidate):
-        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+        is_executable = (
+            candidate.suffix.lower() == ".exe"
+            if WINDOWS
+            else os.access(candidate, os.X_OK)
+        )
+        if not candidate.is_file() or not is_executable:
             raise FFmpegNotFoundError(
                 f"FFmpeg path is not an executable file: {ffmpeg_path}"
             )
         return str(candidate)
 
     resolved = shutil.which(ffmpeg_path)
-    if resolved:
+    if resolved and (not WINDOWS or Path(resolved).suffix.lower() == ".exe"):
         return resolved
 
     raise FFmpegNotFoundError(

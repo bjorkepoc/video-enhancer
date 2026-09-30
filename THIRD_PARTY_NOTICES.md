@@ -31,3 +31,6 @@ The optional macOS application bundle contains these third-party components:
 
 The complete project source and these build instructions are published with the
 application so recipients can inspect and replace the bundled executables.
+
+The vendored FFmpeg browser wrapper has a local modification to reject pending
+calls and terminate its Worker when a Worker error occurs.

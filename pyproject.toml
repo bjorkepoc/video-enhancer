@@ -49,6 +49,9 @@ video-enhancer-web = "video_enhancer.web:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+video_enhancer = ["web_assets/*.html", "web_assets/*.css", "web_assets/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

@@ -199,7 +199,9 @@ def build_export_command(
         )
     for name, value in (("start", start_seconds), ("end", end_seconds)):
         if value is not None and (not math.isfinite(value) or value < 0):
-            raise ValidationError(f"Clip {name} must be a non-negative number of seconds.")
+            raise ValidationError(
+                f"Clip {name} must be a non-negative number of seconds."
+            )
     if end_seconds is not None and end_seconds <= (start_seconds or 0):
         raise ValidationError("Clip end must be later than clip start.")
 

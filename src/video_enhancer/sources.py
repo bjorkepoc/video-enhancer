@@ -213,8 +213,7 @@ def run_bounded_process(
     if (
         destination
         and max_directory_growth_bytes is not None
-        and _directory_size(destination) - baseline_size
-        > max_directory_growth_bytes
+        and _directory_size(destination) - baseline_size > max_directory_growth_bytes
     ):
         raise SourceError(directory_limit_error)
     return subprocess.CompletedProcess(
@@ -336,9 +335,7 @@ def validate_social_url(raw: str) -> str:
 def validate_download_quality(raw: str) -> str:
     quality = raw.strip().lower()
     if quality not in DOWNLOAD_QUALITIES:
-        raise SourceError(
-            "Quality must be best, 8k, 4k, 1440p, 1080p, 720p, or 480p."
-        )
+        raise SourceError("Quality must be best, 8k, 4k, 1440p, 1080p, 720p, or 480p.")
     return quality
 
 
@@ -576,7 +573,9 @@ def probe_media(
 
     ffmpeg_path = _find_ffmpeg(ffmpeg)
     if not ffmpeg_path:
-        raise SourceError("FFmpeg or ffprobe is required to verify the downloaded file.")
+        raise SourceError(
+            "FFmpeg or ffprobe is required to verify the downloaded file."
+        )
     try:
         completed = run_bounded_process(
             [
@@ -619,9 +618,12 @@ def _looks_like_image_post(platform: str, url: str) -> bool:
     path = urlsplit(url).path.lower()
     return (
         platform == "vsco"
-        or platform == "tiktok" and "/photo/" in path
-        or platform == "instagram" and "/p/" in path
-        or platform == "facebook" and "/photo" in path
+        or platform == "tiktok"
+        and "/photo/" in path
+        or platform == "instagram"
+        and "/p/" in path
+        or platform == "facebook"
+        and "/photo" in path
     )
 
 
@@ -745,12 +747,10 @@ def _package_media(
 
     remuxed = False
     if platform == "facebook" and videos and audio:
-        if (
-            len(videos) != 1
-            or len(audio) != 1
-            or videos[0].stem != audio[0].stem
-        ):
-            raise SourceError("Facebook returned media streams that could not be paired.")
+        if len(videos) != 1 or len(audio) != 1 or videos[0].stem != audio[0].stem:
+            raise SourceError(
+                "Facebook returned media streams that could not be paired."
+            )
         original = videos[0]
         combined = _remux_companion_audio(
             destination, original, audio[0], process_callback
@@ -763,9 +763,7 @@ def _package_media(
 
     item_count = len(media_files)
     preview = media_files[0]
-    preview_type = (
-        "image" if preview.suffix.lower() in IMAGE_EXTENSIONS else "video"
-    )
+    preview_type = "image" if preview.suffix.lower() in IMAGE_EXTENSIONS else "video"
     if item_count == 1:
         path = preview
         operation = "remuxed" if remuxed else "direct"

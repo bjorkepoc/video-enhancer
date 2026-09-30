@@ -10,7 +10,10 @@ test("builds the browser-first Pro site", async () => {
   assert.match(html, /Media Downloader Pro/);
   assert.match(html, /Enhance it on your device/);
   assert.doesNotMatch(html, /Media Downloader Lite|Downloader Lite/);
-  assert.match(html, /https:\/\/media-downloader-pro\.bjorke-poc\.chatgpt\.site/);
+  assert.match(
+    html,
+    /https:\/\/media-downloader-pro\.bjorke-poc\.chatgpt\.site/,
+  );
   assert.doesNotMatch(html, /__SITE_ORIGIN__/);
   assert.deepEqual(JSON.parse(routes).include, ["/api/*"]);
   await Promise.all([

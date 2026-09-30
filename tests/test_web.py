@@ -125,7 +125,7 @@ def test_web_ui_contains_source_first_controls() -> None:
     assert 'id="local-controls"' not in HTML
     assert 'type="file"' not in HTML
     assert 'tabindex="0"' not in HTML
-    assert 'apiFetch(`/api/jobs?' not in HTML
+    assert "apiFetch(`/api/jobs?" not in HTML
     assert "browser-session" not in HTML
     assert "cookies-from-browser" not in HTML
     assert "if (!response.ok) throw new Error(config.error" in HTML
@@ -133,18 +133,18 @@ def test_web_ui_contains_source_first_controls() -> None:
     assert 'id="output-advanced"' in HTML
     assert "if (state.localJobActive) return;" in HTML
     assert "setLocalJobActive(true);" in HTML
-    assert HTML.index('const source = await postJSON("/api/sources/download"') < HTML.index(
-        "showSourceLoading();"
-    )
+    assert HTML.index(
+        'const source = await postJSON("/api/sources/download"'
+    ) < HTML.index("showSourceLoading();")
     assert 'const gif = extension === "gif";' in HTML
     for label in (
         "Original platform stream",
         "Remuxed without video re-encoding",
         "Enhanced synthetic copy",
     ):
-        assert label in HTML
+        assert label in re.sub(r"\s+", " ", HTML)
     for label in ("Privacy at a glance", "Terms of use"):
-        assert label in HTML
+        assert label in re.sub(r"\s+", " ", HTML)
     for label in (
         'aria-label="Advertisement"',
         "Sponsor Media Downloader",
@@ -161,7 +161,8 @@ def test_web_ui_contains_source_first_controls() -> None:
         "Optional enhancement runs locally only after confirmation",
         "Nothing in these terms limits mandatory consumer rights",
     ):
-        assert label in HTML
+        assert label in re.sub(r"\s+", " ", HTML)
+
     class ResourceAuditParser(HTMLParser):
         def __init__(self) -> None:
             super().__init__()
@@ -186,8 +187,8 @@ def test_web_ui_contains_source_first_controls() -> None:
                 "formaction",
             ):
                 value = values.get(name) or ""
-                remote = value.lstrip().lower().startswith(
-                    ("http://", "https://", "//")
+                remote = (
+                    value.lstrip().lower().startswith(("http://", "https://", "//"))
                 )
                 if not remote:
                     continue
@@ -207,7 +208,7 @@ def test_web_ui_contains_source_first_controls() -> None:
         rel = set((link.get("rel") or "").lower().split())
         assert {"noopener", "noreferrer"} <= rel
     assert not re.findall(
-        r'''(?:url\(\s*|@import\s+(?:url\(\s*)?)["']?(?:https?:)?//''',
+        r"""(?:url\(\s*|@import\s+(?:url\(\s*)?)["']?(?:https?:)?//""",
         HTML,
         re.IGNORECASE,
     )
@@ -216,11 +217,11 @@ def test_web_ui_contains_source_first_controls() -> None:
     assert 'quality: $("source-quality-select").value' in HTML
     assert "local_processing_accepted: true" in HTML
     assert "Video source quality" in HTML
-    assert "Images stay at the original resolution" in HTML
+    assert "Images stay at the original resolution" in re.sub(r"\s+", " ", HTML)
     assert '$("output-meta").textContent = "Error";' in HTML
     assert '$("output-empty").textContent = error.message;' in HTML
     assert HTML.count("showPollingError(error);") >= 3
-    assert '`/api/sources/${state.sourceId}/export`' in HTML
+    assert "`/api/sources/${state.sourceId}/export`" in HTML
     assert "inspect-source" not in HTML
     assert "compare-candidate" not in HTML
     for marker in (
@@ -231,7 +232,7 @@ def test_web_ui_contains_source_first_controls() -> None:
         'id="output-player" hidden',
         "Technical details",
     ):
-        assert marker in HTML
+        assert re.sub(r"\s+", "", marker) in re.sub(r"\s+", "", HTML)
     assert "How it works" not in HTML
     assert 'id="ad-bait"' in HTML
     assert '$("adblock-dialog").showModal()' in HTML
@@ -247,7 +248,10 @@ def test_web_ui_contains_frame_playback_controls() -> None:
         zoom_label = "original" if player == "source" else "enhanced copy"
         zoom_controls = HTML.index(f'aria-label="Zoom controls for {zoom_label}"')
         assert shell < frame_controls < zoom_controls
-        assert f'<video id="{player}-video" preload="metadata" playsinline controls>' in HTML
+        assert re.search(
+            rf'<video\s+id="{player}-video"\s+preload="metadata"\s+playsinline\s+controls\s*>',
+            HTML,
+        )
         assert f'id="{player}-play"' not in HTML
         for control in (
             f'id="{player}-frame-controls"',
@@ -258,7 +262,7 @@ def test_web_ui_contains_frame_playback_controls() -> None:
         ):
             assert control in HTML
     for label in ("Previous frame", "Play one frame per second", "Next frame"):
-        assert label in HTML
+        assert label in re.sub(r"\s+", " ", HTML)
     assert ".player-shell:fullscreen .frame-controls" in HTML
 
 
@@ -272,7 +276,7 @@ def test_web_ui_wires_focal_zoom_and_physical_downloads() -> None:
         'stage.addEventListener("pointermove"',
         'url.searchParams.set("download", "1")',
     ):
-        assert marker in HTML
+        assert re.sub(r"\s+", "", marker) in re.sub(r"\s+", "", HTML)
 
 
 def test_local_page_has_security_headers_and_no_cookie(tmp_path: Path) -> None:
@@ -372,9 +376,7 @@ def test_serve_treats_sigterm_as_a_clean_shutdown(
 
         def serve_forever(self) -> None:
             handler = next(
-                handler
-                for signum, handler in signal_calls
-                if signum == signal.SIGTERM
+                handler for signum, handler in signal_calls if signum == signal.SIGTERM
             )
             assert callable(handler)
             handler(signal.SIGTERM, None)
@@ -685,7 +687,9 @@ def test_export_from_source_reuses_file_with_format_and_clip(
     source.write_bytes(b"video")
     captured: dict[str, object] = {}
 
-    def build(input_path: Path, output_path: Path, output_format: str, **kwargs: object) -> list[str]:
+    def build(
+        input_path: Path, output_path: Path, output_format: str, **kwargs: object
+    ) -> list[str]:
         captured.update(
             input=input_path,
             output=output_path,
@@ -1227,7 +1231,9 @@ def test_source_enhance_route_rejects_images(tmp_path: Path) -> None:
             )
 
     assert error.value.code == 400
-    assert json.load(error.value) == {"error": "Only downloaded videos can be enhanced."}
+    assert json.load(error.value) == {
+        "error": "Only downloaded videos can be enhanced."
+    }
 
 
 def test_source_enhance_requires_local_processing_confirmation(tmp_path: Path) -> None:

@@ -1,0 +1,923 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Image &amp; Video Downloader</title>
+    <style nonce="__CSP_NONCE__">
+      __PAGE_STYLE__
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner app-container">
+        <div class="brand" aria-label="Image and Video Downloader home">
+          <span>Media <strong>Downloader</strong></span>
+        </div>
+        <div class="header-actions">
+          <div class="engine-status" id="ffmpeg-status" aria-live="polite">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span class="status-full">Checking local engine...</span>
+            <span class="status-short">Local</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero app-container" aria-labelledby="hero-title">
+        <h1 id="hero-title">Image &amp; video downloader</h1>
+        <p class="hero-copy">
+          Paste a public post to preview and download its media.
+        </p>
+        <form class="source-form" id="source-form">
+          <label class="sr-only" for="source-url">Image or video URL</label>
+          <div class="url-control">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M10.4 13.6a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.7 1.7M13.6 10.4a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.7-1.7"
+              />
+            </svg>
+            <input
+              id="source-url"
+              type="url"
+              inputmode="url"
+              autocomplete="url"
+              placeholder="Paste a VSCO, Instagram, TikTok or Facebook link"
+              aria-describedby="url-help source-error"
+              required
+            />
+          </div>
+          <button class="primary-button" id="download-original" type="submit">
+            Download media
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 12h14m-5-5 5 5-5 5" />
+            </svg>
+          </button>
+          <div class="download-settings">
+            <label for="source-quality-select"
+              >Video source quality
+              <select id="source-quality-select">
+                <option value="best">Best available</option>
+                <option value="8k">Up to 8K (4320p)</option>
+                <option value="4k">Up to 4K (2160p)</option>
+                <option value="1440p">Up to QHD (1440p)</option>
+                <option value="1080p">Up to Full HD (1080p)</option>
+                <option value="720p">Up to HD (720p)</option>
+                <option value="480p">Up to 480p</option>
+              </select>
+            </label>
+            <p class="hint">
+              For videos, uses the best source at or below your limit. Images
+              stay at the original resolution exposed by the platform.
+            </p>
+          </div>
+          <label class="terms-acceptance" for="terms-accepted">
+            <input id="terms-accepted" type="checkbox" required />
+            <span
+              >I accept the Terms of Use and confirm that I have read the
+              Privacy Notice.</span
+            >
+          </label>
+          <div class="policy-links" aria-label="Legal information">
+            <button type="button" data-dialog="terms-dialog">
+              Read Terms of Use
+            </button>
+            <button type="button" data-dialog="privacy-dialog">
+              Read Privacy Notice
+            </button>
+          </div>
+        </form>
+        <p
+          class="source-error"
+          id="source-error"
+          role="alert"
+          aria-live="assertive"
+        ></p>
+        <p class="trust-line" id="url-help">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M12 3 4.5 6v5.5c0 4.7 3.2 7.9 7.5 9.5 4.3-1.6 7.5-4.8 7.5-9.5V6L12 3Z"
+            />
+            <path d="m8.8 12 2 2 4.5-4.5" />
+          </svg>
+          <span
+            >Supports VSCO, Instagram, TikTok and Facebook
+            <span aria-hidden="true">&middot;</span> Optional enhancement runs
+            locally only after confirmation</span
+          >
+        </p>
+      </section>
+
+      <section class="workspace app-container" aria-label="Media workspace">
+        <div class="workspace-empty" id="workspace-empty">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M10.4 13.6a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.7 1.7M13.6 10.4a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.7-1.7"
+            />
+          </svg>
+          <h2>Paste a supported link</h2>
+          <p>Your image or video will appear here to preview and download.</p>
+        </div>
+
+        <div class="workspace-active" id="workspace-active" hidden>
+          <div class="workspace-heading">
+            <h2>Downloaded media</h2>
+            <div class="workspace-status">
+              <span class="status-dot" aria-hidden="true"></span
+              ><span id="workspace-status" aria-live="polite">Ready</span>
+            </div>
+          </div>
+
+          <div class="workspace-layout">
+            <div class="preview-grid" id="preview-grid" data-single="false">
+              <article class="video-preview" id="source-player">
+                <div class="video-title">
+                  Source <span class="meta" id="input-meta">Not loaded</span>
+                </div>
+                <div class="player-shell" id="source-shell">
+                  <div
+                    class="video-stage"
+                    id="source-stage"
+                    data-zoomed="false"
+                  >
+                    <video
+                      id="source-video"
+                      preload="metadata"
+                      playsinline
+                      controls
+                    ></video>
+                    <img
+                      id="source-image"
+                      alt="Downloaded source preview"
+                      hidden
+                    />
+                    <div class="video-empty" id="source-empty">
+                      Fetching the best available source...
+                    </div>
+                  </div>
+                  <details class="advanced-controls" id="source-advanced">
+                    <summary>Playback controls</summary>
+                    <div
+                      class="frame-controls"
+                      id="source-frame-controls"
+                      role="group"
+                      aria-label="Frame controls for original"
+                    >
+                      <button
+                        id="source-previous-frame"
+                        type="button"
+                        aria-label="Previous frame"
+                        title="Previous frame"
+                        disabled
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="m14 7-5 5 5 5" />
+                        </svg>
+                      </button>
+                      <button
+                        id="source-one-fps"
+                        type="button"
+                        aria-label="Play one frame per second"
+                        title="Play one frame per second"
+                        aria-pressed="false"
+                        disabled
+                      >
+                        1 FPS
+                      </button>
+                      <button
+                        id="source-next-frame"
+                        type="button"
+                        aria-label="Next frame"
+                        title="Next frame"
+                        disabled
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="m10 7 5 5-5 5" />
+                        </svg>
+                      </button>
+                      <label class="frame-fps"
+                        ><span>Step FPS</span
+                        ><input
+                          id="source-frame-fps"
+                          type="number"
+                          min="1"
+                          max="240"
+                          step="0.001"
+                          value="30"
+                          aria-label="Frames per second for original"
+                          disabled
+                      /></label>
+                      <button
+                        id="source-fullscreen"
+                        type="button"
+                        aria-label="Fullscreen with frame controls"
+                        title="Fullscreen"
+                        disabled
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M8 4H4v4m12-4h4v4M8 20H4v-4m12 4h4v-4" />
+                        </svg>
+                      </button>
+                    </div>
+                    <div
+                      class="zoom-controls"
+                      role="group"
+                      aria-label="Zoom controls for original"
+                    >
+                      <button
+                        id="source-zoom-out"
+                        type="button"
+                        aria-label="Zoom out"
+                        title="Zoom out"
+                        disabled
+                      >
+                        &minus;
+                      </button>
+                      <input
+                        id="source-zoom"
+                        type="range"
+                        min="1"
+                        max="8"
+                        step="0.1"
+                        value="1"
+                        aria-label="Zoom level for original"
+                        disabled
+                      />
+                      <button
+                        id="source-zoom-in"
+                        type="button"
+                        aria-label="Zoom in"
+                        title="Zoom in"
+                        disabled
+                      >
+                        +
+                      </button>
+                      <button
+                        id="source-zoom-reset"
+                        type="button"
+                        aria-label="Reset zoom"
+                        title="Reset zoom"
+                        disabled
+                      >
+                        1&times;
+                      </button>
+                    </div>
+                  </details>
+                </div>
+              </article>
+
+              <article class="video-preview" id="output-player" hidden>
+                <div class="video-title">
+                  Processed
+                  <span class="meta" id="output-meta">Not started</span>
+                </div>
+                <div class="player-shell" id="output-shell">
+                  <div
+                    class="video-stage"
+                    id="output-stage"
+                    data-zoomed="false"
+                  >
+                    <video
+                      id="output-video"
+                      preload="metadata"
+                      playsinline
+                      controls
+                    ></video>
+                    <img id="output-image" alt="Processed GIF preview" hidden />
+                    <div class="video-empty" id="output-empty">
+                      Creating the enhanced copy on this device...
+                    </div>
+                  </div>
+                  <details class="advanced-controls" id="output-advanced">
+                    <summary>Playback controls</summary>
+                    <div
+                      class="frame-controls"
+                      id="output-frame-controls"
+                      role="group"
+                      aria-label="Frame controls for enhanced copy"
+                    >
+                      <button
+                        id="output-previous-frame"
+                        type="button"
+                        aria-label="Previous frame"
+                        title="Previous frame"
+                        disabled
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="m14 7-5 5 5 5" />
+                        </svg>
+                      </button>
+                      <button
+                        id="output-one-fps"
+                        type="button"
+                        aria-label="Play one frame per second"
+                        title="Play one frame per second"
+                        aria-pressed="false"
+                        disabled
+                      >
+                        1 FPS
+                      </button>
+                      <button
+                        id="output-next-frame"
+                        type="button"
+                        aria-label="Next frame"
+                        title="Next frame"
+                        disabled
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="m10 7 5 5-5 5" />
+                        </svg>
+                      </button>
+                      <label class="frame-fps"
+                        ><span>Step FPS</span
+                        ><input
+                          id="output-frame-fps"
+                          type="number"
+                          min="1"
+                          max="240"
+                          step="0.001"
+                          value="30"
+                          aria-label="Frames per second for enhanced copy"
+                          disabled
+                      /></label>
+                      <button
+                        id="output-fullscreen"
+                        type="button"
+                        aria-label="Fullscreen with frame controls"
+                        title="Fullscreen"
+                        disabled
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M8 4H4v4m12-4h4v4M8 20H4v-4m12 4h4v-4" />
+                        </svg>
+                      </button>
+                    </div>
+                    <div
+                      class="zoom-controls"
+                      role="group"
+                      aria-label="Zoom controls for enhanced copy"
+                    >
+                      <button
+                        id="output-zoom-out"
+                        type="button"
+                        aria-label="Zoom out"
+                        title="Zoom out"
+                        disabled
+                      >
+                        &minus;
+                      </button>
+                      <input
+                        id="output-zoom"
+                        type="range"
+                        min="1"
+                        max="8"
+                        step="0.1"
+                        value="1"
+                        aria-label="Zoom level for enhanced copy"
+                        disabled
+                      />
+                      <button
+                        id="output-zoom-in"
+                        type="button"
+                        aria-label="Zoom in"
+                        title="Zoom in"
+                        disabled
+                      >
+                        +
+                      </button>
+                      <button
+                        id="output-zoom-reset"
+                        type="button"
+                        aria-label="Reset zoom"
+                        title="Reset zoom"
+                        disabled
+                      >
+                        1&times;
+                      </button>
+                    </div>
+                  </details>
+                </div>
+              </article>
+            </div>
+
+            <div class="workspace-panel">
+              <section
+                class="source-summary"
+                id="source-result"
+                hidden
+                aria-labelledby="source-ready-title"
+              >
+                <div class="source-summary-heading">
+                  <div>
+                    <span class="quality-label" id="source-ready-title"
+                      >Source</span
+                    >
+                    <strong id="source-result-name"></strong>
+                    <p class="hint" id="source-quality">
+                      Original platform stream
+                    </p>
+                  </div>
+                </div>
+                <dl class="media-meta" id="source-media" hidden></dl>
+                <div class="download-actions">
+                  <a
+                    class="download-link download-primary"
+                    id="source-download"
+                    href="#"
+                    download
+                    ><span id="source-download-label">Download source</span>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 4v11m-4-4 4 4 4-4M5 20h14" /></svg
+                  ></a>
+                  <a
+                    class="download-link"
+                    id="source-audio"
+                    href="#"
+                    download
+                    hidden
+                    >Download TikTok audio
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 4v11m-4-4 4 4 4-4M5 20h14" /></svg
+                  ></a>
+                </div>
+                <div class="enhancement-actions" id="enhancement-actions">
+                  <h3>Enhance video</h3>
+                  <p class="hint">
+                    Runs on this device after confirmation and may use
+                    significant CPU, memory, battery and time.
+                  </p>
+                  <div class="action-grid">
+                    <button
+                      class="choice-button"
+                      id="download-60"
+                      type="button"
+                      disabled
+                    >
+                      <strong>60 FPS</strong>
+                    </button>
+                    <button
+                      class="choice-button"
+                      id="download-90"
+                      type="button"
+                      disabled
+                    >
+                      <strong>90 FPS</strong>
+                    </button>
+                    <button
+                      class="choice-button"
+                      id="download-upscale"
+                      type="button"
+                      disabled
+                    >
+                      <strong>2&times; Upscale</strong>
+                    </button>
+                  </div>
+                  <div class="export-actions">
+                    <h3>Convert or trim</h3>
+                    <p class="hint">
+                      Creates a separate file locally. Leave the clip fields
+                      empty to convert the full video.
+                    </p>
+                    <div class="export-grid">
+                      <label for="export-format"
+                        >Format
+                        <select id="export-format">
+                          <option value="mp4">MP4 video</option>
+                          <option value="mov">MOV video</option>
+                          <option value="avi">AVI video</option>
+                          <option value="mp3">MP3 audio</option>
+                          <option value="aac">AAC audio</option>
+                          <option value="m4a">M4A audio</option>
+                          <option value="wav">WAV audio</option>
+                          <option value="aiff">AIFF audio</option>
+                          <option value="flac">FLAC audio</option>
+                          <option value="wma">WMA audio</option>
+                          <option value="gif">Animated GIF</option>
+                        </select>
+                      </label>
+                      <label for="clip-start"
+                        >Start (seconds)
+                        <input
+                          id="clip-start"
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          inputmode="decimal"
+                          placeholder="0"
+                        />
+                      </label>
+                      <label for="clip-end"
+                        >End (seconds)
+                        <input
+                          id="clip-end"
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          inputmode="decimal"
+                          placeholder="Full length"
+                        />
+                      </label>
+                      <button
+                        class="choice-button export-submit"
+                        id="create-export"
+                        type="button"
+                        disabled
+                      >
+                        <strong>Create local file</strong>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section
+                class="result"
+                id="result"
+                hidden
+                aria-labelledby="result-name"
+              >
+                <div>
+                  <span class="quality-label">Created file</span>
+                  <strong id="result-name"></strong>
+                  <p class="hint" id="result-path">Enhanced synthetic copy</p>
+                </div>
+                <a
+                  class="download-link download-primary"
+                  id="download"
+                  href="#"
+                  download
+                  >Download result
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 4v11m-4-4 4 4 4-4M5 20h14" /></svg
+                ></a>
+              </section>
+            </div>
+          </div>
+
+          <details class="activity-log">
+            <summary>Technical details</summary>
+            <pre id="log" aria-live="polite">Ready.</pre>
+          </details>
+        </div>
+      </section>
+
+      <aside class="house-ad app-container" aria-label="Advertisement">
+        <span
+          class="ad-bait adsbox advertisement"
+          id="ad-bait"
+          aria-hidden="true"
+        ></span>
+        <div>
+          <span class="ad-label">Advertisement</span>
+          <strong>Sponsor Media Downloader</strong>
+        </div>
+        <button type="button" data-dialog="contact-dialog">
+          Advertise here
+        </button>
+      </aside>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner app-container">
+        <p>
+          Optional enhancement runs on this device only after confirmation.
+          Working files are temporary and can be cleared at any time.
+        </p>
+        <div class="footer-actions">
+          <button type="button" data-dialog="contact-dialog">Contact</button>
+          <button type="button" data-dialog="privacy-dialog">Privacy</button>
+          <button type="button" data-dialog="terms-dialog">Terms</button>
+          <button class="danger-button" id="clear-session" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M4 7h16m-10 4v6m4-6v6M9 4h6l1 3H8l1-3Zm-3 3 1 14h10l1-14"
+              />
+            </svg>
+            Clear local files
+          </button>
+        </div>
+      </div>
+    </footer>
+
+    <dialog id="adblock-dialog" aria-labelledby="adblock-title">
+      <div class="dialog-body adblock-content">
+        <div class="dialog-heading">
+          <div>
+            <p class="dialog-kicker">Support the project</p>
+            <h2 id="adblock-title">It looks like ads are being blocked</h2>
+          </div>
+          <button
+            class="icon-button"
+            type="button"
+            data-close-dialog="adblock-dialog"
+            aria-label="Close ad blocker message"
+          >
+            &times;
+          </button>
+        </div>
+        <p>
+          Ads and direct sponsors help keep Media Downloader free. If you want
+          to support the project, allow ads for this local page.
+        </p>
+        <div class="dialog-actions adblock-actions">
+          <button id="retry-adblock" type="button">
+            I&rsquo;ve allowed ads
+          </button>
+          <button
+            class="secondary-dialog-button"
+            type="button"
+            data-close-dialog="adblock-dialog"
+          >
+            Continue without ads
+          </button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="contact-dialog" aria-labelledby="contact-title">
+      <div class="dialog-body policy-content">
+        <div class="dialog-heading">
+          <div>
+            <p class="dialog-kicker">Public project contact</p>
+            <h2 id="contact-title">Contact Media Downloader</h2>
+          </div>
+          <button
+            class="icon-button"
+            type="button"
+            data-close-dialog="contact-dialog"
+            aria-label="Close contact information"
+          >
+            &times;
+          </button>
+        </div>
+        <section>
+          <h3>Advertising</h3>
+          <p>
+            Interested in a clearly labelled, direct sponsor placement with no
+            tracking pixel or ad network? Open a public advertising inquiry on
+            GitHub. Do not include personal data or confidential campaign
+            information.
+          </p>
+          <a
+            class="contact-link"
+            href="https://github.com/bjorkepoc/video-enhancer/issues/new?title=Advertising%20inquiry"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Open advertising inquiry</a
+          >
+        </section>
+        <section>
+          <h3>Privacy and copyright</h3>
+          <p>
+            For private privacy and copyright inquiries, email
+            <a href="mailto:bjorke.poc@gmail.com">bjorke.poc@gmail.com</a>. Do
+            not put personal data, private links, access tokens, or media in a
+            public GitHub issue.
+          </p>
+        </section>
+        <section>
+          <h3>Security</h3>
+          <p>
+            Potential vulnerabilities should be reported privately through
+            GitHub's security advisory form.
+          </p>
+          <a
+            class="contact-link"
+            href="https://github.com/bjorkepoc/video-enhancer/security/advisories/new"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Report security privately</a
+          >
+        </section>
+        <section>
+          <h3>Maintainer</h3>
+          <p>
+            Media Downloader is maintained publicly by
+            <a
+              href="https://github.com/bjorkepoc"
+              target="_blank"
+              rel="noopener noreferrer"
+              >bjorkepoc</a
+            >.
+          </p>
+        </section>
+        <div class="dialog-actions">
+          <button type="button" data-close-dialog="contact-dialog">Done</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="privacy-dialog" aria-labelledby="privacy-title">
+      <div class="dialog-body policy-content">
+        <div class="dialog-heading">
+          <div>
+            <p class="dialog-kicker">Last updated August 10, 2026</p>
+            <h2 id="privacy-title">Privacy at a glance</h2>
+          </div>
+          <button
+            class="icon-button"
+            type="button"
+            data-close-dialog="privacy-dialog"
+            aria-label="Close privacy information"
+          >
+            &times;
+          </button>
+        </div>
+        <section>
+          <h3>Local processing, no account</h3>
+          <p>
+            Media Downloader runs through a local app on this device. There is
+            no account, analytics, ad network, or operator-run cloud storage.
+          </p>
+          <p>
+            Submitted links are held in the local app's memory while it is
+            running. Source images, videos, audio, archives, and generated files
+            are written to a temporary folder on this device so they can be
+            processed and previewed.
+          </p>
+          <p>
+            Optional video enhancement starts only after you explicitly confirm
+            it. Enhancement uses this device's processor, memory and battery;
+            source media and the enhanced result are not sent to an operator-run
+            enhancement service.
+          </p>
+        </section>
+        <section>
+          <h3>House advertisement</h3>
+          <p>
+            The app includes a static project notice seeking a direct sponsor.
+            It is bundled with the app and uses no remote creative, cookie,
+            identifier, impression pixel, or click tracking. A local one-pixel
+            marker checks whether an ad blocker hides the placement so the app
+            can show a dismissible support message; the check sends and stores
+            nothing. Opening its contact link takes you to GitHub, which applies
+            its own terms and privacy policy.
+          </p>
+        </section>
+        <section>
+          <h3>Deletion and downloads</h3>
+          <p>
+            You can clear temporary files at any time. The app also removes them
+            after a normal shutdown. A forced shutdown or system crash may leave
+            temporary files until you or the operating system removes them.
+            Files you download remain wherever you save them.
+          </p>
+        </section>
+        <section>
+          <h3>Source platforms</h3>
+          <p>
+            When you submit a VSCO, Instagram, TikTok, or Facebook link, this
+            device connects to that platform and its delivery providers. They
+            receive technical request data such as your IP address and apply
+            their own privacy terms. Media Downloader does not send your link,
+            media, or activity to an operator-run cloud service.
+          </p>
+        </section>
+        <section>
+          <h3>Cookies and browser storage</h3>
+          <p>
+            This app does not use cookies, localStorage, IndexedDB, analytics
+            identifiers, or advertising identifiers. A one-time security token
+            in the page URL protects the local session; it is not used for
+            tracking and expires when the app stops.
+          </p>
+        </section>
+        <div class="dialog-actions">
+          <button type="button" data-close-dialog="privacy-dialog">Done</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="terms-dialog" aria-labelledby="terms-title">
+      <div class="dialog-body policy-content">
+        <div class="dialog-heading">
+          <div>
+            <p class="dialog-kicker">Last updated August 10, 2026</p>
+            <h2 id="terms-title">Terms of use</h2>
+          </div>
+          <button
+            class="icon-button"
+            type="button"
+            data-close-dialog="terms-dialog"
+            aria-label="Close terms of use"
+          >
+            &times;
+          </button>
+        </div>
+        <section>
+          <h3>About this tool</h3>
+          <p>
+            Media Downloader retrieves media from supported public image and
+            video links. It does not index, publish, recommend, or provide
+            account or platform access. Optional enhancement is initiated by you
+            and runs on your device, not on an operator-run enhancement server.
+          </p>
+        </section>
+        <section>
+          <h3>Your responsibility</h3>
+          <p>
+            Use Media Downloader only for public content you own or are legally
+            permitted to download and use. Follow applicable law, copyright and
+            privacy rights, and the source platform's terms. Do not use it to
+            access private content, bypass a login or access control, infringe
+            rights, or distribute unlawful content.
+          </p>
+        </section>
+        <section>
+          <h3>Third-party platforms</h3>
+          <p>
+            VSCO, Instagram, TikTok, and Facebook are independent services.
+            Media Downloader is not affiliated with, sponsored by, or approved
+            by them. Platform changes may interrupt support without notice.
+          </p>
+        </section>
+        <section>
+          <h3>Quality and availability</h3>
+          <p>
+            The tool is provided as available. It does not guarantee a
+            particular resolution, frame rate, codec, availability, or that a
+            platform will expose a downloadable source. Synthetic enhancement
+            can introduce artifacts.
+          </p>
+        </section>
+        <section>
+          <h3>Local resource use</h3>
+          <p>
+            Enhancement may use substantial processor, memory, storage and
+            battery resources and may make your device warm or slow. It starts
+            only after separate confirmation, can be stopped by closing the app,
+            leaves the original unchanged, and creates a separate synthetic
+            copy.
+          </p>
+        </section>
+        <section>
+          <h3>Limits of responsibility</h3>
+          <p>
+            To the fullest extent permitted by applicable law, the operator is
+            not responsible for your selected content, whether you have
+            permission to use it, compliance with third-party platform terms,
+            local device resource use, interruption, unavailable sources,
+            synthetic artifacts, or indirect loss arising from your use of the
+            tool. The tool is provided as available, without guarantees beyond
+            rights that cannot legally be excluded. Nothing in these terms
+            limits mandatory consumer rights or liability that cannot be
+            excluded by law.
+          </p>
+        </section>
+        <div class="dialog-actions">
+          <button type="button" data-close-dialog="terms-dialog">Done</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog
+      id="local-processing-dialog"
+      aria-labelledby="local-processing-title"
+    >
+      <form class="dialog-body policy-content" id="local-processing-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="dialog-kicker">Runs on this device</p>
+            <h2 id="local-processing-title">Confirm local processing</h2>
+          </div>
+          <button
+            class="icon-button"
+            type="button"
+            data-close-dialog="local-processing-dialog"
+            aria-label="Cancel local processing"
+          >
+            &times;
+          </button>
+        </div>
+        <section>
+          <h3>Your device does the work</h3>
+          <p>
+            Conversion, trimming, or enhancement uses your device's processor,
+            memory, storage and battery. It may take time, make the device warm
+            or temporarily reduce performance. The original remains unchanged
+            and the new file stays on this device.
+          </p>
+        </section>
+        <label class="terms-acceptance" for="local-processing-accepted">
+          <input id="local-processing-accepted" type="checkbox" required />
+          <span>I understand and want to start local processing.</span>
+        </label>
+        <div class="dialog-actions">
+          <button
+            class="secondary-dialog-button"
+            type="button"
+            data-close-dialog="local-processing-dialog"
+          >
+            Cancel
+          </button>
+          <button type="submit">Start local processing</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script nonce="__CSP_NONCE__">
+      __PAGE_SCRIPT__;
+    </script>
+  </body>
+</html>

@@ -25,6 +25,11 @@ export class FFmpeg {
      */
     #registerHandlers = () => {
         if (this.#worker) {
+            this.#worker.onerror = ({ message }) => {
+                const error = new Error(message || "The local processing worker failed.");
+                for (const reject of Object.values(this.#rejects)) reject(error);
+                this.terminate();
+            };
             this.#worker.onmessage = ({ data: { id, type, data }, }) => {
                 switch (type) {
                     case FFMessageType.LOAD:

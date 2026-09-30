@@ -14,7 +14,17 @@ const SOURCE_HOSTS = {
 };
 
 const MEDIA_HOSTS = {
-  tiktok: ["tiktok.com", "tiktokcdn.com", "tiktokcdn-eu.com", "tiktokcdn-us.com", "tiktokv.com", "byteoversea.com", "ibytedtos.com", "muscdn.com", "bytecdn.cn"],
+  tiktok: [
+    "tiktok.com",
+    "tiktokcdn.com",
+    "tiktokcdn-eu.com",
+    "tiktokcdn-us.com",
+    "tiktokv.com",
+    "byteoversea.com",
+    "ibytedtos.com",
+    "muscdn.com",
+    "bytecdn.cn",
+  ],
   instagram: ["instagram.com", "cdninstagram.com", "fbcdn.net"],
   facebook: ["facebook.com", "fbcdn.net"],
 };
@@ -26,12 +36,14 @@ const BROWSER_HEADERS = {
   "sec-fetch-mode": "navigate",
   "sec-fetch-site": "none",
   "upgrade-insecure-requests": "1",
-  "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0 Safari/537.36",
+  "user-agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0 Safari/537.36",
 };
 
 const INSTAGRAM_HEADERS = {
   ...BROWSER_HEADERS,
-  "user-agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+  "user-agent":
+    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
 };
 
 // ponytail: isolate-local limiting costs nothing; use Cloudflare Rate Limiting if real abuse outgrows it.
@@ -40,7 +52,9 @@ const RATE_SALT = "media-downloader-lite-rate-limit-v1";
 
 function hostMatches(hostname, allowed) {
   const host = hostname.toLowerCase().replace(/\.$/, "");
-  return allowed.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+  return allowed.some(
+    (suffix) => host === suffix || host.endsWith(`.${suffix}`),
+  );
 }
 
 function isIpLiteral(hostname) {
@@ -48,15 +62,24 @@ function isIpLiteral(hostname) {
 }
 
 function cleanHttpsURL(value, maxLength) {
-  if (typeof value !== "string" || !value.trim() || value.length > maxLength) throw new Error("The URL is invalid or too long.");
+  if (typeof value !== "string" || !value.trim() || value.length > maxLength)
+    throw new Error("The URL is invalid or too long.");
   let url;
   try {
     url = new URL(value.trim());
   } catch {
     throw new Error("Enter a complete HTTPS link.");
   }
-  if (url.protocol !== "https:" || url.username || url.password || url.port || isIpLiteral(url.hostname)) {
-    throw new Error("Only normal HTTPS links without credentials or custom ports are accepted.");
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.port ||
+    isIpLiteral(url.hostname)
+  ) {
+    throw new Error(
+      "Only normal HTTPS links without credentials or custom ports are accepted.",
+    );
   }
   url.hash = "";
   return url;
@@ -71,9 +94,11 @@ export function validateSourceUrl(value) {
 }
 
 export function validateMediaUrl(value, platform) {
-  if (!Object.hasOwn(MEDIA_HOSTS, platform)) throw new Error("Unknown media platform.");
+  if (!Object.hasOwn(MEDIA_HOSTS, platform))
+    throw new Error("Unknown media platform.");
   const url = cleanHttpsURL(value, 8192);
-  if (!hostMatches(url.hostname, MEDIA_HOSTS[platform])) throw new Error("The source returned media from an unapproved host.");
+  if (!hostMatches(url.hostname, MEDIA_HOSTS[platform]))
+    throw new Error("The source returned media from an unapproved host.");
   return url;
 }
 
@@ -107,7 +132,9 @@ function decodeEntities(value) {
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
-    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) =>
+      String.fromCodePoint(parseInt(code, 16)),
+    )
     .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)));
 }
 
@@ -115,13 +142,20 @@ function decodeEscaped(value) {
   try {
     return JSON.parse(`"${value}"`);
   } catch {
-    return decodeEntities(String(value || "").replace(/\\u002F/gi, "/").replace(/\\\//g, "/").replace(/\\u0026/gi, "&").replace(/\\/g, ""));
+    return decodeEntities(
+      String(value || "")
+        .replace(/\\u002F/gi, "/")
+        .replace(/\\\//g, "/")
+        .replace(/\\u0026/gi, "&")
+        .replace(/\\/g, ""),
+    );
   }
 }
 
 function parseTagAttributes(tag) {
   const attributes = {};
-  for (const match of tag.matchAll(/([:\w-]+)\s*=\s*(["'])(.*?)\2/gs)) attributes[match[1].toLowerCase()] = decodeEntities(match[3]);
+  for (const match of tag.matchAll(/([:\w-]+)\s*=\s*(["'])(.*?)\2/gs))
+    attributes[match[1].toLowerCase()] = decodeEntities(match[3]);
   return attributes;
 }
 
@@ -137,11 +171,20 @@ export function parseMetaTags(html) {
 
 function scriptById(html, id) {
   const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return String(html).match(new RegExp(`<script\\b[^>]*id=["']${escaped}["'][^>]*>([\\s\\S]*?)<\\/script>`, "i"))?.[1] || "";
+  return (
+    String(html).match(
+      new RegExp(
+        `<script\\b[^>]*id=["']${escaped}["'][^>]*>([\\s\\S]*?)<\\/script>`,
+        "i",
+      ),
+    )?.[1] || ""
+  );
 }
 
 function scriptContaining(html, marker) {
-  for (const match of String(html).matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
+  for (const match of String(html).matchAll(
+    /<script\b[^>]*>([\s\S]*?)<\/script>/gi,
+  )) {
     if (match[1].includes(marker)) return match[1];
   }
   return "";
@@ -156,7 +199,8 @@ function deepObjects(root, limit = 20_000) {
     if (!value || typeof value !== "object" || seen.has(value)) continue;
     seen.add(value);
     found.push(value);
-    for (const child of Array.isArray(value) ? value : Object.values(value)) stack.push(child);
+    for (const child of Array.isArray(value) ? value : Object.values(value))
+      stack.push(child);
   }
   return found;
 }
@@ -172,34 +216,53 @@ function asAbsolute(value, base) {
 
 function bestUrl(value) {
   if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.find((item) => typeof item === "string") || "";
+  if (Array.isArray(value))
+    return value.find((item) => typeof item === "string") || "";
   if (!value || typeof value !== "object") return "";
-  return bestUrl(value.urlList || value.UrlList || value.urls || value.url || value.src);
+  return bestUrl(
+    value.urlList || value.UrlList || value.urls || value.url || value.src,
+  );
 }
 
 function extensionFor(url, kind) {
   const fallback = { video: "mp4", image: "jpg", audio: "mp3" }[kind] || "bin";
   try {
-    const extension = new URL(url).pathname.match(/\.([a-z0-9]{2,5})$/i)?.[1]?.toLowerCase();
-    return extension && !new Set(["html", "php", "json"]).has(extension) ? extension : fallback;
+    const extension = new URL(url).pathname
+      .match(/\.([a-z0-9]{2,5})$/i)?.[1]
+      ?.toLowerCase();
+    return extension && !new Set(["html", "php", "json"]).has(extension)
+      ? extension
+      : fallback;
   } catch {
     return fallback;
   }
 }
 
 function safeFilename(value, fallback) {
-  const cleaned = String(value || fallback).normalize("NFKD").replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "");
+  const cleaned = String(value || fallback)
+    .normalize("NFKD")
+    .replace(/[^a-z0-9._-]+/gi, "-")
+    .replace(/^-+|-+$/g, "");
   return (cleaned || fallback).slice(0, 100);
 }
 
 function mediaItem(platform, kind, url, title, details = {}) {
-  const validated = validateMediaUrl(asAbsolute(url, `https://www.${platform}.com/`) || url, platform);
+  const validated = validateMediaUrl(
+    asAbsolute(url, `https://www.${platform}.com/`) || url,
+    platform,
+  );
   const extension = details.extension || extensionFor(validated.href, kind);
   const filename = `${safeFilename(details.filename || title, `${platform}-${kind}`)}.${extension}`;
-  const query = new URLSearchParams({ platform, kind, url: validated.href, name: filename });
+  const query = new URLSearchParams({
+    platform,
+    kind,
+    url: validated.href,
+    name: filename,
+  });
   if (details.sourceUrl) {
     const source = validateSourceUrl(details.sourceUrl);
-    if (source.platform !== platform) throw new Error("The media source platform does not match.");
+    if (source.platform !== platform)
+      throw new Error("The media source platform does not match.");
     query.set("source", source.url.href);
   }
   return {
@@ -226,29 +289,50 @@ function optionalMediaItem(platform, kind, url, title, details = {}) {
 
 function dedupeMedia(media) {
   const seen = new Set();
-  return media.filter((item) => {
-    if (!item || seen.has(item.previewUrl)) return false;
-    seen.add(item.previewUrl);
-    return true;
-  }).slice(0, 51);
+  return media
+    .filter((item) => {
+      if (!item || seen.has(item.previewUrl)) return false;
+      seen.add(item.previewUrl);
+      return true;
+    })
+    .slice(0, 51);
 }
 
 function genericMetaResult(platform, html, sourceUrl) {
   const meta = parseMetaTags(html);
-  const title = meta["og:title"] || meta["twitter:title"] || `${platform} media`;
+  const title =
+    meta["og:title"] || meta["twitter:title"] || `${platform} media`;
   const author = meta["author"] || "";
-  const videoUrl = meta["og:video:secure_url"] || meta["og:video:url"] || meta["og:video"] || meta["twitter:player:stream"];
-  const imageUrl = meta["og:image:secure_url"] || meta["og:image"] || meta["twitter:image"];
+  const videoUrl =
+    meta["og:video:secure_url"] ||
+    meta["og:video:url"] ||
+    meta["og:video"] ||
+    meta["twitter:player:stream"];
+  const imageUrl =
+    meta["og:image:secure_url"] || meta["og:image"] || meta["twitter:image"];
   const media = [];
-  if (videoUrl) media.push(mediaItem(platform, "video", videoUrl, title, {
-    width: meta["og:video:width"],
-    height: meta["og:video:height"],
-  }));
-  if (!videoUrl && imageUrl) media.push(mediaItem(platform, "image", imageUrl, title, {
-    width: meta["og:image:width"],
-    height: meta["og:image:height"],
-  }));
-  return { ok: true, platform, title, author, sourceUrl, media: dedupeMedia(media) };
+  if (videoUrl)
+    media.push(
+      mediaItem(platform, "video", videoUrl, title, {
+        width: meta["og:video:width"],
+        height: meta["og:video:height"],
+      }),
+    );
+  if (!videoUrl && imageUrl)
+    media.push(
+      mediaItem(platform, "image", imageUrl, title, {
+        width: meta["og:image:width"],
+        height: meta["og:image:height"],
+      }),
+    );
+  return {
+    ok: true,
+    platform,
+    title,
+    author,
+    sourceUrl,
+    media: dedupeMedia(media),
+  };
 }
 
 function parseTikTokState(html) {
@@ -270,50 +354,95 @@ function parseTikTokState(html) {
 export function parseTikTok(html, sourceUrl) {
   const state = parseTikTokState(html);
   const objects = state ? deepObjects(state) : [];
-  const item = objects.find((value) => value.video && (value.id || value.desc || value.author)) || {};
-  const title = String(item.desc || parseMetaTags(html)["og:title"] || "TikTok media").slice(0, 120);
+  const item =
+    objects.find(
+      (value) => value.video && (value.id || value.desc || value.author),
+    ) || {};
+  const title = String(
+    item.desc || parseMetaTags(html)["og:title"] || "TikTok media",
+  ).slice(0, 120);
   const author = item.author?.uniqueId || item.author?.nickname || "";
   const video = item.video || {};
   const media = [];
 
-  const rates = Array.isArray(video.bitRate) ? video.bitRate : Array.isArray(video.bitrateInfo) ? video.bitrateInfo : [];
-  const ranked = rates.map((rate) => ({
-    url: bestUrl(rate.playAddr || rate.PlayAddr || rate),
-    score: Number(rate.bitRate || rate.Bitrate || 0) + Number(rate.width || rate.PlayAddr?.Width || 0) * Number(rate.height || rate.PlayAddr?.Height || 0),
-    width: rate.width || rate.PlayAddr?.Width,
-    height: rate.height || rate.PlayAddr?.Height,
-  })).filter((rate) => rate.url).sort((a, b) => b.score - a.score);
-  let videoUrl = ranked[0]?.url || bestUrl(video.playAddr || video.playApi || video.downloadAddr);
+  const rates = Array.isArray(video.bitRate)
+    ? video.bitRate
+    : Array.isArray(video.bitrateInfo)
+      ? video.bitrateInfo
+      : [];
+  const ranked = rates
+    .map((rate) => ({
+      url: bestUrl(rate.playAddr || rate.PlayAddr || rate),
+      score:
+        Number(rate.bitRate || rate.Bitrate || 0) +
+        Number(rate.width || rate.PlayAddr?.Width || 0) *
+          Number(rate.height || rate.PlayAddr?.Height || 0),
+      width: rate.width || rate.PlayAddr?.Width,
+      height: rate.height || rate.PlayAddr?.Height,
+    }))
+    .filter((rate) => rate.url)
+    .sort((a, b) => b.score - a.score);
+  let videoUrl =
+    ranked[0]?.url ||
+    bestUrl(video.playAddr || video.playApi || video.downloadAddr);
   if (!videoUrl) {
     const script = candidatesFromHtml(html);
-    videoUrl = decodeEscaped(script.match(/"playAddr":"((?:\\.|[^"\\])+)"/)?.[1] || script.match(/"downloadAddr":"((?:\\.|[^"\\])+)"/)?.[1] || "");
+    videoUrl = decodeEscaped(
+      script.match(/"playAddr":"((?:\\.|[^"\\])+)"/)?.[1] ||
+        script.match(/"downloadAddr":"((?:\\.|[^"\\])+)"/)?.[1] ||
+        "",
+    );
   }
-  if (videoUrl) media.push(mediaItem("tiktok", "video", videoUrl, title, {
-    width: ranked[0]?.width || video.width,
-    height: ranked[0]?.height || video.height,
-    fps: video.fps,
-    sourceUrl,
-  }));
+  if (videoUrl)
+    media.push(
+      mediaItem("tiktok", "video", videoUrl, title, {
+        width: ranked[0]?.width || video.width,
+        height: ranked[0]?.height || video.height,
+        fps: video.fps,
+        sourceUrl,
+      }),
+    );
 
-  const imagePost = item.imagePost || objects.find((value) => Array.isArray(value.images) && value.images.some((image) => image?.imageURL || image?.imageUrl));
+  const imagePost =
+    item.imagePost ||
+    objects.find(
+      (value) =>
+        Array.isArray(value.images) &&
+        value.images.some((image) => image?.imageURL || image?.imageUrl),
+    );
   const images = imagePost?.images || [];
   images.forEach((image, index) => {
     const url = bestUrl(image.imageURL || image.imageUrl || image.displayImage);
-    const item = url && optionalMediaItem("tiktok", "image", url, `${title}-${index + 1}`, {
-      width: image.imageWidth || image.width,
-      height: image.imageHeight || image.height,
-      sourceUrl,
-    });
+    const item =
+      url &&
+      optionalMediaItem("tiktok", "image", url, `${title}-${index + 1}`, {
+        width: image.imageWidth || image.width,
+        height: image.imageHeight || image.height,
+        sourceUrl,
+      });
     if (item) media.push(item);
   });
 
-  const music = item.music || objects.find((value) => value.playUrl && (value.title || value.authorName));
+  const music =
+    item.music ||
+    objects.find((value) => value.playUrl && (value.title || value.authorName));
   const musicUrl = bestUrl(music?.playUrl || music?.play_url);
-  const audio = musicUrl && optionalMediaItem("tiktok", "audio", musicUrl, `${title}-audio`, { sourceUrl });
+  const audio =
+    musicUrl &&
+    optionalMediaItem("tiktok", "audio", musicUrl, `${title}-audio`, {
+      sourceUrl,
+    });
   if (audio) media.push(audio);
 
   if (!media.length) return genericMetaResult("tiktok", html, sourceUrl);
-  return { ok: true, platform: "tiktok", title, author, sourceUrl, media: dedupeMedia(media) };
+  return {
+    ok: true,
+    platform: "tiktok",
+    title,
+    author,
+    sourceUrl,
+    media: dedupeMedia(media),
+  };
 }
 
 function candidatesFromHtml(html) {
@@ -321,7 +450,9 @@ function candidatesFromHtml(html) {
 }
 
 function instagramShortcode(url) {
-  return new URL(url).pathname.match(/\/(?:p|reel|reels|tv)\/([\w-]+)/i)?.[1] || "";
+  return (
+    new URL(url).pathname.match(/\/(?:p|reel|reels|tv)\/([\w-]+)/i)?.[1] || ""
+  );
 }
 
 function balancedObject(text, start) {
@@ -334,7 +465,8 @@ function balancedObject(text, start) {
     else if (character === "\\") escaped = true;
     else if (character === '"') quoted = !quoted;
     else if (!quoted && character === "{") depth += 1;
-    else if (!quoted && character === "}" && --depth === 0) return text.slice(start, index + 1);
+    else if (!quoted && character === "}" && --depth === 0)
+      return text.slice(start, index + 1);
   }
   return "";
 }
@@ -382,71 +514,122 @@ export function parseInstagram(html, sourceUrl) {
   const graph = instagramMediaGraph(html);
   if (!graph) return genericMetaResult("instagram", html, sourceUrl);
   const author = graph.owner?.username || "";
-  const caption = graph.edge_media_to_caption?.edges?.[0]?.node?.text?.trim() || "";
-  const title = (caption || `Instagram post${author ? ` by @${author}` : ""}`).slice(0, 120);
+  const caption =
+    graph.edge_media_to_caption?.edges?.[0]?.node?.text?.trim() || "";
+  const title = (
+    caption || `Instagram post${author ? ` by @${author}` : ""}`
+  ).slice(0, 120);
   const media = [];
-  const children = graph.edge_sidecar_to_children?.edges?.map((edge) => edge?.node).filter(Boolean) || [graph];
+  const children = graph.edge_sidecar_to_children?.edges
+    ?.map((edge) => edge?.node)
+    .filter(Boolean) || [graph];
   children.forEach((item, index) => {
     if (item.is_video && item.video_url) {
-      const video = optionalMediaItem("instagram", "video", item.video_url, `${title}-${index + 1}`, {
-      width: item.dimensions?.width,
-      height: item.dimensions?.height,
-      });
+      const video = optionalMediaItem(
+        "instagram",
+        "video",
+        item.video_url,
+        `${title}-${index + 1}`,
+        {
+          width: item.dimensions?.width,
+          height: item.dimensions?.height,
+        },
+      );
       if (video) media.push(video);
     } else if (!item.is_video && item.display_url) {
-      const image = optionalMediaItem("instagram", "image", item.display_url, `${title}-${index + 1}`, {
-      width: item.dimensions?.width,
-      height: item.dimensions?.height,
-      });
+      const image = optionalMediaItem(
+        "instagram",
+        "image",
+        item.display_url,
+        `${title}-${index + 1}`,
+        {
+          width: item.dimensions?.width,
+          height: item.dimensions?.height,
+        },
+      );
       if (image) media.push(image);
     }
   });
-  return { ok: true, platform: "instagram", title, author, sourceUrl, media: dedupeMedia(media) };
+  return {
+    ok: true,
+    platform: "instagram",
+    title,
+    author,
+    sourceUrl,
+    media: dedupeMedia(media),
+  };
 }
 
 function facebookString(html, key) {
-  const value = String(html).match(new RegExp(`"${key}":"((?:\\\\.|[^"\\\\])*)"`))?.[1];
+  const value = String(html).match(
+    new RegExp(`"${key}":"((?:\\\\.|[^"\\\\])*)"`),
+  )?.[1];
   return value ? decodeEscaped(value) : "";
 }
 
 export function parseFacebook(html, sourceUrl) {
-  const keys = ["browser_native_hd_url", "playable_url_quality_hd", "hd_src_no_ratelimit", "hd_src", "browser_native_sd_url", "playable_url", "sd_src_no_ratelimit", "sd_src"];
-  const videoUrl = keys.map((key) => facebookString(html, key)).find((value) => value.startsWith("https://"));
+  const keys = [
+    "browser_native_hd_url",
+    "playable_url_quality_hd",
+    "hd_src_no_ratelimit",
+    "hd_src",
+    "browser_native_sd_url",
+    "playable_url",
+    "sd_src_no_ratelimit",
+    "sd_src",
+  ];
+  const videoUrl = keys
+    .map((key) => facebookString(html, key))
+    .find((value) => value.startsWith("https://"));
   if (!videoUrl) return genericMetaResult("facebook", html, sourceUrl);
   const meta = parseMetaTags(html);
-  const title = (meta["og:title"] || meta["og:description"] || "Facebook video").slice(0, 120);
+  const title = (
+    meta["og:title"] ||
+    meta["og:description"] ||
+    "Facebook video"
+  ).slice(0, 120);
   return {
     ok: true,
     platform: "facebook",
     title,
     author: "Facebook",
     sourceUrl,
-    media: [mediaItem("facebook", "video", videoUrl, title, {
-      width: meta["og:video:width"],
-      height: meta["og:video:height"],
-    })],
+    media: [
+      mediaItem("facebook", "video", videoUrl, title, {
+        width: meta["og:video:width"],
+        height: meta["og:video:height"],
+      }),
+    ],
   };
 }
 
-async function readTextLimited(response, maximum = MAX_PAGE_BYTES) {
+async function readTextLimited(
+  response,
+  maximum = MAX_PAGE_BYTES,
+  sizeError = "The source page was too large to inspect safely.",
+) {
   if (!response.body) return "";
   const declared = Number(response.headers.get("content-length")) || 0;
   if (declared > maximum) {
     await response.body.cancel();
-    throw new Error("The source page was too large to inspect safely.");
+    throw new Error(sizeError);
   }
   const reader = response.body.getReader();
   const chunks = [];
   let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maximum) {
-      await reader.cancel();
-      throw new Error("The source page was too large to inspect safely.");
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximum) {
+        await reader.cancel();
+        throw new Error(sizeError);
+      }
+      chunks.push(value);
     }
-    chunks.push(value);
+  } finally {
+    reader.releaseLock();
   }
   const bytes = new Uint8Array(total);
   let offset = 0;
@@ -478,29 +661,52 @@ function rememberResponseCookies(response, jar) {
   }
 }
 
-async function fetchPage(startUrl, platform, maximumRedirects = 4, headers = BROWSER_HEADERS, cookieJar = new Map(), retryChallenge = true) {
+async function fetchPage(
+  startUrl,
+  platform,
+  maximumRedirects = 4,
+  headers = BROWSER_HEADERS,
+  cookieJar = new Map(),
+  retryChallenge = true,
+) {
   let current = validateSourceUrl(startUrl).url;
   for (let redirects = 0; redirects <= maximumRedirects; redirects += 1) {
-    const requestHeaders = cookieJar?.size ? { ...headers, cookie: [...cookieJar.values()].join("; ") } : headers;
-    const response = await fetchWithTimeout(current, { headers: requestHeaders, redirect: "manual" });
+    const requestHeaders = cookieJar?.size
+      ? { ...headers, cookie: [...cookieJar.values()].join("; ") }
+      : headers;
+    const response = await fetchWithTimeout(current, {
+      headers: requestHeaders,
+      redirect: "manual",
+    });
     rememberResponseCookies(response, cookieJar);
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
       await response.body?.cancel();
-      if (!location || redirects === maximumRedirects) throw new Error("The source redirected too many times.");
+      if (!location || redirects === maximumRedirects)
+        throw new Error("The source redirected too many times.");
       const next = new URL(location, current);
       const validated = validateSourceUrl(next.href);
-      if (validated.platform !== platform) throw new Error("The source redirected to an unsupported platform.");
+      if (validated.platform !== platform)
+        throw new Error("The source redirected to an unsupported platform.");
       current = validated.url;
       continue;
     }
     if (!response.ok) {
       await response.body?.cancel();
       if (response.status === 403 && retryChallenge && cookieJar.size) {
-        return fetchPage(current.href, platform, maximumRedirects - redirects, headers, cookieJar, false);
+        return fetchPage(
+          current.href,
+          platform,
+          maximumRedirects - redirects,
+          headers,
+          cookieJar,
+          false,
+        );
       }
       if (platform === "vsco" && response.status === 403) {
-        throw new Error("VSCO currently blocks this free edge resolver. Try again later; no media was stored.");
+        throw new Error(
+          "VSCO currently blocks this free edge resolver. Try again later; no media was stored.",
+        );
       }
       throw new Error(`The source platform returned HTTP ${response.status}.`);
     }
@@ -513,40 +719,71 @@ async function instagramPage(sourceUrl, cookieJar) {
   let finalUrl = sourceUrl;
   let shortcode = instagramShortcode(finalUrl);
   if (!shortcode) {
-    const resolved = await fetchPage(sourceUrl, "instagram", 4, BROWSER_HEADERS, cookieJar);
+    const resolved = await fetchPage(
+      sourceUrl,
+      "instagram",
+      4,
+      BROWSER_HEADERS,
+      cookieJar,
+    );
     finalUrl = resolved.url;
     shortcode = instagramShortcode(finalUrl);
   }
-  if (!shortcode) throw new Error("Use an Instagram post, reel, or video link.");
+  if (!shortcode)
+    throw new Error("Use an Instagram post, reel, or video link.");
   const embed = `https://www.instagram.com/p/${shortcode}/embed/captioned/`;
-  const page = await fetchPage(embed, "instagram", 4, INSTAGRAM_HEADERS, cookieJar);
+  const page = await fetchPage(
+    embed,
+    "instagram",
+    4,
+    INSTAGRAM_HEADERS,
+    cookieJar,
+  );
   return { url: finalUrl, html: page.html };
 }
 
 export async function resolveSource(input) {
   const { platform, url } = validateSourceUrl(input);
   if (platform === "vsco") {
-    throw new Error("VSCO links are recognized, but automated resolution is paused. We do not bypass platform protections or automate access without permission.");
+    throw new Error(
+      "VSCO links are recognized, but automated resolution is paused. We do not bypass platform protections or automate access without permission.",
+    );
   }
   const cookieJar = new Map();
   let page;
   if (platform === "instagram") page = await instagramPage(url.href, cookieJar);
-  else page = await fetchPage(url.href, platform, 4, BROWSER_HEADERS, cookieJar);
+  else
+    page = await fetchPage(url.href, platform, 4, BROWSER_HEADERS, cookieJar);
 
   let result;
   if (platform === "tiktok") result = parseTikTok(page.html, page.url);
-  else if (platform === "instagram") result = parseInstagram(page.html, page.url);
+  else if (platform === "instagram")
+    result = parseInstagram(page.html, page.url);
   else if (platform === "facebook") {
     result = parseFacebook(page.html, page.url);
     if (!result.media.length) {
       const pluginUrl = `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(page.url)}`;
-      const plugin = await fetchPage(pluginUrl, "facebook", 4, BROWSER_HEADERS, cookieJar);
+      const plugin = await fetchPage(
+        pluginUrl,
+        "facebook",
+        4,
+        BROWSER_HEADERS,
+        cookieJar,
+      );
       result = parseFacebook(plugin.html, page.url);
     }
   } else throw new Error("Unsupported source platform.");
 
-  if (!result.media?.length) throw new Error("The public source did not expose a supported original file. It may be private, unavailable, or login-only.");
-  if (result.media.every((item) => item.kind !== "video") && platform === "instagram") result.note = "Original image media ready. Reels that Instagram exposes only after login are intentionally not bypassed.";
+  if (!result.media?.length)
+    throw new Error(
+      "The public source did not expose a supported original file. It may be private, unavailable, or login-only.",
+    );
+  if (
+    result.media.every((item) => item.kind !== "video") &&
+    platform === "instagram"
+  )
+    result.note =
+      "Original image media ready. Reels that Instagram exposes only after login are intentionally not bypassed.";
   return result;
 }
 
@@ -574,10 +811,11 @@ export function requestOriginIsAllowed(request) {
 }
 
 export async function readJSONBody(request) {
-  const declared = Number(request.headers.get("content-length")) || 0;
-  if (declared > MAX_JSON_BYTES) throw new Error("The request body is too large.");
-  const text = await request.text();
-  if (new TextEncoder().encode(text).byteLength > MAX_JSON_BYTES) throw new Error("The request body is too large.");
+  const text = await readTextLimited(
+    request,
+    MAX_JSON_BYTES,
+    "The request body is too large.",
+  );
   try {
     return JSON.parse(text);
   } catch {
@@ -593,7 +831,13 @@ function mediaReferer(platform) {
   }[platform];
 }
 
-async function fetchMedia(startUrl, platform, range, maximumRedirects = 3, cookie = "") {
+async function fetchMedia(
+  startUrl,
+  platform,
+  range,
+  maximumRedirects = 3,
+  cookie = "",
+) {
   let current = validateMediaUrl(startUrl, platform);
   for (let redirects = 0; redirects <= maximumRedirects; redirects += 1) {
     const headers = {
@@ -604,11 +848,16 @@ async function fetchMedia(startUrl, platform, range, maximumRedirects = 3, cooki
     };
     if (range) headers.range = range;
     if (cookie) headers.cookie = cookie;
-    const response = await fetchWithTimeout(current, { headers, redirect: "manual" }, 15_000);
+    const response = await fetchWithTimeout(
+      current,
+      { headers, redirect: "manual" },
+      15_000,
+    );
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
       await response.body?.cancel();
-      if (!location || redirects === maximumRedirects) throw new Error("The media redirected too many times.");
+      if (!location || redirects === maximumRedirects)
+        throw new Error("The media redirected too many times.");
       current = validateMediaUrl(new URL(location, current).href, platform);
       continue;
     }
@@ -619,10 +868,27 @@ async function fetchMedia(startUrl, platform, range, maximumRedirects = 3, cooki
 
 async function fetchTikTokSessionMedia(sourceUrl, kind, range) {
   const cookies = new Map();
-  const page = await fetchPage(sourceUrl, "tiktok", 4, BROWSER_HEADERS, cookies);
-  const item = parseTikTok(page.html, page.url).media.find((candidate) => candidate.kind === kind);
-  if (!item) throw new Error("TikTok did not expose this media type in the fresh anonymous session.");
-  return fetchMedia(item.directUrl, "tiktok", range, 3, [...cookies.values()].join("; "));
+  const page = await fetchPage(
+    sourceUrl,
+    "tiktok",
+    4,
+    BROWSER_HEADERS,
+    cookies,
+  );
+  const item = parseTikTok(page.html, page.url).media.find(
+    (candidate) => candidate.kind === kind,
+  );
+  if (!item)
+    throw new Error(
+      "TikTok did not expose this media type in the fresh anonymous session.",
+    );
+  return fetchMedia(
+    item.directUrl,
+    "tiktok",
+    range,
+    3,
+    [...cookies.values()].join("; "),
+  );
 }
 
 function limitedStream(body, maximum, abort) {
@@ -642,7 +908,9 @@ function limitedStream(body, maximum, abort) {
       }
       controller.enqueue(value);
     },
-    cancel(reason) { return reader.cancel(reason); },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
   });
 }
 
@@ -660,12 +928,15 @@ export async function proxyMedia(request) {
   const kind = requestUrl.searchParams.get("kind") || "";
   const source = requestUrl.searchParams.get("url") || "";
   const sourcePage = requestUrl.searchParams.get("source") || "";
-  if (!new Set(["video", "audio", "image"]).has(kind)) throw new Error("Unknown media type.");
+  if (!new Set(["video", "audio", "image"]).has(kind))
+    throw new Error("Unknown media type.");
   validateMediaUrl(source, platform);
-  if (sourcePage && validateSourceUrl(sourcePage).platform !== platform) throw new Error("The media source platform does not match.");
+  if (sourcePage && validateSourceUrl(sourcePage).platform !== platform)
+    throw new Error("The media source platform does not match.");
 
   const range = request.headers.get("range");
-  if (range && !/^bytes=\d{1,20}-\d{0,20}$/.test(range)) return json({ error: "Invalid byte range." }, 416);
+  if (range && !/^bytes=\d{1,20}-\d{0,20}$/.test(range))
+    return json({ error: "Invalid byte range." }, 416);
   let response = await fetchMedia(source, platform, range);
   if (response.status === 403 && platform === "tiktok" && sourcePage) {
     await response.body?.cancel();
@@ -679,11 +950,18 @@ export async function proxyMedia(request) {
   const declared = Number(response.headers.get("content-length")) || 0;
   if (declared > MAX_MEDIA_BYTES) {
     await response.body?.cancel();
-    return json({ error: "This source file exceeds the public streaming limit." }, 413);
+    return json(
+      { error: "This source file exceeds the public streaming limit." },
+      413,
+    );
   }
 
-  const filename = safeFilename(requestUrl.searchParams.get("name"), `source.${extensionFor(source, kind)}`);
-  const disposition = requestUrl.searchParams.get("download") === "1" ? "attachment" : "inline";
+  const filename = safeFilename(
+    requestUrl.searchParams.get("name"),
+    `source.${extensionFor(source, kind)}`,
+  );
+  const disposition =
+    requestUrl.searchParams.get("download") === "1" ? "attachment" : "inline";
   const headers = new Headers({
     "accept-ranges": "bytes",
     "access-control-allow-origin": new URL(request.url).origin,
@@ -693,19 +971,36 @@ export async function proxyMedia(request) {
     "referrer-policy": "no-referrer",
     "x-content-type-options": "nosniff",
   });
-  for (const name of ["content-length", "content-range", "etag", "last-modified"]) {
+  for (const name of [
+    "content-length",
+    "content-range",
+    "etag",
+    "last-modified",
+  ]) {
     const value = response.headers.get(name);
     if (value) headers.set(name, value);
   }
-  if (range && response.status === 206 && !headers.has("content-range") && declared) {
+  if (
+    range &&
+    response.status === 206 &&
+    !headers.has("content-range") &&
+    declared
+  ) {
     const start = Number(range.match(/^bytes=(\d+)-/)?.[1]);
-    if (Number.isSafeInteger(start)) headers.set("content-range", `bytes ${start}-${start + declared - 1}/*`);
+    if (Number.isSafeInteger(start))
+      headers.set("content-range", `bytes ${start}-${start + declared - 1}/*`);
   }
-  headers.set("access-control-expose-headers", "content-length, content-range, content-disposition");
+  headers.set(
+    "access-control-expose-headers",
+    "content-length, content-range, content-disposition",
+  );
 
   if (request.method === "HEAD") {
     await response.body?.cancel();
     return new Response(null, { status: response.status, headers });
   }
-  return new Response(limitedStream(response.body, MAX_MEDIA_BYTES), { status: response.status, headers });
+  return new Response(limitedStream(response.body, MAX_MEDIA_BYTES), {
+    status: response.status,
+    headers,
+  });
 }

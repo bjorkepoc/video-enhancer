@@ -1,8 +1,12 @@
-import { processLocally, terminateLocalProcessor } from "./local-processor.js";
+import {
+  processLocally,
+  terminateLocalProcessor,
+} from "./local-processor.js?v=20260930-1";
 
 const TERMS_VERSION = "2026-08-10.2";
 const $ = (id) => document.getElementById(id);
 const state = {
+  operation: null,
   resolved: null,
   primary: null,
   sourceBlob: null,
@@ -16,8 +20,18 @@ function setStatus(message, isError = false) {
   $("form-status").style.color = isError ? "var(--danger)" : "var(--muted)";
 }
 
+function setOperation(operation) {
+  state.operation = operation;
+  for (const control of $("source-form").elements)
+    control.disabled = Boolean(operation);
+  for (const control of document.querySelectorAll("[data-mode]"))
+    control.disabled = Boolean(operation);
+}
+
 function safeName(value, fallback = "media") {
-  const cleaned = String(value || fallback).replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "");
+  const cleaned = String(value || fallback)
+    .replace(/[^a-z0-9._-]+/gi, "-")
+    .replace(/^-+|-+$/g, "");
   return (cleaned || fallback).slice(0, 80);
 }
 
@@ -25,7 +39,10 @@ function formatBytes(value) {
   const bytes = Number(value);
   if (!Number.isFinite(bytes) || bytes <= 0) return "Source controlled";
   const units = ["B", "KB", "MB", "GB"];
-  const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const unit = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
+  );
   return `${(bytes / 1024 ** unit).toFixed(unit > 1 ? 1 : 0)} ${units[unit]}`;
 }
 
@@ -47,7 +64,8 @@ function resetMedia() {
   $("enhanced-result").hidden = true;
   $("enhance-progress").value = 0;
   $("enhance-percent").value = "0%";
-  $("enhance-status").textContent = "Ready to enhance. No processing has started.";
+  $("enhance-status").textContent =
+    "Ready to enhance. No processing has started.";
   $("processing-accepted").checked = false;
   $("download-actions").replaceChildren();
   $("carousel").replaceChildren();
@@ -66,10 +84,16 @@ async function postJSON(path, payload) {
       signal: controller.signal,
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `The resolver returned HTTP ${response.status}.`);
+    if (!response.ok)
+      throw new Error(
+        data.error || `The resolver returned HTTP ${response.status}.`,
+      );
     return data;
   } catch (error) {
-    if (error.name === "AbortError") throw new Error("The source platform took too long to respond. Try again.");
+    if (error.name === "AbortError")
+      throw new Error(
+        "The source platform took too long to respond. Try again.",
+      );
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -95,10 +119,13 @@ function downloadButton(media, label, primary = false) {
 
 function setPreviewSource(element, media) {
   const direct = media.directUrl || media.previewUrl;
-  element.onerror = direct === media.previewUrl ? null : () => {
-    element.onerror = null;
-    element.src = media.previewUrl;
-  };
+  element.onerror =
+    direct === media.previewUrl
+      ? null
+      : () => {
+          element.onerror = null;
+          element.src = media.previewUrl;
+        };
   element.src = direct;
 }
 
@@ -125,21 +152,39 @@ function renderResult(data) {
   const images = media.filter((item) => item.kind === "image");
   const audio = media.filter((item) => item.kind === "audio");
   const primary = videos[0] || images[0];
-  if (!primary) throw new Error("The source page did not expose a supported original media file.");
+  if (!primary)
+    throw new Error(
+      "The source page did not expose a supported original media file.",
+    );
 
   resetMedia();
   state.resolved = data;
   state.primary = primary;
   $("empty-state").hidden = true;
   $("result").hidden = false;
-  $("platform-name").textContent = `${data.platform || "source"} ${primary.kind}`;
-  $("result-title").textContent = data.title || `${data.platform || "Source"} media`;
-  $("result-author").textContent = data.author ? `@${String(data.author).replace(/^@/, "")}` : "Public source";
+  $("platform-name").textContent =
+    `${data.platform || "source"} ${primary.kind}`;
+  $("result-title").textContent =
+    data.title || `${data.platform || "Source"} media`;
+  $("result-author").textContent = data.author
+    ? `@${String(data.author).replace(/^@/, "")}`
+    : "Public source";
   $("result-meta").replaceChildren();
-  addMeta("Type", primary.kind === "video" ? "Original video" : "Original image");
-  addMeta("Resolution", primary.width && primary.height ? `${primary.width} × ${primary.height}` : "Best exposed source");
+  addMeta(
+    "Type",
+    primary.kind === "video" ? "Original video" : "Original image",
+  );
+  addMeta(
+    "Resolution",
+    primary.width && primary.height
+      ? `${primary.width} × ${primary.height}`
+      : "Best exposed source",
+  );
   if (primary.fps) addMeta("Frame rate", `${primary.fps} FPS`);
-  addMeta("Format", primary.extension ? primary.extension.toUpperCase() : "Source format");
+  addMeta(
+    "Format",
+    primary.extension ? primary.extension.toUpperCase() : "Source format",
+  );
   addMeta("File size", formatBytes(primary.bytes));
 
   const video = $("source-video");
@@ -161,28 +206,41 @@ function renderResult(data) {
   }
 
   const actions = $("download-actions");
-  actions.replaceChildren(downloadButton(primary, `Download original (${(primary.extension || primary.kind).toUpperCase()})`, true));
-  audio.forEach((item) => actions.append(downloadButton(item, "Download original audio")));
-  for (const item of [...videos.slice(1), ...images.slice(primary.kind === "image" ? 1 : 0)]) {
+  actions.replaceChildren(
+    downloadButton(
+      primary,
+      `Download original (${(primary.extension || primary.kind).toUpperCase()})`,
+      true,
+    ),
+  );
+  audio.forEach((item) =>
+    actions.append(downloadButton(item, "Download original audio")),
+  );
+  for (const item of [
+    ...videos.slice(1),
+    ...images.slice(primary.kind === "image" ? 1 : 0),
+  ]) {
     actions.append(downloadButton(item, `Download ${item.kind}`));
   }
 
   renderCarousel(images);
   $("enhance-section").hidden = !isVideo;
   if (data.note) setStatus(data.note);
-  else setStatus("Original media ready. Nothing has been saved to Downloads yet.");
+  else
+    setStatus("Original media ready. Nothing has been saved to Downloads yet.");
 }
 
 $("source-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (state.operation) return;
   if (!$("source-form").reportValidity()) return;
   if (!$("terms-accepted").checked) {
     setStatus("Accept the current Terms of Use before resolving media.", true);
     return;
   }
 
-  const button = $("get-media");
-  button.disabled = true;
+  setOperation("resolving");
+  resetMedia();
   setStatus("Resolving the public source…");
   try {
     const data = await postJSON("/api/resolve", {
@@ -195,7 +253,7 @@ $("source-form").addEventListener("submit", async (event) => {
     resetMedia();
     setStatus(error.message || "The media could not be resolved.", true);
   } finally {
-    button.disabled = false;
+    setOperation(null);
   }
 });
 
@@ -209,14 +267,19 @@ function setZoom(value) {
 $("zoom-out").addEventListener("click", () => setZoom(state.zoom - 0.5));
 $("zoom-in").addEventListener("click", () => setZoom(state.zoom + 0.5));
 $("zoom-reset").addEventListener("click", () => setZoom(1));
-$("zoom-range").addEventListener("input", (event) => setZoom(event.currentTarget.value));
+$("zoom-range").addEventListener("input", (event) =>
+  setZoom(event.currentTarget.value),
+);
 
 function stepFrame(direction) {
   const video = $("source-video");
   if (video.hidden) return;
   video.pause();
   const fps = Math.max(1, Math.min(240, Number($("step-fps").value) || 30));
-  video.currentTime = Math.max(0, Math.min(video.duration || Infinity, video.currentTime + direction / fps));
+  video.currentTime = Math.max(
+    0,
+    Math.min(video.duration || Infinity, video.currentTime + direction / fps),
+  );
 }
 
 $("frame-back").addEventListener("click", () => stepFrame(-1));
@@ -235,14 +298,22 @@ $("one-fps").addEventListener("click", () => {
 
 async function fetchSourceBlob() {
   if (state.sourceBlob) return state.sourceBlob;
-  for (const url of new Set([state.primary.directUrl, state.primary.previewUrl].filter(Boolean))) {
+  for (const url of new Set(
+    [state.primary.directUrl, state.primary.previewUrl].filter(Boolean),
+  )) {
     try {
       const response = await fetch(url, { credentials: "omit" });
       if (!response.ok) continue;
       const declared = Number(response.headers.get("content-length")) || 0;
-      if (declared > 500 * 1024 * 1024) throw new Error("This file is too large for safe in-browser processing. Download the original or use the desktop app.");
+      if (declared > 500 * 1024 * 1024)
+        throw new Error(
+          "This file is too large for safe in-browser processing. Download the original or use the desktop app.",
+        );
       const blob = await response.blob();
-      if (blob.size > 500 * 1024 * 1024) throw new Error("This file is too large for safe in-browser processing. Download the original or use the desktop app.");
+      if (blob.size > 500 * 1024 * 1024)
+        throw new Error(
+          "This file is too large for safe in-browser processing. Download the original or use the desktop app.",
+        );
       state.sourceBlob = blob;
       return blob;
     } catch (error) {
@@ -253,17 +324,19 @@ async function fetchSourceBlob() {
 }
 
 async function runEnhancement(mode, button) {
+  if (state.operation || !state.primary) return;
   if (!$("processing-accepted").checked) {
-    $("enhance-status").textContent = "Confirm local device processing before starting.";
+    $("enhance-status").textContent =
+      "Confirm local device processing before starting.";
     $("processing-accepted").focus();
     return;
   }
 
-  const controls = [...document.querySelectorAll("[data-mode]")];
-  controls.forEach((control) => { control.disabled = true; });
+  setOperation("processing");
   const originalLabel = button.textContent;
   button.textContent = "Working…";
-  const filter = document.querySelector('input[name="filter"]:checked')?.value || "none";
+  const filter =
+    document.querySelector('input[name="filter"]:checked')?.value || "none";
   $("enhance-progress").value = 0;
 
   try {
@@ -276,32 +349,40 @@ async function runEnhancement(mode, button) {
         $("enhance-progress").value = progress;
         $("enhance-percent").value = `${Math.round(progress * 100)}%`;
       },
-      onStatus: (message) => { $("enhance-status").textContent = message; },
+      onStatus: (message) => {
+        $("enhance-status").textContent = message;
+      },
     });
 
     if (state.enhancedURL) URL.revokeObjectURL(state.enhancedURL);
     state.enhancedURL = URL.createObjectURL(result.blob);
     const title = safeName(state.resolved?.title, "media");
-    const suffix = mode === "audio" ? "audio" : mode === "upscale" ? "2x" : `${mode}fps`;
+    const suffix =
+      mode === "audio" ? "audio" : mode === "upscale" ? "2x" : `${mode}fps`;
     const download = $("enhanced-download");
     download.href = state.enhancedURL;
     download.download = `${title}-${suffix}.${result.extension}`;
-    download.textContent = mode === "audio" ? "Download extracted MP3" : "Download enhanced video";
+    download.textContent =
+      mode === "audio" ? "Download extracted MP3" : "Download enhanced video";
     const outputVideo = $("enhanced-video");
     outputVideo.hidden = mode === "audio";
     if (mode !== "audio") outputVideo.src = state.enhancedURL;
     $("enhanced-result").hidden = false;
-    $("enhance-status").textContent = "Local file ready. It is not saved until you choose Download.";
+    $("enhance-status").textContent =
+      "Local file ready. It is not saved until you choose Download.";
   } catch (error) {
-    $("enhance-status").textContent = error.message || "Local processing failed.";
+    $("enhance-status").textContent =
+      error.message || "Local processing failed.";
   } finally {
     button.textContent = originalLabel;
-    controls.forEach((control) => { control.disabled = false; });
+    setOperation(null);
   }
 }
 
 document.querySelectorAll("[data-mode]").forEach((button) => {
-  button.addEventListener("click", () => runEnhancement(button.dataset.mode, button));
+  button.addEventListener("click", () =>
+    runEnhancement(button.dataset.mode, button),
+  );
 });
 
 document.querySelectorAll("[data-dialog]").forEach((button) => {

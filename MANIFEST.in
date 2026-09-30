@@ -3,3 +3,4 @@ include assets/VideoEnhancer.icns
 include docs/launch-privacy-security.md
 include docs/snapdownloader-parity.md
 include scripts/build_macos.sh
+recursive-include src/video_enhancer/web_assets *.html *.css *.js

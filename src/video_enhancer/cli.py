@@ -34,7 +34,9 @@ def positive_int(value: str) -> int:
     try:
         parsed = int(value)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError("must be a whole number greater than 0") from exc
+        raise argparse.ArgumentTypeError(
+            "must be a whole number greater than 0"
+        ) from exc
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than 0")
     return parsed

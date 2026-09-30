@@ -101,6 +101,7 @@ pyinstaller_args=(
   --add-binary "$yt_dlp:bin"
   --add-binary "$gallery_dl:bin"
   --add-binary "$ffmpeg:bin"
+  --add-data "$project_dir/src/video_enhancer/web_assets:video_enhancer/web_assets"
   --add-data "$project_dir/LICENSE:."
   --add-data "$project_dir/THIRD_PARTY_NOTICES.md:."
   --distpath "$dist_dir"

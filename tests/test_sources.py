@@ -86,9 +86,7 @@ def test_download_source_normalizes_facebook_photo_permalink(
 ) -> None:
     commands: list[list[str]] = []
 
-    def download(
-        command: list[str], **kwargs: Any
-    ) -> subprocess.CompletedProcess[str]:
+    def download(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         (tmp_path / "photo.jpg").write_bytes(b"photo")
         return subprocess.CompletedProcess(command, 0, "", "")
@@ -324,8 +322,7 @@ Stream #0:1: Audio: aac, 48000 Hz, stereo
         sources,
         "run_bounded_process",
         lambda command, **kwargs: (
-            calls.append(command)
-            or subprocess.CompletedProcess(command, 0, "", stderr)
+            calls.append(command) or subprocess.CompletedProcess(command, 0, "", stderr)
         ),
     )
 
@@ -397,9 +394,7 @@ def test_download_source_archives_image_post_and_keeps_tiktok_audio(
 
     monkeypatch.setattr(sources, "_run_gallery_dl", download)
 
-    result = download_source(
-        "https://www.tiktok.com/@creator/photo/123", tmp_path
-    )
+    result = download_source("https://www.tiktok.com/@creator/photo/123", tmp_path)
 
     assert result["media_type"] == "image"
     assert result["item_count"] == 2
@@ -451,9 +446,7 @@ def test_download_source_rejects_uncapped_progressive_vsco_video(
     )
 
     with pytest.raises(SourceError, match="above the selected source quality"):
-        download_source(
-            "https://vsco.co/user/media/abc", tmp_path, quality="480p"
-        )
+        download_source("https://vsco.co/user/media/abc", tmp_path, quality="480p")
 
     assert list(tmp_path.iterdir()) == []
 
@@ -835,9 +828,10 @@ def test_download_source_does_not_extract_tiktok_video_audio_without_consent(
         lambda *args, **kwargs: {"audio_codec": "aac"},
     )
 
-    assert download_source("https://tiktok.com/@creator/video/123", tmp_path)[
-        "audio_path"
-    ] is None
+    assert (
+        download_source("https://tiktok.com/@creator/video/123", tmp_path)["audio_path"]
+        is None
+    )
 
 
 def test_download_source_hides_raw_yt_dlp_errors(

@@ -16,17 +16,26 @@ let html = await readFile("dist/client/index.html", "utf8");
 for (const [from, to] of [
   ["Media Downloader Lite", "Media Downloader Pro"],
   ["Downloader Lite", "Downloader Pro"],
-  ["Paste an image or video link. Keep the files.", "Download public media. Enhance it on your device."],
+  [
+    "Paste an image or video link. Keep the files.",
+    "Download public media. Enhance it on your device.",
+  ],
   [
     "Media Downloader Pro previews original public media from Instagram, TikTok, and Facebook, with optional enhancement performed locally in your browser.",
     "Media Downloader Pro downloads original public media and enhances video locally in your browser.",
   ],
-  ["Preview original public media and enhance video locally on your own device.", "Download original public media and enhance video locally on your own device."],
+  [
+    "Preview original public media and enhance video locally on your own device.",
+    "Download original public media and enhance video locally on your own device.",
+  ],
 ]) {
   if (!html.includes(from)) throw new Error(`Missing source copy: ${from}`);
   html = html.replaceAll(from, to);
 }
-html = html.replaceAll("__SITE_ORIGIN__", "https://media-downloader-pro.bjorke-poc.chatgpt.site");
+html = html.replaceAll(
+  "__SITE_ORIGIN__",
+  "https://media-downloader-pro.bjorke-poc.chatgpt.site",
+);
 
 await Promise.all([
   writeFile("dist/client/index.html", html),

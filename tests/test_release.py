@@ -8,9 +8,9 @@ ROOT = Path(__file__).parents[1]
 
 def test_python_core_runs_on_linux_windows_and_macos() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    python_job = workflow.split("\n  python-test:\n", 1)[1].split(
-        "\n  security:\n", 1
-    )[0]
+    python_job = workflow.split("\n  python-test:\n", 1)[1].split("\n  security:\n", 1)[
+        0
+    ]
 
     assert '- runner: ubuntu-latest\n            python-version: "3.12"' in python_job
     assert '- runner: windows-2025\n            python-version: "3.12"' in python_job
@@ -24,12 +24,8 @@ def test_release_uses_the_hashed_lock_without_build_isolation() -> None:
     security_job, after_security = workflow.split("\n  security:\n", 1)[1].split(
         "\n  macos-package-test:\n", 1
     )
-    _, release_jobs = after_security.split(
-        "\n  release-build:\n", 1
-    )
-    release_build, release_publish = release_jobs.split(
-        "\n  release-publish:\n", 1
-    )
+    _, release_jobs = after_security.split("\n  release-build:\n", 1)
+    release_build, release_publish = release_jobs.split("\n  release-publish:\n", 1)
 
     assert "uv export --locked --no-dev --extra macos --group release" in security_job
     assert "--no-emit-project --format requirements-txt" in security_job
@@ -40,8 +36,7 @@ def test_release_uses_the_hashed_lock_without_build_isolation() -> None:
     assert "pip install" not in security_job
 
     assert (
-        "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9"
-        in release_build
+        "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in release_build
     )
     assert 'version: "0.11.21"' in release_build
     sync = "uv sync --locked --no-dev --extra macos --group release"
@@ -61,9 +56,11 @@ def test_release_uses_the_hashed_lock_without_build_isolation() -> None:
 
     requirements = re.findall(r'"([\w-]+)(?:\[[^]]+\])?[<>=!~]', project)
     lock = (ROOT / "uv.lock").read_text()
-    assert set(requirements) <= set(re.findall(r'^name = "([\w-]+)"$', lock, re.MULTILINE))
+    assert set(requirements) <= set(
+        re.findall(r'^name = "([\w-]+)"$', lock, re.MULTILINE)
+    )
 
-    artifacts = re.findall(r'^\s*(?:sdist = )?\{ url = .+$', lock, re.MULTILINE)
+    artifacts = re.findall(r"^\s*(?:sdist = )?\{ url = .+$", lock, re.MULTILINE)
     assert artifacts and all('hash = "sha256:' in artifact for artifact in artifacts)
 
 
@@ -86,9 +83,9 @@ def test_pushes_and_pull_requests_build_both_native_macos_packages() -> None:
 
 def test_release_builds_native_arm64_and_intel_artifacts_before_publishing() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    release_build, release_publish = workflow.split("\n  release-build:\n", 1)[
-        1
-    ].split("\n  release-publish:\n", 1)
+    release_build, release_publish = workflow.split("\n  release-build:\n", 1)[1].split(
+        "\n  release-publish:\n", 1
+    )
 
     assert "- runner: macos-15\n            arch: arm64" in release_build
     assert "- runner: macos-15-intel\n            arch: x86_64" in release_build
@@ -143,3 +140,15 @@ def test_source_archive_manifest_contains_linked_release_files() -> None:
     assert "include docs/launch-privacy-security.md" in manifest
     assert "include docs/snapdownloader-parity.md" in manifest
     assert "include scripts/build_macos.sh" in manifest
+
+
+def test_local_page_assets_are_included_in_both_package_formats() -> None:
+    project = (ROOT / "pyproject.toml").read_text()
+    script = (ROOT / "scripts/build_macos.sh").read_text()
+    assert (
+        'video_enhancer = ["web_assets/*.html", "web_assets/*.css", "web_assets/*.js"]'
+        in project
+    )
+    assert "web_assets:video_enhancer/web_assets" in script
+    for name in ("index.html", "style.css", "app.js"):
+        assert (ROOT / "src/video_enhancer/web_assets" / name).is_file()

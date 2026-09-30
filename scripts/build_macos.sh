@@ -27,8 +27,6 @@ if [[ "$python_arch" != "$build_arch" ]]; then
   echo "TARGET_ARCH=$build_arch requires a native $build_arch Python (found $python_arch)." >&2
   exit 1
 fi
-yt_dlp_version="2026.07.04"
-yt_dlp_sha256="498bd0dae17855c599d371d68ec5bafc439a9d8640e838be25c765a9792f261b"
 vendor_dir="$project_dir/build/vendor"
 yt_dlp="$vendor_dir/yt-dlp"
 gallery_dl="$vendor_dir/gallery-dl"
@@ -47,6 +45,13 @@ verify_arch() {
   echo "Install the macOS build extra first: python -m pip install -e '.[macos]'" >&2
   exit 1
 }
+"$python_bin" - <<'PY'
+import urllib3
+from packaging.version import Version
+
+if Version(urllib3.__version__) < Version("2.8.0"):
+    raise SystemExit("Update the build environment: urllib3>=2.8.0 is required")
+PY
 version="$($python_bin -c 'from importlib.metadata import version; print(version("video-enhancer"))')"
 mkdir -p "$vendor_dir" "$project_dir/build/pyinstaller"
 ffmpeg_source="$($python_bin -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
@@ -54,39 +59,28 @@ printf '%s  %s\n' "$ffmpeg_sha256" "$ffmpeg_source" | shasum -a 256 -c -
 cp "$ffmpeg_source" "$ffmpeg"
 chmod 755 "$ffmpeg"
 verify_arch "FFmpeg" "$ffmpeg"
-if [[ ! -f "$yt_dlp" ]] || ! printf '%s  %s\n' "$yt_dlp_sha256" "$yt_dlp" | shasum -a 256 -c - >/dev/null 2>&1; then
-  download="$yt_dlp.download"
-  curl --fail --location --silent --show-error \
-    "https://github.com/yt-dlp/yt-dlp/releases/download/$yt_dlp_version/yt-dlp_macos" \
-    --output "$download"
-  printf '%s  %s\n' "$yt_dlp_sha256" "$download" | shasum -a 256 -c -
-  mv "$download" "$yt_dlp"
-fi
-chmod 755 "$yt_dlp"
-verify_arch "yt-dlp" "$yt_dlp"
-
-gallery_dl_entry="$($python_bin -c 'import gallery_dl.__main__; print(gallery_dl.__main__.__file__)')"
-gallery_dl_args=(
-  --clean
-  --noconfirm
-  --onefile
-  --console
-  --name gallery-dl
-  --collect-all gallery_dl
-  --collect-all yt_dlp
-)
-if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
-  gallery_dl_args+=(--codesign-identity "$CODESIGN_IDENTITY")
-fi
-gallery_dl_args+=(
-  --distpath "$vendor_dir"
-  --workpath "$project_dir/build/gallery-dl"
-  --specpath "$project_dir/build/gallery-dl"
-  "$gallery_dl_entry"
-)
-"$python_bin" -m PyInstaller "${gallery_dl_args[@]}"
-chmod 755 "$gallery_dl"
-verify_arch "gallery-dl" "$gallery_dl"
+# Build both downloaders from the same environment as the audited application.
+for module in yt_dlp gallery_dl; do
+  name="${module//_/-}"
+  entry="$($python_bin -c "import importlib; print(importlib.import_module('$module.__main__').__file__)")"
+  downloader_args=(
+    --clean --noconfirm --onefile --console
+    --name "$name"
+    --collect-all "$module"
+    --distpath "$vendor_dir"
+    --workpath "$project_dir/build/$name"
+    --specpath "$project_dir/build/$name"
+  )
+  if [[ "$module" == "gallery_dl" ]]; then
+    downloader_args+=(--collect-all yt_dlp)
+  fi
+  if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+    downloader_args+=(--codesign-identity "$CODESIGN_IDENTITY")
+  fi
+  "$python_bin" -m PyInstaller "${downloader_args[@]}" "$entry"
+  chmod 755 "$vendor_dir/$name"
+  verify_arch "$name" "$vendor_dir/$name"
+done
 
 pyinstaller_args=(
   --clean
@@ -133,6 +127,7 @@ codesign "${codesign_args[@]}" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 VIDEO_ENHANCER_SMOKE_TEST=1 "$app/Contents/MacOS/Video Enhancer"
 "$app/Contents/Frameworks/bin/gallery-dl" --version >/dev/null
+"$app/Contents/Frameworks/bin/yt-dlp" --version >/dev/null
 
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then

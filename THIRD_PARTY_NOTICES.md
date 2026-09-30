@@ -34,3 +34,7 @@ application so recipients can inspect and replace the bundled executables.
 
 The vendored FFmpeg browser wrapper has a local modification to reject pending
 calls and terminate its Worker when a Worker error occurs.
+
+The macOS yt-dlp and gallery-dl executables are built from the application
+build environment, including its audited urllib3 dependency. They are not
+independently downloaded executables.

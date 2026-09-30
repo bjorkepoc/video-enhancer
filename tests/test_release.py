@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
@@ -119,12 +122,12 @@ def test_macos_build_script_rejects_architecture_mismatches() -> None:
     assert "--target-architecture arm64" not in script
     assert 'lipo "$2" -verify_arch "$build_arch"' in script
     assert 'verify_arch "FFmpeg" "$ffmpeg"' in script
-    assert 'verify_arch "yt-dlp" "$yt_dlp"' in script
-    assert 'verify_arch "gallery-dl" "$gallery_dl"' in script
-    assert "--collect-all gallery_dl" in script
+    assert 'verify_arch "$name" "$vendor_dir/$name"' in script
+    assert "for module in yt_dlp gallery_dl" in script
+    assert '--collect-all "$module"' in script
     assert "--collect-all yt_dlp" in script
     assert "--collect-submodules gallery_dl.extractor" in script
-    assert 'gallery_dl_args+=(--codesign-identity "$CODESIGN_IDENTITY")' in script
+    assert 'downloader_args+=(--codesign-identity "$CODESIGN_IDENTITY")' in script
     assert 'VIDEO_ENHANCER_SMOKE_TEST=1 "$app/Contents/MacOS/Video Enhancer"' in script
     assert '"$app/Contents/Frameworks/bin/gallery-dl" --version' in script
     assert 'verify_arch "Bundled gallery-dl"' in script
@@ -152,3 +155,76 @@ def test_local_page_assets_are_included_in_both_package_formats() -> None:
     assert "web_assets:video_enhancer/web_assets" in script
     for name in ("index.html", "style.css", "app.js"):
         assert (ROOT / "src/video_enhancer/web_assets" / name).is_file()
+
+
+def test_every_installation_requires_fixed_urllib3_and_native_downloaders_share_it() -> (
+    None
+):
+    project = (ROOT / "pyproject.toml").read_text()
+    lock = (ROOT / "uv.lock").read_text()
+    script = (ROOT / "scripts/build_macos.sh").read_text()
+    floor = re.search(r'"urllib3>=(\d+)\.(\d+)\.(\d+)"', project)
+    locked = re.search(r'name = "urllib3"\nversion = "(\d+)\.(\d+)\.(\d+)"', lock)
+    assert floor and tuple(map(int, floor.groups())) >= (2, 8, 0)
+    assert locked and tuple(map(int, locked.groups())) >= (2, 8, 0)
+    assert 'Version(urllib3.__version__) < Version("2.8.0")' in script
+    assert "releases/download/$yt_dlp_version/yt-dlp_macos" not in script
+    assert '"$app/Contents/Frameworks/bin/yt-dlp" --version' in script
+
+
+def test_updated_downloader_http_stack_streams_an_ordinary_chunked_response() -> None:
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import requests
+
+    payload = "ordinary æøå response".encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            for chunk in (payload[:10], payload[10:]):
+                self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
+            self.wfile.write(b"0\r\n\r\n")
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with requests.Session() as session:
+            session.trust_env = False
+            with session.get(
+                f"http://127.0.0.1:{server.server_port}/", stream=True, timeout=2
+            ) as response:
+                response.raise_for_status()
+                assert b"".join(response.iter_content(chunk_size=3)) == payload
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_native_security_floor_remains_enforced_with_python_optimization(
+    tmp_path: Path,
+) -> None:
+    script = (ROOT / "scripts/build_macos.sh").read_text()
+    guard = script.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    (tmp_path / "urllib3.py").write_text('__version__ = "2.7.0"\n')
+    result = subprocess.run(
+        [sys.executable, "-c", guard],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(tmp_path), "PYTHONOPTIMIZE": "1"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "urllib3>=2.8.0 is required" in result.stderr

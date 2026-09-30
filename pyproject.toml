@@ -23,7 +23,11 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Multimedia :: Video :: Conversion",
 ]
-dependencies = ["gallery-dl>=1.32.9", "yt-dlp[default,curl-cffi]>=2026.7.4"]
+dependencies = [
+  "gallery-dl>=1.32.9",
+  "yt-dlp[default,curl-cffi]>=2026.7.4",
+  "urllib3>=2.8.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/bjorkepoc/video-enhancer"
